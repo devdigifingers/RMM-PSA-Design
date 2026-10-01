@@ -42,6 +42,7 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | Windows agent | Passed (S11). `FED-WIN-001` enrolled; desktop session opened and closed |
 | License boundaries | Passed (S12). Org 2 cap, module, and expiry denials are audited |
 | Portal site | Passed (S13). Chooser on `digitalfingers.co.za`; Log on opens the console |
+| GitHub backup | Passed (S14). `ee2d076` on `main` has source, templates, and the runbook |
 
 Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate.
 
@@ -188,6 +189,10 @@ The portal is static files in `portal/`, served by Caddy on the InterServer host
 
 ### S14 — Phase 1 backup
 
+**Status:** Passed 2026-10-01.
+
+`main` on https://github.com/devdigifingers/RMM-PSA-Design is commit `ee2d076`. It contains the API, console, agent, and portal source, `deploy/caddy/contabo-a.Caddyfile`, `portal/Caddyfile`, `api/.env.example`, `agent/df-agent.env.example`, and [PHASE1_RUNBOOK.md](./PHASE1_RUNBOOK.md). A search of that commit found no live passwords, private keys, or database URLs with credentials. This file still matches the installed hosts: Postgres on Contabo B, Redis and MeshCentral on Contabo A, and the thin portal on InterServer.
+
 **Smoke:** GitHub contains application, agent, and portal source, config templates, `.env.example`, and the runbooks written during S3–S13. A search of the commit finds no live passwords, private keys, or database URLs with credentials. A fresh reading of this file still matches what was installed.
 
 **Phase 1 exit:** S3–S14 passed. That is the same exit as [PHASED_PLAN.md](./PHASED_PLAN.md): enroll Linux and Windows, remote via Mesh, license enforced on a second org, setup backed up to GitHub.
@@ -258,4 +263,5 @@ OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are o
 | S11 | 2026-10-01 | Pass | `FED-WIN-001` enrolled as Microsoft Windows 11 Pro. Console `ver` returned Windows version 10.0.26200.9278. Desktop showed Connected, Disconnect returned Connect, and Logout returned the Mesh login. Audit `device.enroll` and `remote.launch` are by `console@digitalfingers.co.za`. Linux terminal on `vps3231588` still opens and closes. SSH works on all three hosts. API health ok. |
 | S12 | 2026-10-01 | Pass | Org 1 still has both devices and Open. Org 2 cap denial, expiry denial, and hidden remote each wrote an audit row for `second@digitalfingers.co.za`. Org 2 was restored to cap 12, remote off, and no devices. SSH works on all three hosts. API health ok. |
 | S13 | 2026-10-01 | Pass | `https://digitalfingers.co.za` shows the chooser. RMM shows the welcome text. Log on opens `https://rmm.digitalfingers.co.za`. Certificate through 30 Dec 2026. Portal listeners are Caddy on 80 and 443. MeshCentral, Redis, and Postgres are not installed. SSH works on all three hosts. Mesh HTTP 200. API health ok. |
-| S14–S30 | | Not run | |
+| S14 | 2026-10-01 | Pass | GitHub `main` commit `ee2d076` has the API, console, agent, portal, Caddy templates, `.env.example` files, and `docs/PHASE1_RUNBOOK.md`. Secret search found no live passwords, private keys, or database URLs. This plan still matches the installed hosts. |
+| S15–S30 | | Not run | |

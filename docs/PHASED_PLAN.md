@@ -182,6 +182,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S13 have passed.
-2. Continue at **S14 GitHub backup**. Do not start a step whose previous smoke test failed.
-3. After S14, back up Phase 1 to GitHub without live secrets.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S14 have passed. Phase 1 is complete.
+2. Continue at **S15 tickets**. Do not start a step whose previous smoke test failed.

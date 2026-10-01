@@ -55,7 +55,7 @@ Cloud chat history may not fully follow you. **`docs/CHAT_HANDOFF.md` is the com
 3. Rebuild InterServer portal from backed-up portal code.  
 4. Fix DNS if IPs changed.  
 
-Detailed runbooks will be written **on the servers** during Phase 1, then copied into the repo.
+The Phase 1 install record is [PHASE1_RUNBOOK.md](./PHASE1_RUNBOOK.md).
 
 ## OS choice
 

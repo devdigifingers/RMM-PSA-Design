@@ -1,0 +1,19 @@
+[Unit]
+Description=Digital Fingers RMM console
+After=network-online.target df-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dfconsole
+Group=dfconsole
+WorkingDirectory=/opt/df-console
+Environment=NODE_ENV=production
+Environment=API_URL=http://127.0.0.1:4000
+ExecStart=/usr/local/bin/npm start
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

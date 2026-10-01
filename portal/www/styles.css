@@ -1,0 +1,114 @@
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/NotoSans-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/NotoSans-Medium.ttf") format("truetype");
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("/fonts/NotoSans-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-display: swap;
+}
+
+:root {
+  --navy: #070b16;
+  --ink: #10182a;
+  --line: rgba(186, 198, 212, 0.16);
+  --muted: #9aa6b4;
+  --paper: #f4f6f8;
+  --text: #e7edf3;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--navy);
+  color: var(--text);
+}
+
+body {
+  min-height: 100vh;
+  font-family: "Noto Sans", sans-serif;
+}
+
+a { color: inherit; }
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+
+.card {
+  width: min(440px, 100%);
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px 28px;
+}
+
+.wordmark {
+  width: min(280px, 100%);
+  height: auto;
+  display: block;
+}
+
+h1 {
+  margin: 22px 0 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.welcome, .detail {
+  margin: 14px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.service, .logon {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--navy);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.service-detail {
+  color: #3d4a5c;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.logon {
+  align-items: center;
+  border-radius: 999px;
+  height: 42px;
+  padding: 0 16px;
+  justify-content: center;
+}
+
+.back {
+  margin: 18px 0 0;
+}
+
+.back a {
+  color: var(--muted);
+  font-size: 14px;
+}

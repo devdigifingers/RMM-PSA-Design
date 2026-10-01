@@ -1,0 +1,17 @@
+[Unit]
+Description=Digital Fingers Linux agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dfagent
+Group=dfagent
+EnvironmentFile=/etc/df-agent.env
+ExecStart=/usr/local/bin/df-agent
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

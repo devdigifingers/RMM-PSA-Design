@@ -75,8 +75,39 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_token_hash text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS mesh_node_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS devices_agent_token_hash_idx ON devices (agent_token_hash);
+
 CREATE INDEX IF NOT EXISTS devices_org_id_idx ON devices (org_id);
 CREATE INDEX IF NOT EXISTS devices_site_id_idx ON devices (site_id);
+
+CREATE TABLE IF NOT EXISTS enroll_tokens (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  token_hash text NOT NULL UNIQUE,
+  created_by bigint REFERENCES users (id),
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS enroll_tokens_org_id_idx ON enroll_tokens (org_id);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  device_id bigint NOT NULL REFERENCES devices (id),
+  command text NOT NULL,
+  status text NOT NULL DEFAULT 'queued',
+  exit_code integer,
+  output text,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS jobs_device_id_idx ON jobs (device_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

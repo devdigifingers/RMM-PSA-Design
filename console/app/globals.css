@@ -1,0 +1,193 @@
+:root {
+  --navy: #070b16;
+  --ink: #10182a;
+  --line: rgba(186, 198, 212, 0.16);
+  --muted: #9aa6b4;
+  --paper: #f4f6f8;
+  --text: #e7edf3;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--navy);
+  color: var(--text);
+}
+
+body {
+  min-height: 100vh;
+}
+
+a { color: inherit; }
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+
+.login-card, .panel {
+  width: min(440px, 100%);
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px 28px;
+}
+
+.wordmark {
+  width: min(280px, 100%);
+  height: auto;
+  display: block;
+}
+
+.lede {
+  margin: 18px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+form {
+  display: grid;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+input {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--navy);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+}
+
+button {
+  height: 42px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--navy);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error {
+  margin: 16px 0 0;
+  color: #f0c7c7;
+  font-size: 14px;
+}
+
+.console {
+  min-height: 100vh;
+}
+
+.topbar {
+  height: 76px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar .wordmark { width: 180px; }
+
+.topbar form { margin: 0; }
+
+a.remote {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--navy);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.topbar button {
+  height: 36px;
+  padding: 0 16px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid rgba(198, 206, 214, 0.45);
+}
+
+.main {
+  padding: 28px;
+}
+
+.main h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.org-name {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+table {
+  width: min(880px, 100%);
+  margin-top: 22px;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+th {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.empty {
+  color: var(--muted);
+}
+
+.job {
+  width: min(880px, 100%);
+  margin-top: 28px;
+}
+
+.job h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.job form {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+}
+
+.job button {
+  padding: 0 18px;
+}
+
+.output {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--navy);
+  color: var(--text);
+  white-space: pre-wrap;
+}

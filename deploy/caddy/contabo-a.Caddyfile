@@ -1,0 +1,23 @@
+{
+	email admin@digitalfingers.co.za
+}
+
+mesh.digitalfingers.co.za {
+	reverse_proxy 127.0.0.1:4430 {
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+		transport http {
+			read_timeout 360s
+			write_timeout 360s
+		}
+	}
+}
+
+api.digitalfingers.co.za {
+	reverse_proxy 127.0.0.1:4000
+}
+
+rmm.digitalfingers.co.za {
+	reverse_proxy 127.0.0.1:3000
+}

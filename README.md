@@ -6,7 +6,7 @@ Self-hosted, multi-tenant remote monitoring & management with **MeshCentral** as
 
 **Planning complete (2026-10-01).** Servers are online, patched, and reachable by SSH.  
 **GitHub:** https://github.com/devdigifingers/RMM-PSA-Design  
-S7 control-plane API passed. Next gate is the web console (step S8). Each later step waits for its smoke test.
+S13 thin portal passed. Next gate is the GitHub backup (step S14). Each later step waits for its smoke test.
 
 | Doc | Contents |
 |-----|----------|

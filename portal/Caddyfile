@@ -1,0 +1,11 @@
+# Thin portal for digitalfingers.co.za only.
+# This host does not run MeshCentral, Redis, or Postgres.
+digitalfingers.co.za {
+	root * /var/www/df-portal
+	encode gzip
+	file_server
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}

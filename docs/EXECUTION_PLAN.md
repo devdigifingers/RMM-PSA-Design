@@ -36,7 +36,12 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | Redis on Contabo A | Passed (S5). Localhost only |
 | MeshCentral on Contabo A | Passed (S6). `https://mesh.digitalfingers.co.za` |
 | Control-plane API | Passed (S7). `https://api.digitalfingers.co.za` |
-| Web console and portal site | Not started |
+| Web console | Passed (S8). `https://rmm.digitalfingers.co.za` |
+| Linux agent | Passed (S9). Portal host `vps3231588` enrolled in org 1 |
+| Remote session from the console | Passed (S10). Terminal on `vps3231588`; org 2 denied |
+| Windows agent | Passed (S11). `FED-WIN-001` enrolled; desktop session opened and closed |
+| License boundaries | Passed (S12). Org 2 cap, module, and expiry denials are audited |
+| Portal site | Passed (S13). Chooser on `digitalfingers.co.za`; Log on opens the console |
 
 Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate.
 
@@ -135,37 +140,51 @@ The API listens on `127.0.0.1:4000` on Contabo A. Caddy serves `https://api.digi
 
 ### S8 — Web console
 
+**Status:** Passed 2026-10-01.
+
+The console is a Next.js app in `console/`, served by Caddy at `https://rmm.digitalfingers.co.za` and bound to `127.0.0.1:3000` on Contabo A. It uses the navy and silver wordmark, Noto Sans, and the website favicon. The org admin for Digital Fingers is `console@digitalfingers.co.za`. The password is in `/root/df-console.env` on Contabo A, mode 600. It is not in git.
+
 **Smoke:** `https://rmm.digitalfingers.co.za` shows the login page with a valid certificate. An org admin can sign in, see an empty device list, and sign out. A wrong password is rejected. The portal host is not serving this console.
 
 ### S9 — Linux agent
 
-Use a test machine, not Contabo B.
+**Status:** Passed 2026-10-01.
+
+The agent is Go, in `agent/`. It runs on the portal host `vps3231588` (`69.164.244.199`) as user `dfagent`, not on Contabo B. There is no separate test machine yet, so this host is the first enrolled device. The binary is `/usr/local/bin/df-agent`. The enroll file is `/etc/df-agent.env`, mode 600. The device token is `/var/lib/df-agent/state.json`, mode 600. Neither file is in git.
 
 **Smoke:** the agent enrolls into org 1, sends a heartbeat, and the console shows hostname and OS. A script or shell job returns output. The device count on the license goes up by one. An audit row records the enrollment.
 
 ### S10 — Remote session from the console
 
-**Smoke:** from the Linux device row, a browser session opens through MeshCentral. The session closes cleanly. An audit row records the launch. An org whose license lacks `remote_desktop` cannot open a session.
+**Status:** Passed 2026-10-01.
+
+The console device row has Open. That calls the API, which checks `remote_desktop`, writes `remote.launch`, and opens MeshCentral on that device. The launch hides Mesh's left admin menu, so the technician does not get My Devices, My Account, or My Server. This host has no graphical desktop, so Open lands on the terminal. A Windows device lands on the desktop. The technician still sees Mesh's device tabs for that machine and can log out. Org 2 is blocked with `remote.deny`. The Mesh agent on `vps3231588` is online.
+
+**Smoke:** from the Linux device row, a browser terminal opened on `vps3231588` and showed `root@vps3231588`. Disconnect returned the page to Disconnected, and Logout returned the Mesh login. Audit action `remote.launch` is by `console@digitalfingers.co.za`. Org 2 received 403 and `remote.deny` by `second@digitalfingers.co.za`. Mesh login still returns HTTP 200. API health still reports Postgres and Redis ok.
 
 ### S11 — Windows agent
 
-**Smoke:** the same S9 and S10 checks pass on one Windows test machine. Linux enrollment and remote still pass.
+**Status:** Passed 2026-10-01.
+
+The Windows agent is the same Go program, built as `df-agent.exe`. On Windows it reads `C:\ProgramData\DigitalFingers\df-agent.env`, runs commands with `cmd.exe`, and installs as the `df-agent` service. `FED-WIN-001` is enrolled and linked to the Mesh service agent. The installed program name on that PC is Digital Fingers Agent. The files still live in `C:\Program Files\Mesh Agent`. Windows Defender flagged that Mesh agent, not `df-agent.exe`, as `Trojan:Win32/Bearfoos.B!ml` and `Behavior:Win32/Persistence.A!ml`. Both names are machine-learning detections. On this test PC, Defender exclusions cover those two folders. Customer installs still need Authenticode before this is quiet on other PCs.
+
+**Smoke:** `FED-WIN-001` shows Microsoft Windows 11 Pro in the console. `ver` returned `Microsoft Windows [Version 10.0.26200.9278]`. Open hid My Devices, My Account, and My Server, connected the desktop, Disconnect returned Connect, and Logout returned the Mesh login. Audit `device.enroll` and `remote.launch` for device 2 are by `console@digitalfingers.co.za`. Linux `vps3231588` still heartbeats, `uname -srm` still returns output, and its terminal still opens and closes. SSH to all three hosts still works. API health reports Postgres and Redis ok. Org 2 `remote.deny` remains from S10.
 
 ### S12 — License boundaries
 
-**Smoke:**
+**Status:** Passed 2026-10-01.
 
-- Org 1 is unaffected.
-- The second org cannot enroll past its device cap.
-- A module flag that is off hides that action.
-- An expired license cannot enroll or open a remote session.
-- Each denial writes an audit row.
+Org 1 keeps cap 500 and every module on, including `remote_desktop`. Org 2 keeps cap 12, `remote_desktop` off, and no expiry. Enrollment past the cap writes `enroll.deny`. An expired license writes `enroll.deny` and `remote.deny`, and the console hides Open. A module that is off hides Open and writes `remote.deny`. The temporary probe device used to show that hide was removed afterward.
+
+**Smoke:** Org 1 still shows `FED-WIN-001` and `vps3231588`, both with Open, and a remote launch for the Linux host still returns the Mesh terminal page. With org 2's cap set to 0, enroll returned 403 `Device cap reached` and `enroll.deny` reason `device_cap`. With the license expired, enroll and remote both returned 403 `This license has expired`, with `enroll.deny` and `remote.deny` reason `expired`. After restore, the console for `second@digitalfingers.co.za` showed Second Test Org, the text "Remote desktop is not included on this license", and no Open link. Opening that device URL returned to the device list. Org 2 is back to cap 12, no expiry, remote off, and no devices. SSH works on all three hosts. API health reports Postgres and Redis ok.
 
 ### S13 — Thin portal
 
-Can be built after S2. The end-to-end check waits until S8 has passed.
+**Status:** Passed 2026-10-01.
 
-**Smoke:** `https://digitalfingers.co.za` shows the service chooser. Choosing RMM shows the welcome text and a Log on link to `https://rmm.digitalfingers.co.za`. The portal host does not run MeshCentral, Redis, or Postgres.
+The portal is static files in `portal/`, served by Caddy on the InterServer host at `https://digitalfingers.co.za`. The certificate is valid through 30 Dec 2026. Choosing RMM opens the welcome page. Log on goes to `https://rmm.digitalfingers.co.za`. Caddy is the only new service. MeshCentral, Redis, and Postgres are not installed. The existing device agent on this host stays, because this machine is the enrolled Linux device.
+
+**Smoke:** `https://digitalfingers.co.za` shows the service chooser. Choosing RMM shows "Welcome to your Digital Fingers Remote Monitoring and Management Services." and a Log on link. Log on opens the console login at `https://rmm.digitalfingers.co.za`. Listeners are Caddy on 80 and 443 only. MeshCentral, Redis, Postgres, and nginx are inactive. SSH works on all three hosts. Mesh login returns HTTP 200. API health reports Postgres and Redis ok.
 
 ### S14 — Phase 1 backup
 
@@ -233,4 +252,10 @@ OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are o
 | S5 | 2026-10-01 | Pass | Local ping returned PONG. A ping without the password was rejected. Listeners are `127.0.0.1:6379` and `[::1]:6379` only. Portal, Contabo B, and the public internet are filtered on port 6379. |
 | S6 | 2026-10-01 | Pass | MeshCentral active. Let's Encrypt certificate for `mesh.digitalfingers.co.za`, valid through 30 Dec 2026. Login page returned HTTP 200. A device-group invite link was created. Postgres still accepts `df_app`. Redis still answers PONG. |
 | S7 | 2026-10-01 | Pass | Health returned ok for Postgres and Redis. Org 1 is Digital Fingers. Org 2 stores device cap 12 and module flags. Both creates are audited as `operator@digitalfingers.co.za`. A request without a login returned 401. |
-| S8–S30 | | Not run | |
+| S8 | 2026-10-01 | Pass | Login page HTTP 200 with a Let's Encrypt certificate for `rmm.digitalfingers.co.za` through 30 Dec 2026. Org admin signed in, saw an empty device list for Digital Fingers, and signed out. A wrong password stayed on the login page. Creating that admin wrote a `user.create` audit row. Portal ports 80 and 443 are closed. Mesh login and API health still pass. |
+| S9 | 2026-10-01 | Pass | Portal host `vps3231588` enrolled into org 1. Console shows hostname, Ubuntu 24.04.5 LTS, and last seen. Device count is 1. Audit action `device.enroll` is by `console@digitalfingers.co.za`. `uname -srm` returned `Linux 6.8.0-146-generic x86_64`. Contabo B has no agent. Mesh login and API health still pass. |
+| S10 | 2026-10-01 | Pass | Open on `vps3231588` hid My Devices, My Account, and My Server and opened the terminal. The page showed Connected and `root@vps3231588`. Disconnect showed Disconnected. Logout returned the Mesh login. Audit `remote.launch` is by `console@digitalfingers.co.za`. Org 2 got 403 and `remote.deny`. Mesh HTTP 200. API health ok. |
+| S11 | 2026-10-01 | Pass | `FED-WIN-001` enrolled as Microsoft Windows 11 Pro. Console `ver` returned Windows version 10.0.26200.9278. Desktop showed Connected, Disconnect returned Connect, and Logout returned the Mesh login. Audit `device.enroll` and `remote.launch` are by `console@digitalfingers.co.za`. Linux terminal on `vps3231588` still opens and closes. SSH works on all three hosts. API health ok. |
+| S12 | 2026-10-01 | Pass | Org 1 still has both devices and Open. Org 2 cap denial, expiry denial, and hidden remote each wrote an audit row for `second@digitalfingers.co.za`. Org 2 was restored to cap 12, remote off, and no devices. SSH works on all three hosts. API health ok. |
+| S13 | 2026-10-01 | Pass | `https://digitalfingers.co.za` shows the chooser. RMM shows the welcome text. Log on opens `https://rmm.digitalfingers.co.za`. Certificate through 30 Dec 2026. Portal listeners are Caddy on 80 and 443. MeshCentral, Redis, and Postgres are not installed. SSH works on all three hosts. Mesh HTTP 200. API health ok. |
+| S14–S30 | | Not run | |

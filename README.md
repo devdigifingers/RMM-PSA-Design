@@ -4,9 +4,9 @@ Self-hosted, multi-tenant remote monitoring & management with **MeshCentral** as
 
 ## Status
 
-**Planning complete and documented for IDE handoff (2026-10-01).**  
+**Planning complete (2026-10-01).** Servers are online, patched, and reachable by SSH.  
 **GitHub:** https://github.com/devdigifingers/RMM-PSA-Design  
-Implementation starts at Phase 1 when all three Ubuntu servers and SSH access are available.
+S7 control-plane API passed. Next gate is the web console (step S8). Each later step waits for its smoke test.
 
 | Doc | Contents |
 |-----|----------|
@@ -14,6 +14,7 @@ Implementation starts at Phase 1 when all three Ubuntu servers and SSH access ar
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Locked decisions |
 | [docs/PHASED_PLAN.md](docs/PHASED_PLAN.md) | Phases, modules, exit criteria |
 | [docs/SETUP_AND_DR.md](docs/SETUP_AND_DR.md) | Server-first work, GitHub backup, IDE move |
+| [docs/EXECUTION_PLAN.md](docs/EXECUTION_PLAN.md) | Step order and the smoke test after each step |
 
 ## Hosting
 

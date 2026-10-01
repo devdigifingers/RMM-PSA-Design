@@ -2,7 +2,7 @@
 
 Multi-tenant **RMM + PSA** for **Digital Fingers**: operate as a support company, and license the same system to other companies.
 
-**Complete chat capture for IDE:** [CHAT_HANDOFF.md](./CHAT_HANDOFF.md) · [DECISIONS.md](./DECISIONS.md) · [SETUP_AND_DR.md](./SETUP_AND_DR.md)
+**Complete chat capture for IDE:** [CHAT_HANDOFF.md](./CHAT_HANDOFF.md) · [DECISIONS.md](./DECISIONS.md) · [SETUP_AND_DR.md](./SETUP_AND_DR.md) · **Step order and smoke gates:** [EXECUTION_PLAN.md](./EXECUTION_PLAN.md)
 
 **Last updated:** 2026-10-01
 
@@ -48,12 +48,13 @@ Portal flow: `digitalfingers.co.za` → **RMM** → welcome → **Log on** → `
 - [x] Server-first + GitHub backup workflow
 - [x] OpenClaw deferred
 - [x] Full handoff docs for IDE move
-- [ ] Order / provision Contabo A and Contabo B (Ubuntu 24.04, same region)
-- [ ] Confirm InterServer on Ubuntu 24.04
-- [ ] Point DNS: portal → InterServer; `rmm.` / `mesh.` / `api.` → Contabo A
-- [ ] Hand over root SSH (Portal + A + B)
+- [x] Order / provision Contabo A and Contabo B (Ubuntu 24.04, same region)
+- [x] Confirm InterServer on Ubuntu 24.04
+- [x] Hand over root SSH (Portal + A + B)
+- [x] OS updates and reboot (kernel `6.8.0-146-generic` on all three)
+- [x] Point DNS: portal → InterServer; `rmm.` / `mesh.` / `api.` → Contabo A
 
-**Exit criteria:** All three servers reachable on Ubuntu 24.04; DNS plan agreed.
+**Exit criteria:** All three servers reachable on Ubuntu 24.04; DNS records match [EXECUTION_PLAN.md](./EXECUTION_PLAN.md) step S2. Work proceeds one step at a time, and only after that step's smoke test passes.
 
 ---
 
@@ -181,7 +182,6 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Finish **Create repo** → open in **Cursor Desktop**; read `docs/CHAT_HANDOFF.md`.  
-2. Provision Contabo A/B on **Ubuntu 24.04** (same region); InterServer portal on Ubuntu 24.04.  
-3. Send root SSH for all three + DNS plan.  
-4. Agent takes control: updates, installs, Phase 1; backup to GitHub.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S7 have passed.  
+2. Continue at **S8 web console**. Do not start a step whose previous smoke test failed.  
+3. After S14, back up Phase 1 to GitHub without live secrets.

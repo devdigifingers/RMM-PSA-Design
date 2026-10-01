@@ -1,0 +1,17 @@
+{
+  "name": "df-api",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "bootstrap": "node scripts/bootstrap.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.8.2",
+    "pg": "^8.16.3"
+  }
+}

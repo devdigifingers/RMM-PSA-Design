@@ -6,7 +6,7 @@
 **GitHub (canonical backup):** https://github.com/devdigifingers/RMM-PSA-Design  
 **Branch:** `cursor/platform-phased-plan-b80e`
 
-Related docs: [DECISIONS.md](./DECISIONS.md) · [PHASED_PLAN.md](./PHASED_PLAN.md) · [SETUP_AND_DR.md](./SETUP_AND_DR.md)
+Related docs: [DECISIONS.md](./DECISIONS.md) · [PHASED_PLAN.md](./PHASED_PLAN.md) · [SETUP_AND_DR.md](./SETUP_AND_DR.md) · [EXECUTION_PLAN.md](./EXECUTION_PLAN.md)
 
 ---
 

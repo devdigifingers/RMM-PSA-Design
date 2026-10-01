@@ -1,0 +1,20 @@
+[Unit]
+Description=Digital Fingers control-plane API
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dfapi
+Group=dfapi
+WorkingDirectory=/opt/df-api
+EnvironmentFile=/root/df-api.env
+EnvironmentFile=/root/df-platform-db.env
+EnvironmentFile=/root/df-redis.env
+ExecStart=/usr/local/bin/node /opt/df-api/src/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

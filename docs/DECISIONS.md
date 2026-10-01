@@ -61,4 +61,5 @@ Durable record for Cursor Desktop / GitHub. Full narrative: [CHAT_HANDOFF.md](./
 
 ## Phased delivery
 
-See [PHASED_PLAN.md](./PHASED_PLAN.md): 0 planning → 1 foundation → 2 PSA → 3 monitoring → 4 patch → 5 reporting.
+See [PHASED_PLAN.md](./PHASED_PLAN.md): 0 planning → 1 foundation → 2 PSA → 3 monitoring → 4 patch → 5 reporting.  
+Step-by-step order and the smoke test after each step: [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).

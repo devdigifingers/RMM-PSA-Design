@@ -69,8 +69,18 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | One path for the work | Passed (S38). Offline, missing `thermald`, and the disk alert each sit on a ticket for Digital Fingers office and `vps3231588` |
 | Roles that limit actions | Passed (S39). A technician can open devices, tickets, and remote. A shell and a patch approval return 403 |
 | SLA clock | Passed (S40). Ticket 2 and the dashboard show the same response and resolve clocks against 30 and 240 minutes |
+| GitHub backup of S36–S40 | Passed (S41). GitHub `main` is `ec0a093`. A search found no live secrets |
+| Postgres dump | Passed (S42). Two dumps on Contabo A, mode 600. The live database was not restored |
+| Mesh dump | Passed (S43). One archive on Contabo B. Mesh stayed up. Both devices still show |
+| One missing-update ticket | Passed (S44). Heartbeats opened no new ticket. Existing missing tickets stayed |
+| Email on a new ticket | Passed (S45). One new ticket mailed admin@ and was resolved. Ticket 2 stayed open |
+| GitHub backup of S42–S45 | Not started (S46) |
+| Device is back | Not started (S47) |
+| One breach message | Not started (S48) |
+| Audit in the console | Not started (S49) |
+| Clock in the daily CSV | Not started (S50) |
 
-Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate. Email notification and a Postgres plus Mesh dump follow S40 and have not started.
+Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate. S41 through S45 passed. S46 through S50 are drafted and have not started. GitHub `main` is still `ec0a093`. The dump scripts, Mesh archive, one missing-update ticket, and new-ticket mail are on the servers and are not in that commit.
 
 ## Hosts
 
@@ -459,6 +469,94 @@ The response clock starts when the ticket is created and stops at the first comm
 
 **Smoke:** Ticket "Disk 20% on vps3231588" and the dashboard show the same response clock and the same resolve clock against 30 and 240 minutes. The clocks remain after reload. Org 2 has no SLA. The targets are still 30 and 240. SSH works on all three hosts. API health reports Postgres and Redis ok.
 
+## Operations — keep it and tell someone
+
+Starts only after S40. These steps make the live system recoverable and keep the desk from mailing a flood. A step is finished only when its smoke test passes. S41 through S45 have passed.
+
+### S41 — GitHub backup of S36–S40
+
+**Status:** Passed, 2 Oct 2026.
+
+GitHub `main` is `ec0a093`. That commit holds the customer link, device asset, work tickets, role limits, and SLA clock. A search of that commit found no live passwords, private keys, or database URLs. SSH works on all three hosts. API health reports Postgres and Redis ok. The operations plan text in this working tree is not inside that commit.
+
+**Smoke:** GitHub `main` is `ec0a093`. A search of that commit finds no live passwords, private keys, or database URLs. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S42 — Postgres dump
+
+**Status:** Passed, 2 Oct 2026.
+
+Two dumps of `df_platform` are in `/var/backups/df-platform` on Contabo A, mode 600. `pg_restore --list` shows `orgs`, `devices`, and `tickets`. The second run left the first file in place. Nothing was restored. The files are not in git. Contabo B has no copy and still accepts the API. Org 2 has no devices. `df-pg-dump.timer` runs daily at 03:15 UTC and keeps seven dumps. The next run is 3 Oct 2026.
+
+**Smoke:** One dump file on Contabo A lists the `orgs`, `devices`, and `tickets` tables. A second run replaces nothing that is still inside the seven-file cap. The file is not in git. Contabo B still accepts the API. Org 2 still has no devices. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S43 — Mesh dump
+
+**Status:** Passed, 2 Oct 2026.
+
+One archive of `meshcentral-data` is in `/var/backups/df-mesh` on Contabo B, mode 600. It contains `meshcentral.db`. It is not in git. Mesh stayed up. `https://mesh.digitalfingers.co.za` returned HTTP 200. `vps3231588` and `FED-WIN-001` still show in the console. The Mesh password was not printed and was not rotated. `df-mesh-dump.timer` runs daily at 03:45 UTC and keeps seven archives. The next run is 3 Oct 2026.
+
+**Smoke:** One Mesh archive exists on Contabo B and is not in git. `https://mesh.digitalfingers.co.za` still returns HTTP 200. `vps3231588` and `FED-WIN-001` still show in the console. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S44 — One missing-update ticket
+
+**Status:** Passed, 2 Oct 2026.
+
+Further missing updates for a device are added to the oldest open ticket whose subject starts with "Missing" for that customer and device. They do not open another ticket. After the next heartbeats Digital Fingers still has the same nine tickets. "Missing thermald on vps3231588" stays open and `thermald` is still `2.5.6-2ubuntu0.24.04.5`. KB5129195 stays missing on its ticket. Ticket 2 stays "Disk 20% on vps3231588", open, with no comments. Org 2 still has no tickets. `thermald` was not installed. The Windows PC was not rebooted.
+
+**Smoke:** After the next heartbeats, Digital Fingers has no new ticket. `thermald` is still on its ticket and is still `2.5.6-2ubuntu0.24.04.5`. KB5129195 is still missing and still on its ticket. Ticket 2 is still "Disk 20% on vps3231588" and still open. Org 2 still has no tickets. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S45 — Email on a new ticket
+
+**Status:** Passed, 2 Oct 2026.
+
+A new ticket mails `admin@digitalfingers.co.za` through `mail.digitalfingers.co.za`. Tickets that already exist are not mailed. The mail password is in `/root/df-mail.env` on Contabo A, mode 600. It is not in git and it is not in this log. Ticket "Mail check" sent one message and is resolved. Ticket 2 stays "Disk 20% on vps3231588" and open. Org 2 sent nothing.
+
+**Smoke:** One new ticket sends one message and is then resolved. "Disk 20% on vps3231588" stays open and does not send a message. Org 2 sends nothing. The mail password is not in git or this log. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+## Desk — say what is true
+
+Starts only after S45. These steps put the live source on GitHub, clear an offline ticket when the device is back, mail a breach once, show the audit, and put the clock in the daily file. A step is finished only when its smoke test passes. None of these steps has started. Mesh password rotation stays out until asked.
+
+### S46 — GitHub backup of S42–S45
+
+**Status:** Not started.
+
+The dump scripts, Mesh archive, one missing-update ticket, and new-ticket mail are running on the servers. GitHub `main` is still `ec0a093`, which stops at the SLA clock. The push happens only when asked. Dump files, the Mesh archive, and the mail password stay out of git.
+
+**Smoke:** GitHub `main` contains those scripts and the mail path, and matches this tree. A search of that commit finds no live passwords, private keys, or database URLs. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S47 — Device is back
+
+**Status:** Not started.
+
+A heartbeat from a device that is online resolves the open ticket "Offline on {hostname}" for that device. It does not resolve a missing-update ticket. It does not resolve "Disk 20% on vps3231588". It does not send a message. The agent is not stopped for this check.
+
+**Smoke:** "Offline on vps3231588" and "Offline on FED-WIN-001" are resolved after the next heartbeats. "Missing thermald on vps3231588" and the KB5129195 ticket stay open. Ticket 2 stays open. No new ticket is opened. Org 2 still has no tickets. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S48 — One breach message
+
+**Status:** Not started.
+
+When a response or resolve clock passes its target, one message goes to `admin@digitalfingers.co.za`. A later sweep does not send that message again. Tickets that were already past the target before this step, including "Disk 20% on vps3231588", are not mailed. The targets stay 30 and 240. Org 2 sends nothing.
+
+**Smoke:** One new ticket that is already past 30 minutes sends one message and is then resolved. A second sweep sends nothing more. Ticket 2 stays open and sends nothing. Org 2 sends nothing. The mail password is not in git or this log. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S49 — Audit in the console
+
+**Status:** Not started.
+
+An admin and a technician can open the audit for their own org. The list shows `ticket.mail` and does not show a password. A technician still cannot run a shell. Org 2 does not see Digital Fingers events.
+
+**Smoke:** The console shows the mail audit for "Mail check" and no password. `tech@digitalfingers.co.za` can open that list and a shell still returns 403. Org 2 sees none of those rows. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S50 — Clock in the daily CSV
+
+**Status:** Not started.
+
+The next daily file shows the elapsed response and resolve clocks for open tickets, the same numbers as the dashboard. The schedule stays once a day. Stored files stay within 30. The schedule is not put back to one minute.
+
+**Smoke:** The stored file names ticket 2 and the same response and resolve clocks as the dashboard. The next file is still about a day away. The file count is within 30. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
 ## Phase 4 — Patch
 
 Starts only after S22. License flag: `patch`.
@@ -497,10 +595,20 @@ Starts only after S35. Each step joins the modules already built. Do not start a
 | S38 | One path for the work | Offline, a missing update, and an alert each attach to a ticket for that customer and device. Remote and the OS command stay on the ticket. The portal agent is active again at the end |
 | S39 | Roles that limit actions | A tech cannot run a shell or approve a patch. An admin still can. Org 2 stays behind its license |
 | S40 | SLA clock | The open ticket and the dashboard show the same response and resolve clocks against 30 and 240 minutes |
+| S41 | GitHub backup of S36–S40 | GitHub `main` is `ec0a093`, with no live secrets |
+| S42 | Postgres dump | A dump of `df_platform` is stored on Contabo A, not in git, and the live database stays up |
+| S43 | Mesh dump | A Mesh archive is stored on Contabo B, Mesh still answers, and both devices remain |
+| S44 | One missing-update ticket | Another heartbeat does not open a new ticket. `thermald` and KB5129195 stay on the tickets they already have |
+| S45 | Email on a new ticket | One new ticket sends one message and is resolved. Existing tickets are not mailed. Org 2 sends nothing |
+| S46 | GitHub backup of S42–S45 | GitHub `main` contains the dumps, the Mesh archive, the one missing ticket, and new-ticket mail, with no live secrets |
+| S47 | Device is back | The two offline tickets are resolved. Missing updates and ticket 2 stay open |
+| S48 | One breach message | One past-due ticket sends one message and is resolved. Ticket 2 sends nothing |
+| S49 | Audit in the console | The mail audit is visible. A technician still cannot run a shell. Org 2 sees only itself |
+| S50 | Clock in the daily CSV | The daily file shows the same clocks as the dashboard. The schedule stays once a day |
 
 ## Later
 
-Email notification and a Postgres plus Mesh dump follow S40. OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full PSA billing stay out of this sequence. Mesh password rotation stays out until asked.
+OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full PSA billing stay out of this sequence. Mesh password rotation stays out until asked. Seats are displayed and not enforced. Contabo A and Contabo B are not enrolled devices. The older missing-update tickets stay as they are.
 
 ## Smoke log
 
@@ -547,3 +655,13 @@ Email notification and a Postgres plus Mesh dump follow S40. OpenClaw, white-lab
 | S38 | 2026-10-02 | Pass | Disk alert stays on "Disk 20% on vps3231588" for Digital Fingers office. "Missing thermald on vps3231588" is open for that customer and device. `thermald` is still `2.5.6-2ubuntu0.24.04.5`. Stopping `df-agent` opened "Offline on vps3231588". The agent is active again and last seen is 02 Oct 2026, 09:04. Tickets open remote. Command is `ver` on `FED-WIN-001` and `uname -srm` on `vps3231588`. Org 2 ticketing returns 403. SSH works on all three hosts. API health ok. |
 | S39 | 2026-10-02 | Pass | `tech@digitalfingers.co.za` sees both devices and the tickets, including Open remote, and does not see Second Test Org. A shell and a patch approval return 403. `job.deny` and `patch.deny` are by that technician, reason `role`. The console admin ran `uname -srm` on `vps3231588`; job 8 stored `Linux 6.8.0-146-generic x86_64`. Org 2 ticketing and patch approval stay denied by its license. The admin license report still lists both orgs. SSH works on all three hosts. API health ok. |
 | S40 | 2026-10-02 | Pass | Ticket "Disk 20% on vps3231588" stays open and shows Response 663 of 30 minutes and Resolve 663 of 240 minutes. The dashboard shows the same clock after reload. Targets on the tickets page stay 30 and 240. Org 2 has no SLA. SSH works on all three hosts. API health ok. |
+| S41 | 2026-10-02 | Pass | GitHub `main` is `ec0a093`. The API, console, and agent match that commit. A search found no live passwords, private keys, or database URLs. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S42 | 2026-10-02 | Pass | Two dumps of `df_platform` are on Contabo A, mode 600. `pg_restore --list` shows `orgs`, `devices`, and `tickets`. The second run left the first file in place. The files are not in git. Contabo B has no dump and still accepts the API. Org 2 has no devices. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S43 | 2026-10-02 | Pass | One Mesh archive is on Contabo B, mode 600, and contains `meshcentral.db`. It is not in git. `https://mesh.digitalfingers.co.za` returned HTTP 200. `vps3231588` and `FED-WIN-001` still show in the console. The Mesh password was not printed and was not rotated. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S44 | 2026-10-02 | Pass | After the next heartbeats Digital Fingers still has nine tickets. `thermald` is still `2.5.6-2ubuntu0.24.04.5` on "Missing thermald on vps3231588". KB5129195 is still missing on its ticket. Ticket 2 is still "Disk 20% on vps3231588" and still open. Org 2 still has no tickets. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S45 | 2026-10-02 | Pass | Ticket "Mail check" sent one message to `admin@digitalfingers.co.za` and is resolved. Ticket 2 is still "Disk 20% on vps3231588" and still open. Org 2 sent nothing. The mail password is mode 600 and is not in git or this log. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S46 | | Not run | Waiting for GitHub `main` to contain the live source through S45. |
+| S47 | | Not run | Waiting for the offline tickets to resolve when the devices are back. |
+| S48 | | Not run | Waiting for one past-due ticket to send one message. |
+| S49 | | Not run | Waiting for the audit list in the console. |
+| S50 | | Not run | Waiting for the daily file to show the clocks. |

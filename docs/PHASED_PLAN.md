@@ -158,7 +158,29 @@ Starts only after S35. These steps join the modules already built. Each step fin
 | S39 | Roles that limit actions | A tech cannot run a shell or approve a patch. An admin still can |
 | S40 | SLA clock | The open ticket and the dashboard show the same clocks against 30 and 240 minutes |
 
-Email notification and a Postgres plus Mesh dump follow S40.
+## Operations — keep it and tell someone
+
+Starts only after S40. S41 through S45 have passed. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+
+| Step | Work | Smoke pass |
+|------|------|------------|
+| S41 | GitHub backup of S36–S40 | GitHub `main` is `ec0a093`, with no live secrets |
+| S42 | Postgres dump | A dump of the live database is stored on Contabo A and is not in git |
+| S43 | Mesh dump | A Mesh archive is stored on Contabo B. Mesh still answers. Both devices remain |
+| S44 | One missing-update ticket | A heartbeat does not open another ticket. `thermald` and KB5129195 stay where they are |
+| S45 | Email on a new ticket | One new ticket sends one message and is resolved. Existing tickets are not mailed |
+
+## Desk — say what is true
+
+Starts only after S45. These steps are drafted and have not started. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+
+| Step | Work | Smoke pass |
+|------|------|------------|
+| S46 | GitHub backup of S42–S45 | GitHub `main` contains the dumps, the Mesh archive, the one missing ticket, and new-ticket mail, with no live secrets |
+| S47 | Device is back | The two offline tickets are resolved. Missing updates and ticket 2 stay open |
+| S48 | One breach message | One past-due ticket sends one message and is resolved. Ticket 2 sends nothing |
+| S49 | Audit in the console | The mail audit is visible. A technician still cannot run a shell. Org 2 sees only itself |
+| S50 | Clock in the daily CSV | The daily file shows the same clocks as the dashboard. The schedule stays once a day |
 
 ---
 
@@ -198,5 +220,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S40 have passed.
-2. Email notification and a Postgres plus Mesh dump follow S40. They have not started. Do not start them until asked.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S45 have passed. S46 through S50 are drafted and have not started.
+2. Continue at **S46 GitHub backup of S42–S45** when asked. Do not start a step whose previous smoke test failed.

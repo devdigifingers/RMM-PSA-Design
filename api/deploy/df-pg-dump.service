@@ -1,0 +1,12 @@
+[Unit]
+Description=Digital Fingers Postgres dump
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/root/df-platform-db.env
+ExecStart=/opt/df-api/scripts/dump-db.sh
+NoNewPrivileges=true

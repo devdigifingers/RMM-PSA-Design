@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import Redis from "ioredis";
 import { pool } from "./db.js";
+import { sendMail } from "./mail.js";
 import { verifyPassword } from "./passwords.js";
 
 const MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
@@ -435,7 +436,32 @@ async function openWorkTicket(orgId, customerId, deviceId, subject, detail) {
     priority: "normal",
     ...detail,
   });
+  await notifyNewTicket(orgId, created.rows[0].id, subject);
   return Number(created.rows[0].id);
+}
+
+async function notifyNewTicket(orgId, ticketId, subject) {
+  const to = String(process.env.MAIL_TO || "").trim();
+  if (!to) return;
+  try {
+    const sent = await sendMail({
+      to,
+      subject,
+      text: `A new ticket is open: ${subject}\nhttps://rmm.digitalfingers.co.za/tickets/${ticketId}\n`,
+    });
+    if (!sent) return;
+    await writeAudit(orgId, null, "ticket.mail", "ticket", String(ticketId), {});
+  } catch {
+    console.error("ticket mail failed");
+  }
+}
+
+function missingSubject(name, hostname) {
+  return `Missing ${name} on ${hostname}`.slice(0, 200);
+}
+
+function missingNote(name) {
+  return `Missing ${name}.`;
 }
 
 async function attachMissingTickets(deviceId) {
@@ -462,9 +488,46 @@ async function attachMissingTickets(deviceId) {
     row.software,
     succeeded.rows.map((item) => item.package_name),
   );
-  for (const name of missing) {
-    const subject = `Missing ${name} on ${row.hostname}`.slice(0, 200);
-    await openWorkTicket(row.org_id, row.customer_id, row.id, subject, {
+  if (missing.length === 0) return;
+  const open = await pool.query(
+    `SELECT id, subject FROM tickets
+     WHERE org_id = $1 AND customer_id = $2 AND device_id = $3
+       AND status <> 'resolved' AND subject LIKE 'Missing %'
+     ORDER BY id ASC`,
+    [row.org_id, row.customer_id, row.id],
+  );
+  const notes = open.rows.length
+    ? await pool.query(
+      "SELECT body FROM ticket_comments WHERE ticket_id = ANY($1::bigint[])",
+      [open.rows.map((item) => Number(item.id))],
+    )
+    : { rows: [] };
+  const covered = new Set([
+    ...open.rows.map((item) => item.subject),
+    ...notes.rows.map((item) => item.body),
+  ]);
+  const fresh = missing.filter((name) => {
+    return !covered.has(missingSubject(name, row.hostname)) && !covered.has(missingNote(name));
+  });
+  if (fresh.length === 0) return;
+  let ticketId = open.rows[0] ? Number(open.rows[0].id) : null;
+  if (!ticketId) {
+    ticketId = await openWorkTicket(
+      row.org_id,
+      row.customer_id,
+      row.id,
+      `Missing updates on ${row.hostname}`.slice(0, 200),
+      { reason: "missing" },
+    );
+  }
+  if (!ticketId) return;
+  for (const name of fresh) {
+    await pool.query(
+      `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
+       VALUES ($1, $2, NULL, $3)`,
+      [row.org_id, ticketId, missingNote(name)],
+    );
+    await writeAudit(row.org_id, null, "ticket.comment", "ticket", String(ticketId), {
       reason: "missing",
       packageName: name,
     });
@@ -1594,6 +1657,7 @@ const server = createServer(async (req, res) => {
           status: "open",
           priority: "high",
         });
+        await notifyNewTicket(actor.org_id, ticket.rows[0].id, subject);
         return send(res, 201, { id: Number(ticket.rows[0].id) });
       } catch (error) {
         try {
@@ -1979,6 +2043,7 @@ const server = createServer(async (req, res) => {
           priority,
           assigneeUserId,
         });
+        await notifyNewTicket(actor.org_id, ticket.rows[0].id, subject);
         return send(res, 201, { id: Number(ticket.rows[0].id) });
       } catch (error) {
         try {

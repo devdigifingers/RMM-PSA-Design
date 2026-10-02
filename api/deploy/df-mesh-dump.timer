@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Digital Fingers MeshCentral archive
+
+[Timer]
+OnCalendar=*-*-* 03:45:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

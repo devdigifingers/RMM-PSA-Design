@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Digital Fingers Postgres dump
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

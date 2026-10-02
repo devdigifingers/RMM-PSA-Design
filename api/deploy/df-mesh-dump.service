@@ -1,0 +1,11 @@
+[Unit]
+Description=Digital Fingers MeshCentral archive
+After=network-online.target meshcentral.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/df-api/scripts/dump-mesh.sh
+NoNewPrivileges=true

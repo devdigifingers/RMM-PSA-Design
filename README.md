@@ -6,7 +6,7 @@ Self-hosted, multi-tenant remote monitoring & management with **MeshCentral** as
 
 **Planning complete (2026-10-01).** Servers are online, patched, and reachable by SSH.  
 **GitHub:** https://github.com/devdigifingers/RMM-PSA-Design  
-S30 reporting gate passed. S31 is the GitHub backup of that work. Push the local commits to finish it.
+S35 command that fits the OS passed. The sequence through S35 is complete.
 
 | Doc | Contents |
 |-----|----------|

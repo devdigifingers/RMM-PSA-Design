@@ -9,6 +9,7 @@ const MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
 const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
+const EXPORT_HISTORY_LIMIT = 30;
 const port = Number(process.env.PORT || 4000);
 
 const redis = new Redis({
@@ -585,7 +586,7 @@ function dashboardCsv(snapshot) {
 
 async function latestExport(orgId) {
   const result = await pool.query(
-    `SELECT s.interval_minutes,
+    `SELECT s.interval_minutes, s.next_run_at,
             r.id, r.produced_at, r.device_count, r.open_ticket_count,
             r.response_minutes, r.resolve_minutes, r.patched_count, r.missing_count, r.csv
      FROM report_schedules s
@@ -604,6 +605,7 @@ async function latestExport(orgId) {
   if (!row) return null;
   return {
     intervalMinutes: row.interval_minutes,
+    nextInHours: Math.max(0, Math.floor((new Date(row.next_run_at).getTime() - Date.now()) / 3600000)),
     latest: row.id == null ? null : {
       id: Number(row.id),
       producedAt: row.produced_at,
@@ -674,6 +676,16 @@ async function runDueExports() {
             built.patched,
             built.missing,
           ],
+        );
+        await client.query(
+          `DELETE FROM report_runs
+           WHERE id IN (
+             SELECT id FROM report_runs
+             WHERE org_id = $1
+             ORDER BY id DESC
+             OFFSET $2
+           )`,
+          [schedule.org_id, EXPORT_HISTORY_LIMIT],
         );
         await client.query("COMMIT");
         await writeAudit(schedule.org_id, null, "report.export", "report_run", String(run.rows[0].id), {
@@ -823,6 +835,9 @@ const server = createServer(async (req, res) => {
     const orgMatch = url.pathname.match(/^\/v1\/orgs\/(\d+)$/);
     if (req.method === "GET" && orgMatch) {
       if (!requireActor(actor, res)) return;
+      if (!actor.is_platform_admin && String(actor.org_id || "") !== orgMatch[1]) {
+        return send(res, 404, { error: "Org not found." });
+      }
       const result = await pool.query(
         `SELECT o.id, o.name, o.slug, o.created_at, l.plan, l.seats, l.device_cap, l.expires_at, l.modules
          FROM orgs o
@@ -844,13 +859,15 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/v1/orgs") {
       if (!requireActor(actor, res)) return;
       const slug = url.searchParams.get("slug");
+      const orgId = actor.is_platform_admin ? null : actor.org_id || 0;
       const result = await pool.query(
         `SELECT o.id, o.name, o.slug, l.device_cap, l.modules
          FROM orgs o
          JOIN licenses l ON l.org_id = o.id
-         WHERE ($1::text IS NULL OR o.slug = $1)
+         WHERE ($1::bigint IS NULL OR o.id = $1)
+           AND ($2::text IS NULL OR o.slug = $2)
          ORDER BY o.id`,
-        [slug],
+        [orgId, slug],
       );
       return send(res, 200, {
         orgs: result.rows.map((row) => ({
@@ -1845,14 +1862,16 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/v1/audit") {
       if (!requireActor(actor, res)) return;
       const action = url.searchParams.get("action");
+      const orgId = actor.is_platform_admin ? null : actor.org_id || 0;
       const result = await pool.query(
         `SELECT e.id, e.org_id, e.actor_user_id, u.email AS actor_email, e.action, e.target_type, e.target_id, e.detail, e.created_at
          FROM audit_events e
          LEFT JOIN users u ON u.id = e.actor_user_id
-         WHERE ($1::text IS NULL OR e.action = $1)
+         WHERE ($1::bigint IS NULL OR e.org_id = $1)
+           AND ($2::text IS NULL OR e.action = $2)
          ORDER BY e.id DESC
          LIMIT 50`,
-        [action],
+        [orgId, action],
       );
       return send(res, 200, { events: result.rows });
     }

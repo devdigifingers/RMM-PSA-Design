@@ -182,5 +182,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S30 have passed.
-2. Finish **S31** by pushing the local backup so GitHub `main` matches the live API, console, and agent. Do not start S32 until that smoke passes.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S35 have passed.
+2. The sequence through S35 is complete. Do not start Mesh password rotation or later work until asked.

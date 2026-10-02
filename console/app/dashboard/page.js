@@ -95,7 +95,11 @@ export default async function DashboardPage() {
         {schedule ? (
           latest ? (
             <>
-              <p className="org-name">CSV every {schedule.intervalMinutes} {schedule.intervalMinutes === 1 ? "minute" : "minutes"}.</p>
+              <p className="org-name">
+                {schedule.intervalMinutes === 1440
+                  ? `CSV once a day. Next file in ${schedule.nextInHours} hours.`
+                  : `CSV every ${schedule.intervalMinutes} ${schedule.intervalMinutes === 1 ? "minute" : "minutes"}.`}
+              </p>
               <ul className="updates">
                 <li>{`Devices ${latest.deviceCount}`}</li>
                 <li>{`Open tickets ${latest.openTicketCount}`}</li>
@@ -117,7 +121,7 @@ export default async function DashboardPage() {
             <form className="stack" action={scheduleExport}>
               <label>
                 Every minutes
-                <input name="intervalMinutes" type="number" min={1} max={1440} defaultValue={1} required />
+                <input name="intervalMinutes" type="number" min={1} max={1440} defaultValue={1440} required />
               </label>
               <button type="submit">Schedule export</button>
             </form>

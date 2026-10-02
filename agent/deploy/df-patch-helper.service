@@ -1,0 +1,12 @@
+[Unit]
+Description=Digital Fingers package install helper
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/df-patch-helper.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -84,7 +84,7 @@ export default async function DevicesPage({ searchParams }) {
               <input type="hidden" name="deviceId" value={device.id} />
               <label>
                 Command
-                <input name="command" defaultValue="uname -srm" required />
+                <input name="command" defaultValue={defaultCommand(device.osName)} required />
               </label>
               <button type="submit">Run</button>
             </form>
@@ -96,6 +96,10 @@ export default async function DevicesPage({ searchParams }) {
       </main>
     </div>
   );
+}
+
+function defaultCommand(osName) {
+  return /windows/i.test(osName || "") ? "ver" : "uname -srm";
 }
 
 function remoteNote(reason) {

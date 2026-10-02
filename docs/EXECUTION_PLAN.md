@@ -59,7 +59,11 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | Scheduled export | Passed (S28). A CSV for Digital Fingers matches the dashboard counts |
 | License usage | Passed (S29). Digital Fingers has 25 seats and 2 devices. Second Test Org has 5 seats and 0 devices |
 | Reporting gate | Passed (S30). Second Test Org cannot open the dashboard or the export. Digital Fingers still can |
-| GitHub backup of S15–S30 | In progress (S31). The local commit holds the live API, console, and agent. It passes when GitHub `main` matches |
+| GitHub backup of S15–S30 | Passed (S31). GitHub `main` is `e5f566e`, with no live secrets |
+| Scoped reads | Passed (S32). Second Test Org sees only itself. The platform admin still sees both orgs |
+| Daily export | Passed (S33). The CSV is once a day, still matches the dashboard, and 23 files are kept |
+| Linux install helper | Passed (S34). `libxpm4` upgraded. The agent still cannot use sudo and keeps NoNewPrivileges |
+| Command that fits the OS | Passed (S35). `FED-WIN-001` starts with `ver`. `vps3231588` starts with `uname -srm` |
 
 Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate.
 
@@ -366,11 +370,43 @@ An org with `reporting` off has no Dashboard link. Opening the dashboard or the 
 
 ### S31 — GitHub backup of S15–S30
 
-**Status:** In progress 2026-10-02.
+**Status:** Passed 2026-10-02.
 
 Copy the live API, console, agent, and this plan through S30 to GitHub. The commit must not contain live passwords, private keys, or database URLs.
 
-**Smoke:** GitHub `main` contains the service desk, monitoring, patch, and reporting source, and this file records S0–S30 as passed. A search of the commit finds no live passwords, private keys, or database URLs with credentials.
+**Smoke:** GitHub `main` is `e5f566e`. It matches local `main` and contains the service desk, monitoring, patch, and reporting source. This file in that commit records S0–S30 as passed. A search of `e5f566e` found no live passwords, private keys, or database URLs with credentials.
+
+### S32 — Scoped org and audit reads
+
+**Status:** Passed 2026-10-02.
+
+A user sees only their own org in the org list and only that org's audit events. A platform admin still sees every org. Looking up another org returns not found. The Digital Fingers license report still lists both orgs.
+
+**Smoke:** `second@digitalfingers.co.za` received only Second Test Org. Org 1 returned 404. Audit events were org 2 only. The dashboard and license report stayed closed. `console@digitalfingers.co.za` received only Digital Fingers in the org list, audit events were org 1 only, and org 2 returned 404. The dashboard still showed 2 devices and the CSV. The license report still listed Digital Fingers at 25 seats and 2 devices, and Second Test Org at 5 seats and 0 devices. The platform admin received both orgs and audit events for org 1 and org 2. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S33 — Daily export
+
+**Status:** Passed 2026-10-02.
+
+The Digital Fingers export runs once a day. Stored files stay at 30 or fewer. The latest file still matches the dashboard counts.
+
+**Smoke:** The dashboard says "CSV once a day. Next file in 23 hours." That line remained after reload. The file still shows 2 devices, 1 open ticket, response 30 minutes, resolve 240 minutes, 2 patched, and 3 missing, matching the dashboard. 23 files are stored, which is inside the limit of 30. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S34 — Allowlisted Linux install
+
+**Status:** Passed 2026-10-02.
+
+A root helper upgrades one package name. The agent asks the helper over a local socket. The agent stays `dfagent` with `NoNewPrivileges`. It has no sudo. A name that is not a package is rejected.
+
+**Smoke:** `libxpm4` on `vps3231588` succeeded and is now `1:3.5.17-1ubuntu0.24.04.2`. The deploy row stayed succeeded after reload. Compliance shows `libxpm4` patched and `thermald` still missing. `thermald` is still `2.5.6-2ubuntu0.24.04.5`. A request for "not a package" was rejected. `sudo -n` for `dfagent` still asks for a password. `NoNewPrivileges` is still yes. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S35 — Command that fits the OS
+
+**Status:** Passed 2026-10-02.
+
+A Windows device starts with `ver`. Any other device starts with `uname -srm`.
+
+**Smoke:** `FED-WIN-001` is Microsoft Windows 11 Pro. Its command box is `ver`. The run returned `Microsoft Windows [Version 10.0.26200.9278]`, and that line remained after reload. `vps3231588` is Ubuntu 24.04.5 LTS. Its command box is `uname -srm`. The run returned `Linux 6.8.0-146-generic x86_64`, and that line remained after reload. SSH works on all three hosts. API health reports Postgres and Redis ok.
 
 ## Phase 4 — Patch
 
@@ -394,6 +430,10 @@ Starts only after S26. License flag: `reporting`. Uses events from earlier phase
 | S29 | License usage | A report lists seats and devices for org 1 and the second org |
 | S30 | Module gate | An org without `reporting` cannot open the dashboard or the export |
 | S31 | GitHub backup | `main` matches the live API, console, agent, and this plan through S30, with no live secrets |
+| S32 | Scoped reads | An org user sees only that org. A platform admin still sees every org |
+| S33 | Daily export | The latest CSV matches the dashboard. The next run is a day away. Stored files stay within 30 |
+| S34 | Allowlisted Linux install | One named package records success or a clear failure. The agent keeps NoNewPrivileges and has no sudo |
+| S35 | Command that fits the OS | A Windows device runs `ver`. A Linux device still runs `uname -srm` |
 
 ## Later
 
@@ -434,4 +474,8 @@ OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are o
 | S28 | 2026-10-02 | Pass | A scheduled CSV for Digital Fingers matches the dashboard: 2 devices, 1 open ticket, SLA 30 and 240, 2 patched, 3 missing. Download is `dashboard.csv`. SSH works on all three hosts. API health ok. |
 | S29 | 2026-10-02 | Pass | License usage lists Digital Fingers at 25 seats and 2 devices, cap 500, and Second Test Org at 5 seats and 0 devices, cap 12. The device list still shows 2 enrolled. SSH works on all three hosts. API health ok. |
 | S30 | 2026-10-02 | Pass | Second Test Org has no Dashboard link. Opening the dashboard and the export shows the license message. Schedule returned 403 and `reporting.deny` reason `module`. Digital Fingers still opens the dashboard and the CSV. SSH works on all three hosts. API health ok. |
-| S31 | | Not run | Waiting for this backup commit to be on GitHub `main`. |
+| S31 | 2026-10-02 | Pass | GitHub `main` is `e5f566e` and matches local `main`. It has the API, console, and agent through the reporting gate. A search of that commit found no live passwords, private keys, or database URLs. |
+| S32 | 2026-10-02 | Pass | Second Test Org sees only itself. Org 1 is not found. Audit events are org 2 only. Digital Fingers still opens the dashboard, the CSV, and the license report for both orgs. The platform admin sees both orgs and both audit orgs. SSH works on all three hosts. API health ok. |
+| S33 | 2026-10-02 | Pass | Digital Fingers CSV is once a day, next file in 23 hours, and still matches the dashboard: 2 devices, 1 open ticket, SLA 30 and 240, 2 patched, 3 missing. 23 files are stored, inside the limit of 30. SSH works on all three hosts. API health ok. |
+| S34 | 2026-10-02 | Pass | `libxpm4` on `vps3231588` upgraded to `1:3.5.17-1ubuntu0.24.04.2`. `thermald` was not changed. The agent user is `dfagent`, `NoNewPrivileges` is yes, and sudo still asks for a password. SSH works on all three hosts. API health ok. |
+| S35 | 2026-10-02 | Pass | `FED-WIN-001` command is `ver` and returned `Microsoft Windows [Version 10.0.26200.9278]`. `vps3231588` command is `uname -srm` and returned `Linux 6.8.0-146-generic x86_64`. Both lines remained after reload. SSH works on all three hosts. API health ok. |

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -240,25 +241,42 @@ func installDeploy(name string) (bool, string) {
 	if !aptPackageName(name) {
 		return false, "That package name cannot be installed."
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "--only-upgrade", name)
-	cmd.Env = []string{"DEBIAN_FRONTEND=noninteractive", "LANG=C", "PATH=/usr/bin:/bin"}
+	conn, err := net.DialTimeout("unix", "/run/df-patch-helper.sock", 3*time.Second)
+	if err != nil {
+		return false, "The install helper is not available."
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
+	if _, err := conn.Write([]byte(name + "\n")); err != nil {
+		return false, "The install helper did not accept the package."
+	}
 	var buf bytes.Buffer
-	cmd.Stdout = &limitedWriter{buf: &buf, max: 2000}
-	cmd.Stderr = cmd.Stdout
-	err := cmd.Run()
-	detail := strings.TrimSpace(buf.String())
-	if err == nil {
+	tmp := make([]byte, 512)
+	for buf.Len() < 2000 {
+		n, readErr := conn.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	text := buf.String()
+	if strings.HasPrefix(text, "ok\n") {
+		detail := strings.TrimSpace(strings.TrimPrefix(text, "ok\n"))
 		if detail == "" {
 			detail = "Installed."
 		}
 		return true, detail
 	}
-	if detail == "" {
-		detail = err.Error()
+	if strings.HasPrefix(text, "fail\n") {
+		detail := strings.TrimSpace(strings.TrimPrefix(text, "fail\n"))
+		if detail == "" {
+			detail = "The install failed."
+		}
+		return false, detail
 	}
-	return false, detail
+	return false, "The install helper returned an unexpected result."
 }
 
 func aptPackageName(name string) bool {

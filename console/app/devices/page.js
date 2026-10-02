@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { logout, runJob } from "../actions";
+import { runJob } from "../actions";
+import { ConsoleBar } from "../bar";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -20,18 +21,25 @@ export default async function DevicesPage({ searchParams }) {
 
   return (
     <div className="console">
-      <header className="topbar">
-        <img className="wordmark" src="/brand/wordmark-silver.png" alt="Digital Fingers" />
-        <form action={logout}>
-          <button type="submit">Sign out</button>
-        </form>
-      </header>
+      <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
       <main className="main">
         <h1>Devices</h1>
         <p className="org-name">
           {body.org?.name || "Your organisation"} · {body.deviceCount || 0} enrolled
         </p>
         {remoteNote(body.remoteReason)}
+        {params?.error === "ticket" && body.canTicket === false ? (
+          <p className="org-name">Ticketing is not included on this license.</p>
+        ) : null}
+        {params?.error === "monitor" && body.canMonitor === false ? (
+          <p className="org-name">Monitoring is not included on this license.</p>
+        ) : null}
+        {params?.error === "patch" && body.canPatch === false ? (
+          <p className="org-name">Patch management is not included on this license.</p>
+        ) : null}
+        {params?.error === "report" && body.canReport === false ? (
+          <p className="org-name">Reporting is not included on this license.</p>
+        ) : null}
         {params?.error === "remote" && !body.remoteReason ? (
           <p className="error">Remote desktop is not available on this license.</p>
         ) : null}
@@ -70,6 +78,8 @@ export default async function DevicesPage({ searchParams }) {
         {devices.map((device) => (
           <section className="job" key={`job-${device.id}`}>
             <h2>{device.hostname}</h2>
+            {body.canMonitor && device.metrics ? <p className="org-name">{formatMetrics(device.metrics)}</p> : null}
+            {body.canPatch ? <UpdateList updates={device.updates} /> : null}
             <form action={runJob}>
               <input type="hidden" name="deviceId" value={device.id} />
               <label>
@@ -101,4 +111,47 @@ function formatSeen(value) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function UpdateList({ updates }) {
+  if (!Array.isArray(updates)) return <p className="org-name">Updates have not been collected yet.</p>;
+  if (updates.length === 0) return <p className="org-name">No updates waiting.</p>;
+  return (
+    <ul className="updates">
+      {updates.map((item) => (
+        <li key={`${item.name} ${item.availableVersion}`}>{formatUpdate(item)}</li>
+      ))}
+    </ul>
+  );
+}
+
+function formatUpdate(item) {
+  if (item.currentVersion && item.availableVersion) {
+    return `${item.name} ${item.currentVersion} → ${item.availableVersion}`;
+  }
+  if (item.availableVersion && !String(item.name).includes(item.availableVersion)) {
+    return `${item.name} (${item.availableVersion})`;
+  }
+  return item.name;
+}
+
+function formatMetrics(metrics) {
+  return `CPU ${metrics.cpuPercent}%. Memory ${metrics.memoryPercent}% (${formatBytes(metrics.memoryUsedBytes)} of ${formatBytes(metrics.memoryTotalBytes)}). Disk ${metrics.diskPercent}% (${formatBytes(metrics.diskUsedBytes)} of ${formatBytes(metrics.diskTotalBytes)}). Uptime ${formatUptime(metrics.uptimeSeconds)}.`;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  return `${Math.round(bytes / 1024 ** 2)} MB`;
+}
+
+function formatUptime(value) {
+  const seconds = Number(value) || 0;
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const minuteLabel = minutes === 1 ? "minute" : "minutes";
+  if (days > 0) return `${days} ${days === 1 ? "day" : "days"} ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  if (hours > 0) return `${hours} ${hours === 1 ? "hour" : "hours"} ${minutes} ${minuteLabel}`;
+  return `${minutes} ${minuteLabel}`;
 }

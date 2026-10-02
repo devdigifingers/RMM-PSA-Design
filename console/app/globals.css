@@ -104,7 +104,38 @@ button {
 
 .topbar .wordmark { width: 180px; }
 
+.brand-nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.nav {
+  display: flex;
+  gap: 16px;
+}
+
+.nav a {
+  color: var(--muted);
+  font-weight: 600;
+  text-decoration: none;
+}
+
 .topbar form { margin: 0; }
+
+select, textarea {
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--navy);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+textarea {
+  min-height: 88px;
+  resize: vertical;
+}
 
 a.remote {
   display: inline-flex;
@@ -174,9 +205,22 @@ th {
   font-weight: 600;
 }
 
+.updates {
+  margin: 8px 0 16px;
+  padding-left: 18px;
+}
+
+.updates li {
+  margin: 4px 0;
+}
+
 .job form {
   grid-template-columns: 1fr auto;
   align-items: end;
+}
+
+.job form.stack {
+  grid-template-columns: 1fr;
 }
 
 .job button {

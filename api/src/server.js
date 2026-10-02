@@ -6,6 +6,8 @@ import { pool } from "./db.js";
 import { verifyPassword } from "./passwords.js";
 
 const MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
+const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
+const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 const port = Number(process.env.PORT || 4000);
 
@@ -166,6 +168,532 @@ function remoteAccess(row) {
   if (licenseExpired(row)) return { canRemote: false, remoteReason: "expired" };
   if (row?.modules?.remote_desktop !== true) return { canRemote: false, remoteReason: "module" };
   return { canRemote: true, remoteReason: null };
+}
+
+function ticketingReason(row) {
+  if (licenseExpired(row)) return "expired";
+  if (row?.modules?.ticketing !== true) return "module";
+  return null;
+}
+
+function metricsFrom(body) {
+  const raw = body?.metrics;
+  if (!raw || typeof raw !== "object") return null;
+  const cpuPercent = boundedCount(raw.cpuPercent, 100);
+  const memoryPercent = boundedCount(raw.memoryPercent, 100);
+  const diskPercent = boundedCount(raw.diskPercent, 100);
+  const memoryUsedBytes = boundedCount(raw.memoryUsedBytes, Number.MAX_SAFE_INTEGER);
+  const memoryTotalBytes = boundedCount(raw.memoryTotalBytes, Number.MAX_SAFE_INTEGER);
+  const diskUsedBytes = boundedCount(raw.diskUsedBytes, Number.MAX_SAFE_INTEGER);
+  const diskTotalBytes = boundedCount(raw.diskTotalBytes, Number.MAX_SAFE_INTEGER);
+  const uptimeSeconds = boundedCount(raw.uptimeSeconds, 60 * 60 * 24 * 365 * 30);
+  const values = [cpuPercent, memoryPercent, diskPercent, memoryUsedBytes, memoryTotalBytes, diskUsedBytes, diskTotalBytes, uptimeSeconds];
+  if (values.some((value) => value == null) || memoryTotalBytes === 0 || diskTotalBytes === 0) return null;
+  return { cpuPercent, memoryPercent, memoryUsedBytes, memoryTotalBytes, diskPercent, diskUsedBytes, diskTotalBytes, uptimeSeconds };
+}
+
+function updatesFrom(body) {
+  if (!Object.hasOwn(body, "updates") || !Array.isArray(body.updates)) return null;
+  const items = [];
+  for (const raw of body.updates) {
+    if (!raw || typeof raw !== "object") continue;
+    const name = typeof raw.name === "string" ? raw.name.trim().slice(0, 200) : "";
+    if (!name) continue;
+    const currentVersion = typeof raw.currentVersion === "string" ? raw.currentVersion.trim().slice(0, 120) : "";
+    const availableVersion = typeof raw.availableVersion === "string" ? raw.availableVersion.trim().slice(0, 120) : "";
+    items.push({ name, currentVersion, availableVersion });
+    if (items.length >= 200) break;
+  }
+  return items;
+}
+
+function boundedCount(value, max) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0 || number > max) return null;
+  return number;
+}
+
+function ticketingAllowed(row) {
+  return ticketingReason(row) == null && Boolean(row);
+}
+
+function patchReason(row) {
+  if (licenseExpired(row)) return "expired";
+  if (row?.modules?.patch !== true) return "module";
+  return null;
+}
+
+function patchAllowed(row) {
+  return patchReason(row) == null && Boolean(row);
+}
+
+async function requirePatch(actor, res, options = {}) {
+  if (!requireActor(actor, res)) return false;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return false;
+  }
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [actor.org_id],
+  );
+  const reason = patchReason(license.rows[0]);
+  if (reason) {
+    if (options.deny) {
+      await writeAudit(actor.org_id, actor.id, "patch.deny", "org", String(actor.org_id), { reason });
+    }
+    send(res, 403, {
+      error: reason === "expired" ? "This license has expired." : "Patch management is not included on this license.",
+    });
+    return false;
+  }
+  return true;
+}
+
+function reportingReason(row) {
+  if (licenseExpired(row)) return "expired";
+  if (row?.modules?.reporting !== true) return "module";
+  return null;
+}
+
+function reportingAllowed(row) {
+  return reportingReason(row) == null && Boolean(row);
+}
+
+async function requireReporting(actor, res, options = {}) {
+  if (!requireActor(actor, res)) return false;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return false;
+  }
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [actor.org_id],
+  );
+  const reason = reportingReason(license.rows[0]);
+  if (reason) {
+    if (options.deny) {
+      await writeAudit(actor.org_id, actor.id, "reporting.deny", "org", String(actor.org_id), { reason });
+    }
+    send(res, 403, {
+      error: reason === "expired" ? "This license has expired." : "Reporting is not included on this license.",
+    });
+    return false;
+  }
+  return true;
+}
+
+function complianceFrom(devices, succeeded) {
+  const patchedByDevice = new Map();
+  for (const row of succeeded) {
+    const key = String(row.device_id);
+    const names = patchedByDevice.get(key) || [];
+    names.push(row.package_name);
+    patchedByDevice.set(key, names);
+  }
+  const groups = new Map();
+  for (const device of devices) {
+    const customerId = device.customer_id == null ? 0 : Number(device.customer_id);
+    if (!groups.has(customerId)) {
+      groups.set(customerId, {
+        id: customerId,
+        name: device.customer_name || "No customer",
+        devices: [],
+      });
+    }
+    const patched = patchedByDevice.get(String(device.id)) || [];
+    const installed = new Set(patched);
+    const inventory = Array.isArray(device.updates) ? device.updates : [];
+    const missing = [];
+    for (const item of inventory) {
+      const name = typeof item?.name === "string" ? item.name.trim() : "";
+      if (name && !installed.has(name)) missing.push(name);
+    }
+    groups.get(customerId).devices.push({
+      hostname: device.hostname,
+      patched,
+      missing,
+    });
+  }
+  return [...groups.values()];
+}
+
+function monitoringReason(row) {
+  if (licenseExpired(row)) return "expired";
+  if (row?.modules?.monitoring !== true) return "module";
+  return null;
+}
+
+function monitoringAllowed(row) {
+  return monitoringReason(row) == null && Boolean(row);
+}
+
+const ALERT_METRICS = { cpu: "cpuPercent", memory: "memoryPercent", disk: "diskPercent" };
+
+const ALERT_LABELS = { cpu: "CPU", memory: "Memory", disk: "Disk" };
+
+async function requireMonitoring(actor, res, options = {}) {
+  if (!requireActor(actor, res)) return false;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return false;
+  }
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [actor.org_id],
+  );
+  const reason = monitoringReason(license.rows[0]);
+  if (reason) {
+    if (options.deny) {
+      await writeAudit(actor.org_id, actor.id, "monitoring.deny", "org", String(actor.org_id), { reason });
+    }
+    const message = reason === "expired"
+      ? "This license has expired."
+      : "Monitoring is not included on this license.";
+    send(res, 403, { error: message });
+    return false;
+  }
+  return true;
+}
+
+async function evaluateAlerts(deviceId) {
+  const rules = await pool.query(
+    `SELECT r.id, r.org_id, r.device_id, r.metric, r.threshold, d.metrics
+     FROM alert_rules r
+     JOIN devices d ON d.id = r.device_id
+     WHERE r.device_id = $1`,
+    [deviceId],
+  );
+  for (const rule of rules.rows) {
+    const value = rule.metrics?.[ALERT_METRICS[rule.metric]];
+    if (!Number.isInteger(value) || value < rule.threshold) continue;
+    const existing = await pool.query("SELECT id FROM alerts WHERE rule_id = $1", [rule.id]);
+    if (existing.rows[0]) continue;
+    const created = await pool.query(
+      `INSERT INTO alerts (org_id, rule_id, device_id, metric, value, threshold)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [rule.org_id, rule.id, rule.device_id, rule.metric, value, rule.threshold],
+    );
+    await writeAudit(rule.org_id, null, "alert.fire", "alert", String(created.rows[0].id), {
+      ruleId: Number(rule.id),
+      deviceId: Number(rule.device_id),
+      metric: rule.metric,
+      value,
+      threshold: rule.threshold,
+    });
+  }
+}
+
+async function requireTicketing(actor, res, options = {}) {
+  if (!requireActor(actor, res)) return false;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return false;
+  }
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [actor.org_id],
+  );
+  const reason = ticketingReason(license.rows[0]);
+  if (reason) {
+    if (options.deny) {
+      await writeAudit(actor.org_id, actor.id, "ticket.deny", "org", String(actor.org_id), { reason });
+    }
+    const message = reason === "expired"
+      ? "This license has expired."
+      : "Ticketing is not included on this license.";
+    send(res, 403, { error: message });
+    return false;
+  }
+  return true;
+}
+
+function ticketView(row) {
+  return {
+    id: Number(row.id),
+    subject: row.subject,
+    status: row.status,
+    priority: row.priority,
+    customer: { id: Number(row.customer_id), name: row.customer_name },
+    device: { id: Number(row.device_id), hostname: row.device_hostname },
+    assignee: row.assignee_user_id
+      ? { id: Number(row.assignee_user_id), name: row.assignee_name, email: row.assignee_email }
+      : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function linkDeviceToCustomer(client, orgId, customerId, deviceId) {
+  const customer = await client.query(
+    "SELECT id FROM customers WHERE id = $1 AND org_id = $2",
+    [customerId, orgId],
+  );
+  if (!customer.rows[0]) return { status: 400, error: "Choose a customer in this organisation." };
+  const site = await client.query(
+    "SELECT id FROM sites WHERE customer_id = $1 AND org_id = $2 ORDER BY id LIMIT 1",
+    [customerId, orgId],
+  );
+  if (!site.rows[0]) return { status: 400, error: "That customer has no site." };
+  const device = await client.query(
+    `SELECT d.id, d.site_id, s.customer_id
+     FROM devices d
+     LEFT JOIN sites s ON s.id = d.site_id
+     WHERE d.id = $1 AND d.org_id = $2
+     FOR UPDATE OF d`,
+    [deviceId, orgId],
+  );
+  if (!device.rows[0]) return { status: 400, error: "Choose a device in this organisation." };
+  const currentCustomer = device.rows[0].customer_id;
+  if (currentCustomer != null && Number(currentCustomer) !== customerId) {
+    return { status: 409, error: "That device already belongs to another customer." };
+  }
+  if (device.rows[0].site_id == null) {
+    await client.query("UPDATE devices SET site_id = $1 WHERE id = $2", [site.rows[0].id, deviceId]);
+  }
+  return {};
+}
+
+function slaMinutes(value) {
+  const minutes = Number(value);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 43200) return null;
+  return minutes;
+}
+
+async function orgSla(orgId) {
+  const row = await pool.query(
+    "SELECT response_minutes, resolve_minutes FROM org_slas WHERE org_id = $1",
+    [orgId],
+  );
+  if (!row.rows[0]) return null;
+  return {
+    responseMinutes: row.rows[0].response_minutes,
+    resolveMinutes: row.rows[0].resolve_minutes,
+  };
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
+  return text;
+}
+
+async function dashboardSnapshot(orgId) {
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [orgId],
+  );
+  const row = license.rows[0];
+  const [org, devices, tickets] = await Promise.all([
+    pool.query("SELECT id, name FROM orgs WHERE id = $1", [orgId]),
+    pool.query(
+      "SELECT id, hostname, last_seen_at, metrics FROM devices WHERE org_id = $1 ORDER BY hostname",
+      [orgId],
+    ),
+    pool.query(
+      "SELECT id, subject, status FROM tickets WHERE org_id = $1 AND status = 'open' ORDER BY id",
+      [orgId],
+    ),
+  ]);
+  const monitor = monitoringAllowed(row);
+  const patch = patchAllowed(row);
+  let compliance = [];
+  if (patch) {
+    const [fleet, succeeded] = await Promise.all([
+      pool.query(
+        `SELECT d.id, d.hostname, d.updates, c.id AS customer_id, c.name AS customer_name
+         FROM devices d
+         LEFT JOIN sites s ON s.id = d.site_id
+         LEFT JOIN customers c ON c.id = s.customer_id
+         WHERE d.org_id = $1
+         ORDER BY c.name NULLS LAST, d.hostname`,
+        [orgId],
+      ),
+      pool.query(
+        `SELECT device_id, package_name
+         FROM patch_deploys
+         WHERE org_id = $1 AND status = 'succeeded'
+         ORDER BY id`,
+        [orgId],
+      ),
+    ]);
+    compliance = complianceFrom(fleet.rows, succeeded.rows);
+  }
+  const freshAfter = Date.now() - 3 * 60 * 1000;
+  return {
+    org: org.rows[0] || null,
+    canTicket: ticketingAllowed(row),
+    canMonitor: monitor,
+    canPatch: patch,
+    canReport: reportingAllowed(row),
+    deviceCount: devices.rows.length,
+    devices: devices.rows.map((device) => ({
+      hostname: device.hostname,
+      reporting: device.last_seen_at != null && new Date(device.last_seen_at).getTime() >= freshAfter,
+      cpuPercent: monitor && device.metrics ? device.metrics.cpuPercent : null,
+      memoryPercent: monitor && device.metrics ? device.metrics.memoryPercent : null,
+      diskPercent: monitor && device.metrics ? device.metrics.diskPercent : null,
+    })),
+    openTickets: tickets.rows.map((ticket) => ({
+      id: Number(ticket.id),
+      subject: ticket.subject,
+      status: ticket.status,
+    })),
+    sla: await orgSla(orgId),
+    compliance,
+  };
+}
+
+function dashboardCsv(snapshot) {
+  let patched = 0;
+  let missing = 0;
+  const complianceLines = [];
+  for (const group of snapshot.compliance) {
+    for (const device of group.devices) {
+      patched += device.patched.length;
+      missing += device.missing.length;
+      complianceLines.push([
+        "compliance",
+        csvCell(group.name),
+        csvCell(device.hostname),
+        device.patched.length,
+        device.missing.length,
+      ].join(","));
+    }
+  }
+  const reporting = snapshot.devices.filter((device) => device.reporting).length;
+  const lines = [
+    ["org", csvCell(snapshot.org?.name || "")].join(","),
+    ["devices", snapshot.deviceCount].join(","),
+    ["open_tickets", snapshot.openTickets.length].join(","),
+    ["reporting", reporting].join(","),
+    ["sla_response_minutes", snapshot.sla ? snapshot.sla.responseMinutes : ""].join(","),
+    ["sla_resolve_minutes", snapshot.sla ? snapshot.sla.resolveMinutes : ""].join(","),
+    ["patched", patched].join(","),
+    ["missing", missing].join(","),
+    ...snapshot.devices.map((device) => ["device", csvCell(device.hostname)].join(",")),
+    ...snapshot.openTickets.map((ticket) => ["ticket", csvCell(ticket.subject)].join(",")),
+    ...complianceLines,
+  ];
+  return {
+    csv: `${lines.join("\n")}\n`,
+    patched,
+    missing,
+  };
+}
+
+async function latestExport(orgId) {
+  const result = await pool.query(
+    `SELECT s.interval_minutes,
+            r.id, r.produced_at, r.device_count, r.open_ticket_count,
+            r.response_minutes, r.resolve_minutes, r.patched_count, r.missing_count, r.csv
+     FROM report_schedules s
+     LEFT JOIN LATERAL (
+       SELECT id, produced_at, device_count, open_ticket_count,
+              response_minutes, resolve_minutes, patched_count, missing_count, csv
+       FROM report_runs
+       WHERE schedule_id = s.id
+       ORDER BY id DESC
+       LIMIT 1
+     ) r ON true
+     WHERE s.org_id = $1`,
+    [orgId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    intervalMinutes: row.interval_minutes,
+    latest: row.id == null ? null : {
+      id: Number(row.id),
+      producedAt: row.produced_at,
+      deviceCount: row.device_count,
+      openTicketCount: row.open_ticket_count,
+      responseMinutes: row.response_minutes,
+      resolveMinutes: row.resolve_minutes,
+      patchedCount: row.patched_count,
+      missingCount: row.missing_count,
+      csv: row.csv,
+    },
+  };
+}
+
+let exportTickRunning = false;
+
+async function runDueExports() {
+  if (exportTickRunning) return;
+  exportTickRunning = true;
+  try {
+    const due = await pool.query(
+      `SELECT id, org_id, interval_minutes
+       FROM report_schedules
+       WHERE next_run_at <= now()
+       ORDER BY id
+       LIMIT 5`,
+    );
+    for (const schedule of due.rows) {
+      const license = await pool.query(
+        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+        [schedule.org_id],
+      );
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const claimed = await client.query(
+          `UPDATE report_schedules
+           SET next_run_at = now() + ($2::int * interval '1 minute')
+           WHERE id = $1 AND next_run_at <= now()
+           RETURNING id`,
+          [schedule.id, schedule.interval_minutes],
+        );
+        if (!claimed.rows[0]) {
+          await client.query("ROLLBACK");
+          continue;
+        }
+        if (!reportingAllowed(license.rows[0])) {
+          await client.query("COMMIT");
+          continue;
+        }
+        const snapshot = await dashboardSnapshot(schedule.org_id);
+        const built = dashboardCsv(snapshot);
+        const run = await client.query(
+          `INSERT INTO report_runs (
+             org_id, schedule_id, csv, device_count, open_ticket_count,
+             response_minutes, resolve_minutes, patched_count, missing_count
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id`,
+          [
+            schedule.org_id,
+            schedule.id,
+            built.csv,
+            snapshot.deviceCount,
+            snapshot.openTickets.length,
+            snapshot.sla ? snapshot.sla.responseMinutes : null,
+            snapshot.sla ? snapshot.sla.resolveMinutes : null,
+            built.patched,
+            built.missing,
+          ],
+        );
+        await client.query("COMMIT");
+        await writeAudit(schedule.org_id, null, "report.export", "report_run", String(run.rows[0].id), {
+          deviceCount: snapshot.deviceCount,
+          openTicketCount: snapshot.openTickets.length,
+          patchedCount: built.patched,
+          missingCount: built.missing,
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        console.error(error.message);
+      } finally {
+        client.release();
+      }
+    }
+  } catch (error) {
+    console.error(error.message);
+  } finally {
+    exportTickRunning = false;
+  }
 }
 
 async function writeAudit(orgId, actorId, action, targetType, targetId, detail) {
@@ -436,14 +964,26 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       const hostname = typeof body.hostname === "string" ? body.hostname.trim() : "";
       const osName = typeof body.osName === "string" ? body.osName.trim() : "";
+      const metrics = metricsFrom(body);
+      const updates = updatesFrom(body);
       await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
              hostname = COALESCE(NULLIF($2, ''), hostname),
-             os_name = COALESCE(NULLIF($3, ''), os_name)
+             os_name = COALESCE(NULLIF($3, ''), os_name),
+             metrics = COALESCE($4::jsonb, metrics),
+             updates = CASE WHEN $5::boolean THEN $6::jsonb ELSE updates END
          WHERE id = $1`,
-        [device.id, hostname.slice(0, 200), osName.slice(0, 200)],
+        [
+          device.id,
+          hostname.slice(0, 200),
+          osName.slice(0, 200),
+          metrics ? JSON.stringify(metrics) : null,
+          updates != null,
+          updates ? JSON.stringify(updates) : "[]",
+        ],
       );
+      if (metrics) await evaluateAlerts(device.id);
       const jobs = await pool.query(
         `UPDATE jobs
          SET status = 'running'
@@ -451,8 +991,22 @@ const server = createServer(async (req, res) => {
          RETURNING id, command`,
         [device.id],
       );
+      const deploys = await pool.query(
+        `UPDATE patch_deploys
+         SET status = 'running'
+         WHERE id = (
+           SELECT id FROM patch_deploys
+           WHERE device_id = $1 AND status = 'queued'
+           ORDER BY id
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+         )
+         RETURNING id, package_name`,
+        [device.id],
+      );
       return send(res, 200, {
         jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command })),
+        deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
       });
     }
 
@@ -474,6 +1028,29 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { id: Number(updated.rows[0].id), status: "finished" });
     }
 
+    const deployResultMatch = url.pathname.match(/^\/v1\/agent\/deploys\/(\d+)\/result$/);
+    if (req.method === "POST" && deployResultMatch) {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const body = await readJson(req);
+      const succeeded = body.ok === true;
+      const detail = typeof body.detail === "string" ? body.detail.trim().slice(0, 2000) : "";
+      const updated = await pool.query(
+        `UPDATE patch_deploys
+         SET status = $1, detail = $2, finished_at = now()
+         WHERE id = $3 AND device_id = $4 AND status = 'running'
+         RETURNING id, package_name`,
+        [succeeded ? "succeeded" : "failed", detail, deployResultMatch[1], device.id],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "Deploy not found." });
+      await writeAudit(device.org_id, null, "patch.deploy", "patch_deploy", String(updated.rows[0].id), {
+        deviceId: Number(device.id),
+        packageName: updated.rows[0].package_name,
+        status: succeeded ? "succeeded" : "failed",
+      });
+      return send(res, 200, { id: Number(updated.rows[0].id), status: succeeded ? "succeeded" : "failed" });
+    }
+
     if (req.method === "GET" && url.pathname === "/v1/devices") {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
@@ -484,7 +1061,7 @@ const server = createServer(async (req, res) => {
       );
       const access = remoteAccess(license.rows[0]);
       const result = await pool.query(
-        `SELECT id, hostname, os_name, last_seen_at
+        `SELECT id, hostname, os_name, last_seen_at, metrics, updates
          FROM devices
          WHERE org_id = $1
          ORDER BY hostname`,
@@ -502,6 +1079,10 @@ const server = createServer(async (req, res) => {
       return send(res, 200, {
         org: org.rows[0] || null,
         canRemote: access.canRemote,
+        canTicket: ticketingAllowed(license.rows[0]),
+        canMonitor: monitoringAllowed(license.rows[0]),
+        canPatch: patchAllowed(license.rows[0]),
+        canReport: reportingAllowed(license.rows[0]),
         remoteReason: access.remoteReason,
         deviceCount: result.rows.length,
         devices: result.rows.map((row) => {
@@ -511,6 +1092,8 @@ const server = createServer(async (req, res) => {
             hostname: row.hostname,
             osName: row.os_name,
             lastSeenAt: row.last_seen_at,
+            metrics: monitoringAllowed(license.rows[0]) ? row.metrics : null,
+            updates: patchAllowed(license.rows[0]) ? row.updates : null,
             latestJob: job
               ? {
                   id: job.id,
@@ -580,6 +1163,16 @@ const server = createServer(async (req, res) => {
       if (!device.rows[0].mesh_node_id) {
         return send(res, 409, { error: "This device has no remote agent yet." });
       }
+      const body = await readJson(req);
+      const ticketId = body.ticketId == null || body.ticketId === "" ? null : Number(body.ticketId);
+      if (ticketId != null) {
+        if (!Number.isInteger(ticketId)) return send(res, 404, { error: "Ticket not found." });
+        const ticket = await pool.query(
+          "SELECT id FROM tickets WHERE id = $1 AND org_id = $2 AND device_id = $3",
+          [ticketId, actor.org_id, device.rows[0].id],
+        );
+        if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      }
       const url = await meshDesktopUrl(
         device.rows[0].mesh_node_id,
         `df-${device.rows[0].id}-${Date.now()}`,
@@ -587,10 +1180,666 @@ const server = createServer(async (req, res) => {
       );
       await pool.query(
         `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-         VALUES ($1, $2, 'remote.launch', 'device', $3, '{}'::jsonb)`,
-        [actor.org_id, actor.id, String(device.rows[0].id)],
+         VALUES ($1, $2, 'remote.launch', 'device', $3, $4::jsonb)`,
+        [
+          actor.org_id,
+          actor.id,
+          String(device.rows[0].id),
+          JSON.stringify(ticketId == null ? {} : { ticketId }),
+        ],
       );
       return send(res, 200, { url });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/customers") {
+      if (!(await requireTicketing(actor, res))) return;
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 200) return send(res, 400, { error: "Enter a customer name." });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const customer = await client.query(
+          "INSERT INTO customers (org_id, name) VALUES ($1, $2) RETURNING id, name",
+          [actor.org_id, name],
+        );
+        const site = await client.query(
+          "INSERT INTO sites (org_id, customer_id, name) VALUES ($1, $2, 'Primary') RETURNING id",
+          [actor.org_id, customer.rows[0].id],
+        );
+        await client.query("COMMIT");
+        await writeAudit(actor.org_id, actor.id, "customer.create", "customer", String(customer.rows[0].id), {
+          name,
+          siteId: String(site.rows[0].id),
+        });
+        return send(res, 201, {
+          id: Number(customer.rows[0].id),
+          name: customer.rows[0].name,
+          siteId: Number(site.rows[0].id),
+        });
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction was already closed.
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    if (req.method === "PUT" && url.pathname === "/v1/sla") {
+      if (!(await requireTicketing(actor, res))) return;
+      const body = await readJson(req);
+      const responseMinutes = slaMinutes(body.responseMinutes);
+      const resolveMinutes = slaMinutes(body.resolveMinutes);
+      if (responseMinutes == null || resolveMinutes == null) {
+        return send(res, 400, { error: "Enter response and resolve targets in minutes." });
+      }
+      await pool.query(
+        `INSERT INTO org_slas (org_id, response_minutes, resolve_minutes)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (org_id) DO UPDATE
+         SET response_minutes = EXCLUDED.response_minutes,
+             resolve_minutes = EXCLUDED.resolve_minutes,
+             updated_at = now()`,
+        [actor.org_id, responseMinutes, resolveMinutes],
+      );
+      await writeAudit(actor.org_id, actor.id, "sla.update", "org", String(actor.org_id), {
+        responseMinutes,
+        resolveMinutes,
+      });
+      return send(res, 200, { responseMinutes, resolveMinutes });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/alerts") {
+      if (!(await requireMonitoring(actor, res))) return;
+      const [alerts, devices, license] = await Promise.all([
+        pool.query(
+          `SELECT a.id, a.metric, a.value, a.threshold, a.ticket_id, a.created_at, d.hostname
+           FROM alerts a
+           JOIN devices d ON d.id = a.device_id
+           WHERE a.org_id = $1
+           ORDER BY a.id DESC`,
+          [actor.org_id],
+        ),
+        pool.query(
+          "SELECT id, hostname FROM devices WHERE org_id = $1 ORDER BY hostname",
+          [actor.org_id],
+        ),
+        pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]),
+      ]);
+      return send(res, 200, {
+        canTicket: ticketingAllowed(license.rows[0]),
+        canPatch: patchAllowed(license.rows[0]),
+        canReport: reportingAllowed(license.rows[0]),
+        alerts: alerts.rows.map((row) => ({
+          id: Number(row.id),
+          metric: row.metric,
+          value: row.value,
+          threshold: row.threshold,
+          ticketId: row.ticket_id == null ? null : Number(row.ticket_id),
+          hostname: row.hostname,
+          createdAt: row.created_at,
+        })),
+        devices: devices.rows.map((row) => ({ id: Number(row.id), hostname: row.hostname })),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/alert-rules") {
+      if (!(await requireMonitoring(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const deviceId = Number(body.deviceId);
+      const metric = typeof body.metric === "string" ? body.metric : "";
+      const threshold = Number(body.threshold);
+      if (!Number.isInteger(deviceId)) return send(res, 400, { error: "Choose a device." });
+      if (!Object.hasOwn(ALERT_METRICS, metric)) return send(res, 400, { error: "Choose a metric." });
+      if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
+        return send(res, 400, { error: "Enter a threshold from 1 to 100." });
+      }
+      const device = await pool.query(
+        "SELECT id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceId, actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const rule = await pool.query(
+        `INSERT INTO alert_rules (org_id, device_id, metric, threshold, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        [actor.org_id, deviceId, metric, threshold, actor.id],
+      );
+      await writeAudit(actor.org_id, actor.id, "alert.rule", "alert_rule", String(rule.rows[0].id), {
+        deviceId,
+        metric,
+        threshold,
+      });
+      await evaluateAlerts(deviceId);
+      return send(res, 201, { id: Number(rule.rows[0].id) });
+    }
+
+    const alertTicketMatch = url.pathname.match(/^\/v1\/alerts\/(\d+)\/ticket$/);
+    if (req.method === "POST" && alertTicketMatch) {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const alert = await pool.query(
+        `SELECT a.id, a.device_id, a.metric, a.value, a.ticket_id, d.hostname, s.customer_id
+         FROM alerts a
+         JOIN devices d ON d.id = a.device_id
+         LEFT JOIN sites s ON s.id = d.site_id
+         WHERE a.id = $1 AND a.org_id = $2`,
+        [alertTicketMatch[1], actor.org_id],
+      );
+      if (!alert.rows[0]) return send(res, 404, { error: "Alert not found." });
+      if (alert.rows[0].ticket_id != null) {
+        return send(res, 200, { id: Number(alert.rows[0].ticket_id) });
+      }
+      const customerId = alert.rows[0].customer_id == null ? null : Number(alert.rows[0].customer_id);
+      if (customerId == null) return send(res, 409, { error: "That device is not linked to a customer." });
+      const label = ALERT_LABELS[alert.rows[0].metric] || alert.rows[0].metric;
+      const subject = `${label} ${alert.rows[0].value}% on ${alert.rows[0].hostname}`.slice(0, 200);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const ticket = await client.query(
+          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by)
+           VALUES ($1, $2, $3, $4, $5, 'open', 'high', $4)
+           RETURNING id`,
+          [actor.org_id, customerId, alert.rows[0].device_id, actor.id, subject],
+        );
+        await client.query("UPDATE alerts SET ticket_id = $1 WHERE id = $2", [ticket.rows[0].id, alert.rows[0].id]);
+        await client.query("COMMIT");
+        await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
+          alertId: Number(alert.rows[0].id),
+          customerId,
+          deviceId: Number(alert.rows[0].device_id),
+          status: "open",
+          priority: "high",
+        });
+        return send(res, 201, { id: Number(ticket.rows[0].id) });
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction was already closed.
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/license-usage") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.is_platform_admin) {
+        if (!(await requireReporting(actor, res))) return;
+        const org = await pool.query("SELECT slug FROM orgs WHERE id = $1", [actor.org_id]);
+        if (org.rows[0]?.slug !== "digital-fingers") {
+          return send(res, 403, { error: "License usage is not included on this license." });
+        }
+      }
+      const license = actor.org_id
+        ? await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id])
+        : { rows: [] };
+      const row = license.rows[0];
+      const usage = await pool.query(
+        `SELECT o.id, o.name, l.seats, l.device_cap,
+                (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
+         FROM orgs o
+         JOIN licenses l ON l.org_id = o.id
+         ORDER BY o.id`,
+      );
+      return send(res, 200, {
+        canTicket: ticketingAllowed(row),
+        canMonitor: monitoringAllowed(row),
+        canPatch: patchAllowed(row),
+        canReport: actor.is_platform_admin || reportingAllowed(row),
+        orgs: usage.rows.map((item) => ({
+          id: Number(item.id),
+          name: item.name,
+          seats: item.seats,
+          deviceCap: item.device_cap,
+          deviceCount: item.device_count,
+        })),
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/dashboard") {
+      if (!(await requireReporting(actor, res))) return;
+      const snapshot = await dashboardSnapshot(actor.org_id);
+      return send(res, 200, {
+        ...snapshot,
+        schedule: await latestExport(actor.org_id),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/report-schedules") {
+      if (!(await requireReporting(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const interval = Number(body.intervalMinutes);
+      if (!Number.isInteger(interval) || interval < 1 || interval > 1440) {
+        return send(res, 400, { error: "Choose an interval from 1 to 1440 minutes." });
+      }
+      try {
+        const inserted = await pool.query(
+          `INSERT INTO report_schedules (org_id, interval_minutes, next_run_at, created_by)
+           VALUES ($1, $2, now(), $3)
+           RETURNING id`,
+          [actor.org_id, interval, actor.id],
+        );
+        await writeAudit(actor.org_id, actor.id, "report.schedule", "org", String(actor.org_id), {
+          intervalMinutes: interval,
+        });
+        return send(res, 201, { id: Number(inserted.rows[0].id) });
+      } catch (error) {
+        if (error.code === "23505") return send(res, 409, { error: "That org already has an export schedule." });
+        throw error;
+      }
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/report-runs/latest") {
+      if (!(await requireReporting(actor, res))) return;
+      const run = await pool.query(
+        "SELECT csv FROM report_runs WHERE org_id = $1 ORDER BY id DESC LIMIT 1",
+        [actor.org_id],
+      );
+      if (!run.rows[0]) return send(res, 404, { error: "No export has been produced yet." });
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      res.end(run.rows[0].csv);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/patches") {
+      if (!(await requirePatch(actor, res))) return;
+      const [policies, deploys, devices, fleet, succeeded, license] = await Promise.all([
+        pool.query(
+          `SELECT p.id, p.name, p.mode, p.device_id, d.hostname
+           FROM patch_policies p
+           JOIN devices d ON d.id = p.device_id
+           WHERE p.org_id = $1
+           ORDER BY p.id`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT d.id, d.package_name, d.status, d.detail, d.policy_id, p.name AS policy_name, p.mode, dev.hostname
+           FROM patch_deploys d
+           JOIN patch_policies p ON p.id = d.policy_id
+           JOIN devices dev ON dev.id = d.device_id
+           WHERE d.org_id = $1
+           ORDER BY dev.hostname, d.id`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT id, hostname
+           FROM devices
+           WHERE org_id = $1
+             AND jsonb_typeof(updates) = 'array'
+             AND jsonb_array_length(updates) > 0
+             AND id NOT IN (SELECT device_id FROM patch_policies WHERE org_id = $1)
+           ORDER BY hostname`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT d.id, d.hostname, d.updates, c.id AS customer_id, c.name AS customer_name
+           FROM devices d
+           LEFT JOIN sites s ON s.id = d.site_id
+           LEFT JOIN customers c ON c.id = s.customer_id
+           WHERE d.org_id = $1
+           ORDER BY c.name NULLS LAST, d.hostname`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT device_id, package_name
+           FROM patch_deploys
+           WHERE org_id = $1 AND status = 'succeeded'
+           ORDER BY id`,
+          [actor.org_id],
+        ),
+        pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]),
+      ]);
+      return send(res, 200, {
+        canTicket: ticketingAllowed(license.rows[0]),
+        canMonitor: monitoringAllowed(license.rows[0]),
+        canPatch: patchAllowed(license.rows[0]),
+        canReport: reportingAllowed(license.rows[0]),
+        policies: policies.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          mode: row.mode,
+          deviceId: Number(row.device_id),
+          hostname: row.hostname,
+        })),
+        deploys: deploys.rows.map((row) => ({
+          id: Number(row.id),
+          packageName: row.package_name,
+          status: row.status,
+          detail: row.detail || "",
+          policyId: Number(row.policy_id),
+          policyName: row.policy_name,
+          mode: row.mode,
+          hostname: row.hostname,
+        })),
+        devices: devices.rows.map((row) => ({ id: Number(row.id), hostname: row.hostname })),
+        compliance: complianceFrom(fleet.rows, succeeded.rows),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/patch-policies") {
+      if (!(await requirePatch(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const deviceId = Number(body.deviceId);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const mode = body.mode === "auto" ? "auto" : body.mode === "approve" ? "approve" : "";
+      if (!Number.isInteger(deviceId)) return send(res, 400, { error: "Choose a device." });
+      if (!name || name.length > 80) return send(res, 400, { error: "Enter a policy name." });
+      if (!mode) return send(res, 400, { error: "Choose a policy." });
+      const device = await pool.query(
+        "SELECT id, updates FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceId, actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const packages = Array.isArray(device.rows[0].updates)
+        ? device.rows[0].updates.map((item) => (typeof item?.name === "string" ? item.name.trim() : "")).filter(Boolean)
+        : [];
+      if (packages.length === 0) return send(res, 409, { error: "That device has no updates waiting." });
+      const status = mode === "auto" ? "queued" : "waiting";
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const policy = await client.query(
+          `INSERT INTO patch_policies (org_id, device_id, name, mode, created_by)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id`,
+          [actor.org_id, deviceId, name, mode, actor.id],
+        );
+        for (const packageName of packages) {
+          await client.query(
+            `INSERT INTO patch_deploys (org_id, policy_id, device_id, package_name, status, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [actor.org_id, policy.rows[0].id, deviceId, packageName.slice(0, 200), status, actor.id],
+          );
+        }
+        await client.query("COMMIT");
+        await writeAudit(actor.org_id, actor.id, "patch.policy", "patch_policy", String(policy.rows[0].id), {
+          deviceId,
+          mode,
+          status,
+          count: packages.length,
+        });
+        return send(res, 201, { id: Number(policy.rows[0].id) });
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction was already closed.
+        }
+        if (error.code === "23505") return send(res, 409, { error: "That device already has a patch policy." });
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    const patchApproveMatch = url.pathname.match(/^\/v1\/patch-deploys\/(\d+)\/approve$/);
+    if (req.method === "POST" && patchApproveMatch) {
+      if (!(await requirePatch(actor, res))) return;
+      const found = await pool.query(
+        `SELECT d.id, d.status, d.package_name, d.device_id, p.mode, p.id AS policy_id
+         FROM patch_deploys d
+         JOIN patch_policies p ON p.id = d.policy_id
+         WHERE d.id = $1 AND d.org_id = $2`,
+        [patchApproveMatch[1], actor.org_id],
+      );
+      if (!found.rows[0]) return send(res, 404, { error: "Update not found." });
+      if (found.rows[0].mode !== "approve") {
+        return send(res, 409, { error: "That policy deploys without approval." });
+      }
+      if (found.rows[0].status !== "waiting") {
+        return send(res, 409, { error: "That update is already queued." });
+      }
+      const updated = await pool.query(
+        `UPDATE patch_deploys
+         SET status = 'queued', approved_by = $1
+         WHERE id = $2 AND org_id = $3 AND status = 'waiting'
+         RETURNING id`,
+        [actor.id, found.rows[0].id, actor.org_id],
+      );
+      if (!updated.rows[0]) return send(res, 409, { error: "That update is already queued." });
+      await writeAudit(actor.org_id, actor.id, "patch.approve", "patch_deploy", String(updated.rows[0].id), {
+        policyId: Number(found.rows[0].policy_id),
+        deviceId: Number(found.rows[0].device_id),
+        packageName: found.rows[0].package_name,
+      });
+      return send(res, 200, { id: Number(updated.rows[0].id), status: "queued" });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/tickets") {
+      if (!(await requireTicketing(actor, res))) return;
+      const [tickets, customers, devices, users] = await Promise.all([
+        pool.query(
+          `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+                  t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
+                  u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
+                  (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count
+           FROM tickets t
+           JOIN customers c ON c.id = t.customer_id
+           JOIN devices d ON d.id = t.device_id
+           LEFT JOIN users u ON u.id = t.assignee_user_id
+           WHERE t.org_id = $1
+           ORDER BY t.id DESC`,
+          [actor.org_id],
+        ),
+        pool.query("SELECT id, name FROM customers WHERE org_id = $1 ORDER BY name", [actor.org_id]),
+        pool.query(
+          `SELECT d.id, d.hostname, s.customer_id
+           FROM devices d
+           LEFT JOIN sites s ON s.id = d.site_id
+           WHERE d.org_id = $1
+           ORDER BY d.hostname`,
+          [actor.org_id],
+        ),
+        pool.query("SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name", [actor.org_id]),
+      ]);
+      return send(res, 200, {
+        tickets: tickets.rows.map((row) => ({ ...ticketView(row), commentCount: row.comment_count })),
+        customers: customers.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+        devices: devices.rows.map((row) => ({
+          id: Number(row.id),
+          hostname: row.hostname,
+          customerId: row.customer_id == null ? null : Number(row.customer_id),
+        })),
+        users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
+        sla: await orgSla(actor.org_id),
+        canPatch: patchAllowed((await pool.query(
+          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+          [actor.org_id],
+        )).rows[0]),
+        canReport: reportingAllowed((await pool.query(
+          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+          [actor.org_id],
+        )).rows[0]),
+        canMonitor: monitoringAllowed((await pool.query(
+          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+          [actor.org_id],
+        )).rows[0]),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/tickets") {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+      const status = body.status || "open";
+      const priority = body.priority || "normal";
+      const customerId = Number(body.customerId);
+      const deviceId = Number(body.deviceId);
+      const assigneeUserId = body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
+      const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+      if (!subject || subject.length > 200) return send(res, 400, { error: "Enter a subject." });
+      if (!TICKET_STATUSES.has(status) || !TICKET_PRIORITIES.has(priority)) {
+        return send(res, 400, { error: "Choose a status and priority." });
+      }
+      if (!Number.isInteger(customerId) || !Number.isInteger(deviceId)) {
+        return send(res, 400, { error: "Choose a customer and a device." });
+      }
+      if (comment.length > 4000) return send(res, 400, { error: "Comment is too long." });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const linked = await linkDeviceToCustomer(client, actor.org_id, customerId, deviceId);
+        if (linked.error) {
+          await client.query("ROLLBACK");
+          return send(res, linked.status, { error: linked.error });
+        }
+        if (assigneeUserId != null) {
+          const assignee = await client.query(
+            "SELECT id FROM users WHERE id = $1 AND org_id = $2",
+            [assigneeUserId, actor.org_id],
+          );
+          if (!assignee.rows[0]) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "Choose an assignee in this organisation." });
+          }
+        }
+        const ticket = await client.query(
+          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id`,
+          [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id],
+        );
+        if (comment) {
+          await client.query(
+            `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
+             VALUES ($1, $2, $3, $4)`,
+            [actor.org_id, ticket.rows[0].id, actor.id, comment],
+          );
+        }
+        await client.query("COMMIT");
+        await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
+          customerId,
+          deviceId,
+          status,
+          priority,
+          assigneeUserId,
+        });
+        return send(res, 201, { id: Number(ticket.rows[0].id) });
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction was already closed.
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    const ticketCommentMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/comments$/);
+    if (req.method === "POST" && ticketCommentMatch) {
+      if (!(await requireTicketing(actor, res))) return;
+      const body = await readJson(req);
+      const text = typeof body.body === "string" ? body.body.trim() : "";
+      if (!text || text.length > 4000) return send(res, 400, { error: "Enter a comment." });
+      const ticket = await pool.query(
+        "SELECT id FROM tickets WHERE id = $1 AND org_id = $2",
+        [ticketCommentMatch[1], actor.org_id],
+      );
+      if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      const comment = await pool.query(
+        `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [actor.org_id, ticket.rows[0].id, actor.id, text],
+      );
+      await pool.query("UPDATE tickets SET updated_at = now() WHERE id = $1", [ticket.rows[0].id]);
+      await writeAudit(actor.org_id, actor.id, "ticket.comment", "ticket", String(ticket.rows[0].id), {
+        commentId: String(comment.rows[0].id),
+      });
+      return send(res, 201, { id: Number(comment.rows[0].id) });
+    }
+
+    const ticketMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)$/);
+    if (ticketMatch && (req.method === "GET" || req.method === "PATCH")) {
+      if (!(await requireTicketing(actor, res))) return;
+      if (req.method === "PATCH") {
+        const body = await readJson(req);
+        const status = body.status;
+        const priority = body.priority;
+        const assigneeUserId = body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
+        if (!TICKET_STATUSES.has(status) || !TICKET_PRIORITIES.has(priority)) {
+          return send(res, 400, { error: "Choose a status and priority." });
+        }
+        if (assigneeUserId != null) {
+          const assignee = await pool.query(
+            "SELECT id FROM users WHERE id = $1 AND org_id = $2",
+            [assigneeUserId, actor.org_id],
+          );
+          if (!assignee.rows[0]) return send(res, 400, { error: "Choose an assignee in this organisation." });
+        }
+        const updated = await pool.query(
+          `UPDATE tickets
+           SET status = $1, priority = $2, assignee_user_id = $3, updated_at = now()
+           WHERE id = $4 AND org_id = $5
+           RETURNING id`,
+          [status, priority, assigneeUserId, ticketMatch[1], actor.org_id],
+        );
+        if (!updated.rows[0]) return send(res, 404, { error: "Ticket not found." });
+        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(updated.rows[0].id), {
+          status,
+          priority,
+          assigneeUserId,
+        });
+      }
+      const ticket = await pool.query(
+        `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+                t.device_id, d.hostname AS device_hostname, d.mesh_node_id IS NOT NULL AS device_has_remote,
+                t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at
+         FROM tickets t
+         JOIN customers c ON c.id = t.customer_id
+         JOIN devices d ON d.id = t.device_id
+         LEFT JOIN users u ON u.id = t.assignee_user_id
+         WHERE t.id = $1 AND t.org_id = $2`,
+        [ticketMatch[1], actor.org_id],
+      );
+      if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      const license = await pool.query(
+        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+        [actor.org_id],
+      );
+      const comments = await pool.query(
+        `SELECT tc.id, tc.body, tc.created_at, u.name AS author_name
+         FROM ticket_comments tc
+         LEFT JOIN users u ON u.id = tc.author_user_id
+         WHERE tc.ticket_id = $1
+         ORDER BY tc.id`,
+        [ticket.rows[0].id],
+      );
+      const users = await pool.query(
+        "SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name",
+        [actor.org_id],
+      );
+      const view = ticketView(ticket.rows[0]);
+      return send(res, 200, {
+        canRemote: remoteAccess(license.rows[0]).canRemote,
+        canPatch: patchAllowed(license.rows[0]),
+        canReport: reportingAllowed(license.rows[0]),
+        canMonitor: monitoringAllowed(license.rows[0]),
+        sla: await orgSla(actor.org_id),
+        ticket: {
+          ...view,
+          device: { ...view.device, hasRemote: Boolean(ticket.rows[0].device_has_remote) },
+          comments: comments.rows.map((row) => ({
+            id: Number(row.id),
+            body: row.body,
+            createdAt: row.created_at,
+            authorName: row.author_name || "Unknown",
+          })),
+        },
+        users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/audit") {
@@ -618,4 +1867,8 @@ const server = createServer(async (req, res) => {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`df-api listening on 127.0.0.1:${port}`);
+  setInterval(() => {
+    runDueExports();
+  }, 15000);
+  runDueExports();
 });

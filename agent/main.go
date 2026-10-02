@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,11 @@ type savedState struct {
 type job struct {
 	ID      int64  `json:"id"`
 	Command string `json:"command"`
+}
+
+type deploy struct {
+	ID          int64  `json:"id"`
+	PackageName string `json:"packageName"`
 }
 
 func main() {
@@ -52,6 +58,8 @@ func run(ctx context.Context) error {
 		}
 		fmt.Println("enrolled")
 	}
+
+	go collectUpdatesLoop(ctx)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -107,18 +115,44 @@ func enroll(api, statePath string) (savedState, error) {
 
 func heartbeat(api string, state savedState) error {
 	hostname, _ := os.Hostname()
-	body, err := postJSON(api+"/v1/agent/heartbeat", state.DeviceToken, map[string]string{
+	payload := map[string]any{
 		"hostname": hostname,
 		"osName":   prettyOS(),
-	})
+	}
+	if sample, err := collectMetrics(); err != nil {
+		fmt.Fprintln(os.Stderr, "metrics:", err)
+	} else {
+		payload["metrics"] = sample
+	}
+	updates, collected, includeUpdates := pendingUpdates()
+	if includeUpdates {
+		payload["updates"] = updates
+	}
+	body, err := postJSON(api+"/v1/agent/heartbeat", state.DeviceToken, payload)
 	if err != nil {
 		return err
 	}
+	if includeUpdates {
+		markUpdatesSent(collected)
+	}
 	var parsed struct {
-		Jobs []job `json:"jobs"`
+		Jobs    []job    `json:"jobs"`
+		Deploys []deploy `json:"deploys"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return err
+	}
+	for _, item := range parsed.Deploys {
+		ok, detail := installDeploy(item.PackageName)
+		_, err := postJSON(fmt.Sprintf("%s/v1/agent/deploys/%d/result", api, item.ID), state.DeviceToken, map[string]any{
+			"ok":     ok,
+			"detail": detail,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "deploy result:", err)
+			continue
+		}
+		fmt.Printf("deploy %d finished\n", item.ID)
 	}
 	for _, item := range parsed.Jobs {
 		exitCode, output := runCommand(item.Command)
@@ -162,6 +196,100 @@ func postJSON(url, deviceToken string, payload any) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d", res.StatusCode)
 	}
 	return body, nil
+}
+
+type updateItem struct {
+	Name             string `json:"name"`
+	CurrentVersion   string `json:"currentVersion"`
+	AvailableVersion string `json:"availableVersion"`
+}
+
+var updateState struct {
+	mu        sync.Mutex
+	items     []updateItem
+	collected time.Time
+	sent      time.Time
+}
+
+func collectUpdatesLoop(ctx context.Context) {
+	wait := time.Duration(0)
+	for {
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		items, err := collectUpdates()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "updates:", err)
+			wait = time.Minute
+			continue
+		}
+		updateState.mu.Lock()
+		updateState.items = items
+		updateState.collected = time.Now()
+		updateState.mu.Unlock()
+		wait = 15 * time.Minute
+	}
+}
+
+func pendingUpdates() ([]updateItem, time.Time, bool) {
+	updateState.mu.Lock()
+	defer updateState.mu.Unlock()
+	if updateState.collected.IsZero() || !updateState.collected.After(updateState.sent) {
+		return nil, time.Time{}, false
+	}
+	items := append([]updateItem{}, updateState.items...)
+	if items == nil {
+		items = []updateItem{}
+	}
+	return items, updateState.collected, true
+}
+
+func markUpdatesSent(collected time.Time) {
+	updateState.mu.Lock()
+	updateState.sent = collected
+	updateState.mu.Unlock()
+}
+
+func decodeUpdates(raw []byte) ([]updateItem, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return []updateItem{}, nil
+	}
+	if raw[0] == '[' {
+		var items []updateItem
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, err
+		}
+		if items == nil {
+			return []updateItem{}, nil
+		}
+		return items, nil
+	}
+	var item updateItem
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, err
+	}
+	if item.Name == "" {
+		return []updateItem{}, nil
+	}
+	return []updateItem{item}, nil
+}
+
+type sample struct {
+	CPUPercent       int   `json:"cpuPercent"`
+	MemoryPercent    int   `json:"memoryPercent"`
+	MemoryUsedBytes  int64 `json:"memoryUsedBytes"`
+	MemoryTotalBytes int64 `json:"memoryTotalBytes"`
+	DiskPercent      int   `json:"diskPercent"`
+	DiskUsedBytes    int64 `json:"diskUsedBytes"`
+	DiskTotalBytes   int64 `json:"diskTotalBytes"`
+	UptimeSeconds    int64 `json:"uptimeSeconds"`
 }
 
 func loadState(path string) (savedState, error) {

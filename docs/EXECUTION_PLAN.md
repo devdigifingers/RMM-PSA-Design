@@ -43,6 +43,23 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | License boundaries | Passed (S12). Org 2 cap, module, and expiry denials are audited |
 | Portal site | Passed (S13). Chooser on `digitalfingers.co.za`; Log on opens the console |
 | GitHub backup | Passed (S14). `ee2d076` on `main` has source, templates, and the runbook |
+| Tickets | Passed (S15). One ticket links a customer, a device, status, priority, assignee, and comments |
+| Remote from a ticket | Passed (S16). The ticket opened Mesh on `vps3231588`, then the ticket was resolved |
+| SLA | Passed (S17). Org 1 response 30 minutes and resolve 240 minutes show on the ticket |
+| Ticketing gate | Passed (S18). Org 2 cannot create a ticket. Org 1 still can. Create and resolve are audited |
+| Agent metrics | Passed (S19). CPU, memory, disk, and uptime show for `vps3231588` and `FED-WIN-001` |
+| Alert rule | Passed (S20). Disk at or above 10% on `vps3231588` is in the inbox |
+| Alert to ticket | Passed (S21). That alert opened a ticket on `vps3231588`. Org 2 could not |
+| Monitoring gate | Passed (S22). Org 2 has no metrics and no alert inbox. Org 1 still does |
+| Update inventory | Passed (S23). `vps3231588` lists apt updates. `FED-WIN-001` lists Windows updates |
+| Patch policy | Passed (S24). Approve waits. Deploy without approval queues. Nothing was installed |
+| Deploy job | Passed (S25). The agent stored success on Windows and failure on Linux |
+| Patch compliance | Passed (S26). Digital Fingers office shows missing apt updates. Org 2 sees no patches |
+| Dashboard | Passed (S27). One Digital Fingers view shows devices, the open ticket, SLA, health, and patch compliance |
+| Scheduled export | Passed (S28). A CSV for Digital Fingers matches the dashboard counts |
+| License usage | Passed (S29). Digital Fingers has 25 seats and 2 devices. Second Test Org has 5 seats and 0 devices |
+| Reporting gate | Passed (S30). Second Test Org cannot open the dashboard or the export. Digital Fingers still can |
+| GitHub backup of S15–S30 | In progress (S31). The local commit holds the live API, console, and agent. It passes when GitHub `main` matches |
 
 Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate.
 
@@ -208,6 +225,38 @@ Starts only after S14. License flag: `ticketing`.
 | S17 | SLA fields | Response and resolve targets are stored per org and visible on the ticket |
 | S18 | Module gate | An org without `ticketing` cannot create a ticket. Org 1 can. Audit rows exist for create and resolve |
 
+### S15 — Tickets
+
+**Status:** Passed 2026-10-01.
+
+A ticket belongs to one customer and one device already stored for the org. It keeps status, priority, assignee, and comments. Creating the ticket attaches an unassigned device to that customer's site. Org 1 has `ticketing` on, so the console shows Tickets.
+
+**Smoke:** The console created customer Digital Fingers office and ticket "Portal agent not reporting disk" on `vps3231588`, priority high, assignee Digital Fingers admin, status open, with a comment. Saving changed the status to pending. A second comment stayed after reload. The ticket list shows that customer, device, pending, high, and the assignee. Audit `customer.create`, `ticket.create`, `ticket.update`, and `ticket.comment` are by `console@digitalfingers.co.za`. SSH works on all three hosts.
+
+### S16 — Remote from the ticket
+
+**Status:** Passed 2026-10-01.
+
+Open remote on a ticket starts the same Mesh session as Open on the device list, for that ticket's device. The launch audit records the ticket. The ticket can then be saved as resolved.
+
+**Smoke:** Open remote on "Portal agent not reporting disk" opened the terminal for `vps3231588`. My Devices, My Account, and My Server stayed hidden. The session showed Connected and `root@vps3231588`. Disconnect returned Connect. Logout returned the Mesh login. Saving the ticket set the status to resolved. The ticket list shows that customer, device, resolved, high, and the assignee. Audit `remote.launch` for device 1 includes ticket 1, and `ticket.update` records status resolved. Both are by `console@digitalfingers.co.za`. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S17 — SLA fields
+
+**Status:** Passed 2026-10-01.
+
+Response and resolve targets are stored once per org, in minutes. The ticket page shows that org's targets. Saving them writes `sla.update`.
+
+**Smoke:** Org 1 saved response 30 minutes and resolve 240 minutes. Ticket "Portal agent not reporting disk" shows "Response 30 minutes. Resolve 240 minutes." after reload. The tickets page keeps those same values. Audit `sla.update` for org 1 is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S18 — Module gate
+
+**Status:** Passed 2026-10-01.
+
+An org with `ticketing` off cannot open or create tickets. The console hides Tickets and says ticketing is not on the license. A create attempt writes `ticket.deny`. Org 1 still has Tickets, and its create and resolve stay audited.
+
+**Smoke:** `second@digitalfingers.co.za` saw Second Test Org, no Tickets link, and "Ticketing is not included on this license." Opening the tickets address returned to the device list. Creating a ticket returned 403 `Ticketing is not included on this license` and `ticket.deny` reason `module`. Org 2 still has no tickets and `ticketing` off. Org 1 still shows Tickets, including "Portal agent not reporting disk". Audit `ticket.create` and `ticket.update` status resolved remain for that ticket. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
 ## Phase 3 — Monitoring
 
 Starts only after S18. License flag: `monitoring`.
@@ -218,6 +267,110 @@ Starts only after S18. License flag: `monitoring`.
 | S20 | Alert rule | A rule for one device fires, and the alert appears in the inbox |
 | S21 | Alert to ticket | With `ticketing` on, the alert can create a ticket linked to that device. With `ticketing` off, it does not |
 | S22 | Module gate | An org without `monitoring` has no metrics and no alert inbox |
+
+### S19 — Agent metrics
+
+**Status:** Passed 2026-10-01.
+
+Each heartbeat from the Linux and Windows agents stores CPU, memory, disk, and uptime. The device list shows those four readings for an org with `monitoring` on.
+
+**Smoke:** The console shows both enrolled devices. `vps3231588` shows CPU, memory 16% (332 MB of 1.9 GB), disk 20% (7.6 GB of 37.3 GB), and uptime 11 hours. `FED-WIN-001` shows CPU, memory 74% (3.0 GB of 4.0 GB), disk 53% (42.5 GB of 79.1 GB), and uptime 18 hours. The readings were still there after reload. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S20 — Alert rule
+
+**Status:** Passed 2026-10-01.
+
+A rule watches one metric on one device. When the stored reading is at or above the threshold, an alert is written and shown in the inbox. Creating the rule is audited as `alert.rule`. The firing is audited as `alert.fire`.
+
+**Smoke:** A disk rule for `vps3231588` at or above 10% fired at 20%. The inbox shows that device, Disk, 20%, and "At or above 10%" after reload. `alert.rule` is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S21 — Alert to ticket
+
+**Status:** Passed 2026-10-01.
+
+An open alert can create a ticket for the device's customer when `ticketing` is on. The inbox then links to that ticket. An org with `ticketing` off is refused and no ticket is stored.
+
+**Smoke:** Create ticket on the disk alert opened "Disk 20% on vps3231588" for Digital Fingers office and `vps3231588`, status open, priority high. The inbox shows Open ticket after reload. `ticket.create` for that ticket includes alert 1 and is by `console@digitalfingers.co.za`. `second@digitalfingers.co.za` received 403 `Ticketing is not included on this license` and `ticket.deny` reason `module`. Org 2 still has no tickets. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S22 — Module gate
+
+**Status:** Passed 2026-10-01.
+
+An org with `monitoring` off has no device metrics and cannot open the alert inbox. The console hides Alerts and says monitoring is not on the license. Creating a rule writes `monitoring.deny`. Org 1 still shows metrics and the inbox.
+
+**Smoke:** `second@digitalfingers.co.za` saw Second Test Org, no Alerts link, and no metrics. Opening the alerts address returned to the device list with "Monitoring is not included on this license." That message was still there after reload. Creating a rule returned 403 `Monitoring is not included on this license` and `monitoring.deny` reason `module`. Org 2 still has `monitoring` off and no alert rules. Org 1 still shows Alerts, CPU, memory, disk, and uptime for both devices. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S23 — Update inventory
+
+**Status:** Passed 2026-10-02.
+
+Each enrolled agent reports the updates waiting on that device. The device list shows them when `patch` is on.
+
+**Smoke:** `vps3231588` lists `libxpm4` 1:3.5.17-1ubuntu0.24.04.1 → 1:3.5.17-1ubuntu0.24.04.2 and `thermald` 2.5.6-2ubuntu0.24.04.5 → 2.5.6-2ubuntu0.24.04.6. `FED-WIN-001` lists Windows Malicious Software Removal Tool x64 - v5.145 (KB890830), 2026-09 .NET Framework Security Update (KB5126052), and 2026-09 Security Update (KB5129195) (26200.9457). Both lists remained after reload. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S24 — Policy
+
+**Status:** Passed 2026-10-02.
+
+A policy is either approve-before-deploy or deploy-without-approval. Approve leaves each update waiting until someone approves that update. Deploy without approval queues the device's updates and does not offer approval. Neither policy installs the update.
+
+**Smoke:** Approve before deploy on `FED-WIN-001` left its three Windows updates waiting. Deploy without approval on `vps3231588` queued `libxpm4` and `thermald` with no Approve button. Approving KB890830 queued only that update. KB5126052 and KB5129195 stayed waiting. The same rows remained after reload. `patch.policy` and `patch.approve` are by `console@digitalfingers.co.za`. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S25 — Deploy job
+
+**Status:** Passed 2026-10-02.
+
+A queued deploy runs on the device through the agent. The console stores succeeded or failed. The agent does not reboot the device.
+
+**Smoke:** KB890830 and KB5126052 on `FED-WIN-001` succeeded, both with reboot false. Those rows remained after reload. `libxpm4` and `thermald` on `vps3231588` failed because the agent cannot install packages, and the failure text remained after reload. KB5129195 was still running. `patch.deploy` records the finished results. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S26 — Compliance
+
+**Status:** Passed 2026-10-02.
+
+The patches page lists patched and missing updates for each customer. An org with `patch` off has no Patches link, and opening the page says patch management is not on the license. A create attempt writes `patch.deny`.
+
+**Smoke:** Digital Fingers office shows `vps3231588` with no patched updates and missing `libxpm4` and `thermald`. `FED-WIN-001` has no customer; it shows KB890830 and KB5126052 patched, and KB5129195 missing. Those rows remained after reload. `second@digitalfingers.co.za` saw Second Test Org, no Patches link, and "Patch management is not included on this license." That message remained after reload. Creating a policy returned 403 and `patch.deny` reason `module`. Org 2 still has `patch` off and no policies. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S27 — Dashboard
+
+**Status:** Passed 2026-10-02.
+
+One org page shows enrolled devices, open tickets, SLA targets, current health, and the same patch compliance as the patches page. The numbers come from the live records.
+
+**Smoke:** Digital Fingers shows 2 enrolled devices, `FED-WIN-001` and `vps3231588`. The only open ticket is "Disk 20% on vps3231588". SLA is response 30 minutes and resolve 240 minutes. Both devices are reporting; CPU, memory, and disk changed after reload. Patch compliance matches the patches page: Digital Fingers office / `vps3231588` has nothing patched and is missing `libxpm4` and `thermald`. `FED-WIN-001` has no customer, shows KB890830 and KB5126052 patched, and KB5129195 missing. The tickets page still lists that disk ticket as open and "Portal agent not reporting disk" as resolved. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S28 — Export
+
+**Status:** Passed 2026-10-02.
+
+A CSV for the org is written on a schedule. It uses the same device, ticket, SLA, and patch counts as the dashboard.
+
+**Smoke:** Scheduling a CSV every minute left the dashboard with no file. After the schedule ran, the file showed 2 devices, 1 open ticket, response 30 minutes, resolve 240 minutes, 2 patched, and 3 missing. Those counts match the dashboard on the same page. The file names Digital Fingers, ticket "Disk 20% on vps3231588", `vps3231588` with 0 patched and 2 missing, and `FED-WIN-001` with 2 patched and 1 missing. Download returned `dashboard.csv` with that same text. The counts remained after reload. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S29 — License usage
+
+**Status:** Passed 2026-10-02.
+
+The license report lists seats, enrolled devices, and the device cap for Digital Fingers and the second org.
+
+**Smoke:** Digital Fingers shows 25 seats, 2 devices, and a cap of 500. Second Test Org shows 5 seats, 0 devices, and a cap of 12. Those rows remained after reload. The device list still says Digital Fingers · 2 enrolled. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S30 — Module gate
+
+**Status:** Passed 2026-10-02.
+
+An org with `reporting` off has no Dashboard link. Opening the dashboard or the export returns to the device list and says reporting is not on the license. Scheduling an export writes `reporting.deny`.
+
+**Smoke:** `second@digitalfingers.co.za` saw Second Test Org, 0 enrolled, and only a Devices link. Opening the dashboard and the export both showed "Reporting is not included on this license." That message remained after reload. Scheduling an export returned 403 and `reporting.deny` reason `module`. The dashboard and the export each returned 403. `canReport` is false and the device count is 0. Digital Fingers still opens the dashboard, including the scheduled CSV. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S31 — GitHub backup of S15–S30
+
+**Status:** In progress 2026-10-02.
+
+Copy the live API, console, agent, and this plan through S30 to GitHub. The commit must not contain live passwords, private keys, or database URLs.
+
+**Smoke:** GitHub `main` contains the service desk, monitoring, patch, and reporting source, and this file records S0–S30 as passed. A search of the commit finds no live passwords, private keys, or database URLs with credentials.
 
 ## Phase 4 — Patch
 
@@ -240,6 +393,7 @@ Starts only after S26. License flag: `reporting`. Uses events from earlier phase
 | S28 | Export | A scheduled PDF or CSV for that org is produced and matches the dashboard counts |
 | S29 | License usage | A report lists seats and devices for org 1 and the second org |
 | S30 | Module gate | An org without `reporting` cannot open the dashboard or the export |
+| S31 | GitHub backup | `main` matches the live API, console, agent, and this plan through S30, with no live secrets |
 
 ## Later
 
@@ -264,4 +418,20 @@ OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are o
 | S12 | 2026-10-01 | Pass | Org 1 still has both devices and Open. Org 2 cap denial, expiry denial, and hidden remote each wrote an audit row for `second@digitalfingers.co.za`. Org 2 was restored to cap 12, remote off, and no devices. SSH works on all three hosts. API health ok. |
 | S13 | 2026-10-01 | Pass | `https://digitalfingers.co.za` shows the chooser. RMM shows the welcome text. Log on opens `https://rmm.digitalfingers.co.za`. Certificate through 30 Dec 2026. Portal listeners are Caddy on 80 and 443. MeshCentral, Redis, and Postgres are not installed. SSH works on all three hosts. Mesh HTTP 200. API health ok. |
 | S14 | 2026-10-01 | Pass | GitHub `main` commit `ee2d076` has the API, console, agent, portal, Caddy templates, `.env.example` files, and `docs/PHASE1_RUNBOOK.md`. Secret search found no live passwords, private keys, or database URLs. This plan still matches the installed hosts. |
-| S15–S30 | | Not run | |
+| S15 | 2026-10-01 | Pass | Ticket "Portal agent not reporting disk" links customer Digital Fingers office and device `vps3231588`. Status pending, priority high, assignee Digital Fingers admin, and both comments remained after reload. Audits are by `console@digitalfingers.co.za`. SSH works on all three hosts. |
+| S16 | 2026-10-01 | Pass | Open remote on that ticket opened the `vps3231588` terminal, hid My Devices, My Account, and My Server, then Disconnect and Logout closed it. The ticket was saved as resolved. `remote.launch` records ticket 1. SSH works on all three hosts. API health ok. |
+| S17 | 2026-10-01 | Pass | Org 1 response 30 minutes and resolve 240 minutes remain on ticket "Portal agent not reporting disk" after reload. `sla.update` is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health ok. |
+| S18 | 2026-10-01 | Pass | Org 2 has no Tickets link. Opening tickets shows "Ticketing is not included on this license." Create returned 403 and `ticket.deny` reason `module` for `second@digitalfingers.co.za`. Org 1 still has the ticket, with `ticket.create` and a resolved `ticket.update`. SSH works on all three hosts. API health ok. |
+| S19 | 2026-10-01 | Pass | Device list shows CPU, memory, disk, and uptime for `vps3231588` and `FED-WIN-001`. Readings remained after reload. SSH works on all three hosts. API health ok. |
+| S20 | 2026-10-01 | Pass | Disk rule for `vps3231588` at or above 10% fired at 20%. Inbox still shows that row after reload. `alert.rule` is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health ok. |
+| S21 | 2026-10-01 | Pass | The disk alert created ticket "Disk 20% on vps3231588" for Digital Fingers office and that device. Inbox links to it. Org 2 got 403 and `ticket.deny`, and still has no tickets. SSH works on all three hosts. API health ok. |
+| S22 | 2026-10-01 | Pass | Org 2 has no Alerts link and no metrics. Opening alerts shows "Monitoring is not included on this license." Create returned 403 and `monitoring.deny` reason `module`. Org 1 still shows metrics and the inbox. SSH works on all three hosts. API health ok. |
+| S23 | 2026-10-02 | Pass | `vps3231588` lists `libxpm4` and `thermald`. `FED-WIN-001` lists KB890830, KB5126052, and KB5129195. Both lists remained after reload. SSH works on all three hosts. API health ok. |
+| S24 | 2026-10-02 | Pass | Approve before deploy on `FED-WIN-001` waited. Deploy without approval queued `libxpm4` and `thermald`. Approving KB890830 queued only that update. Nothing was installed. SSH works on all three hosts. API health ok. |
+| S25 | 2026-10-02 | Pass | KB890830 and KB5126052 succeeded with reboot false. `libxpm4` and `thermald` failed and the failure stayed after reload. KB5129195 was still running. SSH works on all three hosts. API health ok. |
+| S26 | 2026-10-02 | Pass | Digital Fingers office shows `vps3231588` missing `libxpm4` and `thermald`. Org 2 has no Patches link. Opening patches shows the license message. Create returned 403 and `patch.deny` reason `module`. SSH works on all three hosts. API health ok. |
+| S27 | 2026-10-02 | Pass | Digital Fingers dashboard shows 2 devices, open ticket "Disk 20% on vps3231588", SLA 30 and 240, live health, and the same patch rows as the patches page. SSH works on all three hosts. API health ok. |
+| S28 | 2026-10-02 | Pass | A scheduled CSV for Digital Fingers matches the dashboard: 2 devices, 1 open ticket, SLA 30 and 240, 2 patched, 3 missing. Download is `dashboard.csv`. SSH works on all three hosts. API health ok. |
+| S29 | 2026-10-02 | Pass | License usage lists Digital Fingers at 25 seats and 2 devices, cap 500, and Second Test Org at 5 seats and 0 devices, cap 12. The device list still shows 2 enrolled. SSH works on all three hosts. API health ok. |
+| S30 | 2026-10-02 | Pass | Second Test Org has no Dashboard link. Opening the dashboard and the export shows the license message. Schedule returned 403 and `reporting.deny` reason `module`. Digital Fingers still opens the dashboard and the CSV. SSH works on all three hosts. API health ok. |
+| S31 | | Not run | Waiting for this backup commit to be on GitHub `main`. |

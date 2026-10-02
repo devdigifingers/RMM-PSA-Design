@@ -7,11 +7,12 @@ const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
 export default async function DevicesPage({ searchParams }) {
   const params = await searchParams;
+  const q = typeof params?.q === "string" ? params.q : "";
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
 
-  const response = await fetch(`${apiUrl}/v1/devices`, {
+  const response = await fetch(`${apiUrl}/v1/devices?q=${encodeURIComponent(q)}`, {
     headers: { authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -24,6 +25,13 @@ export default async function DevicesPage({ searchParams }) {
       <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
       <main className="main">
         <h1>Devices</h1>
+        <form method="get">
+          <label>
+            Find
+            <input name="q" defaultValue={q} />
+          </label>
+          <button type="submit">Find</button>
+        </form>
         <p className="org-name">
           {body.org?.name || "Your organisation"} · {body.deviceCount || 0} enrolled
         </p>
@@ -47,6 +55,7 @@ export default async function DevicesPage({ searchParams }) {
           <thead>
             <tr>
               <th>Hostname</th>
+              <th>Address</th>
               <th>Customer</th>
               <th>Operating system</th>
               <th>Last seen</th>
@@ -56,12 +65,13 @@ export default async function DevicesPage({ searchParams }) {
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td className="empty" colSpan={5}>No devices enrolled yet.</td>
+                <td className="empty" colSpan={6}>No devices enrolled yet.</td>
               </tr>
             ) : (
               devices.map((device) => (
                 <tr key={device.id}>
                   <td>{device.hostname}</td>
+                  <td>{device.ipv4 || "—"}</td>
                   <td>{device.customerName || "No customer"}</td>
                   <td>{device.osName || "—"}</td>
                   <td>{formatSeen(device.lastSeenAt)}</td>
@@ -81,6 +91,15 @@ export default async function DevicesPage({ searchParams }) {
           <section className="job" key={`job-${device.id}`}>
             <h2>{device.hostname}</h2>
             <p className="org-name">{assetLine(device)}</p>
+            {device.samples?.length ? (
+              <ul className="updates">
+                {device.samples.map((sample) => (
+                  <li key={sample.sampledAt}>
+                    {`CPU ${sample.cpuPercent}%. Memory ${sample.memoryPercent}%. Disk ${sample.diskPercent}%.`}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <SoftwareList software={device.software} />
             {body.canMonitor && device.metrics ? <p className="org-name">{formatMetrics(device.metrics)}</p> : null}
             {body.canPatch ? <UpdateList updates={device.updates} /> : null}

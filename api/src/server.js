@@ -193,6 +193,34 @@ function ticketingReason(row) {
   return null;
 }
 
+function ipv4From(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  if (/^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(forwarded)) return forwarded;
+  return "";
+}
+
+async function storeHealthSample(orgId, deviceId, metrics) {
+  await pool.query(
+    `INSERT INTO device_samples (org_id, device_id, cpu_percent, memory_percent, disk_percent)
+     SELECT $1, $2, $3, $4, $5
+     WHERE NOT EXISTS (
+       SELECT 1 FROM device_samples
+       WHERE device_id = $2 AND sampled_at > now() - interval '60 seconds'
+     )`,
+    [orgId, deviceId, metrics.cpuPercent, metrics.memoryPercent, metrics.diskPercent],
+  );
+  await pool.query(
+    `DELETE FROM device_samples
+     WHERE id IN (
+       SELECT id FROM device_samples
+       WHERE device_id = $1
+       ORDER BY id DESC
+       OFFSET 48
+     )`,
+    [deviceId],
+  );
+}
+
 function metricsFrom(body) {
   const raw = body?.metrics;
   if (!raw || typeof raw !== "object") return null;
@@ -720,7 +748,12 @@ function ticketView(row) {
     subject: row.subject,
     status: row.status,
     priority: row.priority,
-    customer: { id: Number(row.customer_id), name: row.customer_name },
+    customer: {
+      id: Number(row.customer_id),
+      name: row.customer_name,
+      contactName: row.contact_name || null,
+      contactEmail: row.contact_email || null,
+    },
     device: { id: Number(row.device_id), hostname: row.device_hostname },
     assignee: row.assignee_user_id
       ? { id: Number(row.assignee_user_id), name: row.assignee_name, email: row.assignee_email }
@@ -1357,7 +1390,8 @@ const server = createServer(async (req, res) => {
              make = COALESCE(NULLIF($7, ''), make),
              model = COALESCE(NULLIF($8, ''), model),
              serial = COALESCE(NULLIF($9, ''), serial),
-             software = CASE WHEN $10::boolean THEN $11::jsonb ELSE software END
+             software = CASE WHEN $10::boolean THEN $11::jsonb ELSE software END,
+             ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END
          WHERE id = $1`,
         [
           device.id,
@@ -1371,9 +1405,13 @@ const server = createServer(async (req, res) => {
           asset?.serial || "",
           asset?.software != null,
           asset?.software ? JSON.stringify(asset.software) : "[]",
+          ipv4From(req),
         ],
       );
-      if (metrics) await evaluateAlerts(device.id);
+      if (metrics) {
+        await evaluateAlerts(device.id);
+        await storeHealthSample(device.org_id, device.id, metrics);
+      }
       await clearOfflineTicket(device.id);
       await attachMissingTickets(device.id);
       const jobs = await pool.query(
@@ -1452,15 +1490,18 @@ const server = createServer(async (req, res) => {
         [actor.org_id],
       );
       const access = remoteAccess(license.rows[0]);
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
+      const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const result = await pool.query(
         `SELECT d.id, d.hostname, d.os_name, d.last_seen_at, d.metrics, d.updates,
-                d.make, d.model, d.serial, d.software, c.name AS customer_name
+                d.make, d.model, d.serial, d.software, d.ipv4, c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
          WHERE d.org_id = $1
+           AND ($2 = '' OR d.hostname ILIKE '%' || $2 || '%' ESCAPE '\\')
          ORDER BY d.hostname`,
-        [actor.org_id],
+        [actor.org_id, needle],
       );
       const jobs = await pool.query(
         `SELECT DISTINCT ON (device_id)
@@ -1470,6 +1511,32 @@ const server = createServer(async (req, res) => {
          ORDER BY device_id, id DESC`,
         [actor.org_id],
       );
+      const samples = monitoringAllowed(license.rows[0])
+        ? await pool.query(
+          `SELECT device_id, cpu_percent, memory_percent, disk_percent, sampled_at
+           FROM (
+             SELECT device_id, cpu_percent, memory_percent, disk_percent, sampled_at,
+                    row_number() OVER (PARTITION BY device_id ORDER BY id DESC) AS n
+             FROM device_samples
+             WHERE org_id = $1
+           ) ranked
+           WHERE n <= 2
+           ORDER BY device_id, n`,
+          [actor.org_id],
+        )
+        : { rows: [] };
+      const sampleMap = new Map();
+      for (const sample of samples.rows) {
+        const key = String(sample.device_id);
+        const list = sampleMap.get(key) || [];
+        list.push({
+          cpuPercent: sample.cpu_percent,
+          memoryPercent: sample.memory_percent,
+          diskPercent: sample.disk_percent,
+          sampledAt: sample.sampled_at,
+        });
+        sampleMap.set(key, list);
+      }
       const latest = new Map(jobs.rows.map((row) => [String(row.device_id), row]));
       return send(res, 200, {
         org: org.rows[0] || null,
@@ -1488,6 +1555,8 @@ const server = createServer(async (req, res) => {
             hostname: row.hostname,
             customerName: row.customer_name || null,
             osName: row.os_name,
+            ipv4: row.ipv4 || null,
+            samples: sampleMap.get(String(row.id)) || [],
             make: row.make,
             model: row.model,
             serial: row.serial,
@@ -1603,6 +1672,34 @@ const server = createServer(async (req, res) => {
         ],
       );
       return send(res, 200, { url });
+    }
+
+    const customerMatch = url.pathname.match(/^\/v1\/customers\/(\d+)$/);
+    if (req.method === "PUT" && customerMatch) {
+      if (!(await requireTicketing(actor, res))) return;
+      const body = await readJson(req);
+      const contactName = typeof body.contactName === "string" ? body.contactName.trim() : "";
+      const contactEmail = typeof body.contactEmail === "string" ? body.contactEmail.trim().toLowerCase() : "";
+      if (!contactName || contactName.length > 200) return send(res, 400, { error: "Enter a contact name." });
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail) || contactEmail.length > 200) {
+        return send(res, 400, { error: "Enter a contact email." });
+      }
+      const updated = await pool.query(
+        `UPDATE customers
+         SET contact_name = $1, contact_email = $2
+         WHERE id = $3 AND org_id = $4
+         RETURNING id`,
+        [contactName, contactEmail, customerMatch[1], actor.org_id],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "Customer not found." });
+      await writeAudit(actor.org_id, actor.id, "customer.contact", "customer", String(updated.rows[0].id), {
+        contactName,
+      });
+      return send(res, 200, {
+        id: Number(updated.rows[0].id),
+        contactName,
+        contactEmail,
+      });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/customers") {
@@ -2054,7 +2151,10 @@ const server = createServer(async (req, res) => {
            ORDER BY t.id DESC`,
           [actor.org_id],
         ),
-        pool.query("SELECT id, name FROM customers WHERE org_id = $1 ORDER BY name", [actor.org_id]),
+        pool.query(
+          "SELECT id, name, contact_name, contact_email FROM customers WHERE org_id = $1 ORDER BY name",
+          [actor.org_id],
+        ),
         pool.query(
           `SELECT d.id, d.hostname, s.customer_id, c.name AS customer_name
            FROM devices d
@@ -2068,7 +2168,12 @@ const server = createServer(async (req, res) => {
       ]);
       return send(res, 200, {
         tickets: tickets.rows.map((row) => ({ ...ticketView(row), commentCount: row.comment_count })),
-        customers: customers.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+        customers: customers.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          contactName: row.contact_name || null,
+          contactEmail: row.contact_email || null,
+        })),
         devices: devices.rows.map((row) => ({
           id: Number(row.id),
           hostname: row.hostname,
@@ -2227,6 +2332,7 @@ const server = createServer(async (req, res) => {
       }
       const ticket = await pool.query(
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+                c.contact_name, c.contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
                 d.mesh_node_id IS NOT NULL AS device_has_remote,
                 t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email,

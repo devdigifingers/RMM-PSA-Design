@@ -30,6 +30,9 @@ export default async function TicketPage({ params, searchParams }) {
         <p className="org-name">
           {ticket.customer.name} · {ticket.device.hostname}
         </p>
+        {ticket.customer.contactName ? (
+          <p className="org-name">{ticket.customer.contactName} · {ticket.customer.contactEmail}</p>
+        ) : null}
         {body.clock ? (
           <p className="org-name">{clockLine(body.clock)}</p>
         ) : null}

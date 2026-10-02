@@ -112,6 +112,27 @@ export async function saveSla(formData) {
   redirect("/tickets");
 }
 
+export async function saveContact(formData) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) redirect("/");
+  const id = String(formData.get("customerId") || "");
+  const response = await fetch(`${apiUrl}/v1/customers/${id}`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      contactName: String(formData.get("contactName") || ""),
+      contactEmail: String(formData.get("contactEmail") || ""),
+    }),
+    cache: "no-store",
+  });
+  if (!response.ok) redirect("/tickets?error=contact");
+  redirect("/tickets");
+}
+
 export async function createCustomer(formData) {
   const response = await authed("/v1/customers", { name: String(formData.get("name") || "") });
   if (!response.ok) redirect("/tickets?error=customer");

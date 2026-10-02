@@ -182,6 +182,18 @@ Starts only after S45. S46 through S50 have passed. The checks are in [EXECUTION
 | S49 | Audit in the console | The mail audit is visible. A technician still cannot run a shell. Org 2 sees only itself |
 | S50 | Clock in the daily CSV | The daily file shows the same clocks as the dashboard. The schedule stays once a day |
 
+## Account — who and where
+
+Starts only after S50. S51 through S54 have passed. S55 has not been pushed. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+
+| Step | Work | Smoke pass |
+|------|------|------------|
+| S51 | A person at the office | Digital Fingers office has one contact, shown on ticket 2. Ticket 2 stays open and is not mailed |
+| S52 | The address on the device | Both devices show an IPv4 address. Contabo A and B stay off the list |
+| S53 | Health kept for an hour | Two samples stay for the portal. The newest matches the device page. At most 48 are kept |
+| S54 | Find a device | `FED` shows only the Windows device. Clearing the box shows both. Org 2 sees neither |
+| S55 | GitHub backup of S51–S54 | GitHub `main` contains the contact, the address, the health samples, and the search, with no live secrets |
+
 ---
 
 ## Later / optional
@@ -220,5 +232,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S50 have passed.
-2. Mesh password rotation stays out until asked. Do not start a step whose previous smoke test failed.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S54 have passed. S55 has not been pushed.
+2. Continue at **S55 GitHub backup of S51–S54** when asked. Do not start a step whose previous smoke test failed. Mesh password rotation stays out until asked.

@@ -79,8 +79,13 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | One breach message | Passed (S48). Ticket "Breach check" sent one message and is resolved. Ticket 2 stayed open |
 | Audit in the console | Passed (S49). The console shows `ticket.mail` for Mail check. A technician can open it. Org 2 does not |
 | Clock in the daily CSV | Passed (S50). The daily file names ticket 2 with the same clocks as the dashboard. The schedule stays once a day |
+| A person at the office | Passed (S51). Front desk is on Digital Fingers office and on ticket 2. Ticket 2 stayed open and was not mailed |
+| The address on the device | Passed (S52). Both devices show an IPv4 address. Contabo A and B stay off the list |
+| Health kept for an hour | Passed (S53). The portal keeps two samples. The newest matches the device page. At most 48 are kept |
+| Find a device | Passed (S54). `FED` shows only the Windows device. Clearing the box shows both. Org 2 sees neither |
+| GitHub backup of S51–S54 | Not started (S55) |
 
-Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate. S41 through S50 passed. GitHub `main` is `7fb693e`. The later desk changes are on the server and are not in that commit.
+Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate. S0 through S54 passed. GitHub `main` is `aa4ebd0`. S55 has not been pushed.
 
 ## Hosts
 
@@ -557,6 +562,50 @@ The daily file shows the elapsed response and resolve clocks for open tickets, t
 
 **Smoke:** The stored file names ticket 2 and the same response and resolve clocks as the dashboard. The next file is still about a day away. The file count is within 30. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok.
 
+## Account — who and where
+
+Starts only after S50. These steps put a person on the customer, an address on each device, an hour of health, and a search. A step is finished only when its smoke test passes. S51 through S54 have passed. S55 is the GitHub backup and has not been pushed. Mesh password rotation stays out until asked. Ticket 2 stays open and gets no new comment. The daily export stays once a day. Contabo A and Contabo B stay off the device list. `thermald` is not installed and the Windows device is not rebooted.
+
+### S51 — A person at the office
+
+**Status:** Passed, 2 Oct 2026.
+
+Digital Fingers office has one contact: name "Front desk", email `admin@digitalfingers.co.za`. The tickets page and ticket "Disk 20% on vps3231588" show that contact. Saving it does not add a comment and does not send a message. Org 2 cannot see it.
+
+**Smoke:** The contact shows on the tickets page and on ticket 2 after reload. Ticket 2 stays open and still has no comments. No new message is sent. Org 2 does not see the contact. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S52 — The address on the device
+
+**Status:** Passed, 2 Oct 2026.
+
+The next heartbeat stores one IPv4 address for that device. Both enrolled devices show it on the device page. Contabo A and Contabo B are not enrolled. No new ticket is opened. `vps3231588` shows `69.164.244.199`. `FED-WIN-001` shows `165.255.3.247`. Both remained after reload. The device count is still 2. Ticket 2 stayed open.
+
+**Smoke:** `vps3231588` and `FED-WIN-001` each show an IPv4 address, and both remain after reload. Those two are still the only devices. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S53 — Health kept for an hour
+
+**Status:** Passed, 2 Oct 2026.
+
+A health sample is stored when the previous sample for that device is at least 60 seconds old. Only the newest 48 samples are kept. The device page shows the newest sample and the one before it. The dashboard still shows one current reading. `vps3231588` shows CPU 0%, memory 18%, and disk 20% on the newest sample and on the current device line. The older sample stayed after the next sample. That device has 6 samples, inside the limit of 48. No new ticket was opened. Ticket 2 stayed open.
+
+**Smoke:** `vps3231588` has two samples. The newer one matches the CPU, memory, and disk on the device page. The older one is still there after another heartbeat. That device has at most 48 samples. No new ticket is opened. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S54 — Find a device
+
+**Status:** Passed, 2 Oct 2026.
+
+The devices page can be narrowed by hostname. Org 2 still sees no Digital Fingers devices. Typing `FED` left `FED-WIN-001` and hid `vps3231588`. Clearing the box showed both. Org 2 still has no devices and does not see the office contact. Ticket 2 stayed open.
+
+**Smoke:** Typing `FED` leaves `FED-WIN-001` and hides `vps3231588`. Clearing the box shows both. Org 2 still has no devices. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S55 — GitHub backup of S51–S54
+
+**Status:** Not started.
+
+The contact, the device address, the health samples, and the device search are running on the servers. The push happens only when asked. Live passwords stay out of git.
+
+**Smoke:** GitHub `main` contains those four features and matches this tree. A search of that commit finds no live passwords, private keys, or database URLs. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
 ## Phase 4 — Patch
 
 Starts only after S22. License flag: `patch`.
@@ -605,10 +654,15 @@ Starts only after S35. Each step joins the modules already built. Do not start a
 | S48 | One breach message | One past-due ticket sends one message and is resolved. Ticket 2 sends nothing |
 | S49 | Audit in the console | The mail audit is visible. A technician still cannot run a shell. Org 2 sees only itself |
 | S50 | Clock in the daily CSV | The daily file shows the same clocks as the dashboard. The schedule stays once a day |
+| S51 | A person at the office | Digital Fingers office has one contact, shown on ticket 2. Ticket 2 stays open and is not mailed |
+| S52 | The address on the device | Both devices show an IPv4 address. Contabo A and B stay off the list |
+| S53 | Health kept for an hour | Two samples stay for the portal. The newest matches the device page. At most 48 are kept |
+| S54 | Find a device | `FED` shows only the Windows device. Clearing the box shows both. Org 2 sees neither |
+| S55 | GitHub backup of S51–S54 | GitHub `main` contains the contact, the address, the health samples, and the search, with no live secrets |
 
 ## Later
 
-OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full PSA billing stay out of this sequence. Mesh password rotation stays out until asked. Seats are displayed and not enforced. Contabo A and Contabo B are not enrolled devices. The older missing-update tickets stay as they are.
+OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full PSA billing stay out of this sequence. Mesh password rotation stays out until asked. Seats are displayed and not enforced. Contabo A and Contabo B are not enrolled devices. The older missing-update tickets stay as they are. Ticket 2 stays open. The daily export stays once a day.
 
 ## Smoke log
 
@@ -665,3 +719,8 @@ OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full
 | S48 | 2026-10-02 | Pass | Ticket "Breach check" was past 30 minutes, sent one message to `admin@digitalfingers.co.za`, and is resolved. A second sweep sent nothing. Ticket 2 is still "Disk 20% on vps3231588" and still open. Targets stay 30 and 240. Org 2 sent nothing. The mail password is not in git or this log. SSH works on all three hosts. API health reports Postgres and Redis ok. |
 | S49 | 2026-10-02 | Pass | The console shows `ticket.mail` for "Mail check" and no password. `tech@digitalfingers.co.za` can open that list. A shell returns 403. Org 2 sees none of those rows. SSH works on all three hosts. API health reports Postgres and Redis ok. |
 | S50 | 2026-10-02 | Pass | The stored file names "Disk 20% on vps3231588" at Response 956 of 30 minutes and Resolve 956 of 240 minutes, the same clocks as the dashboard. The schedule says CSV once a day, next file in 23 hours. 24 files are stored, inside the limit of 30. Ticket 2 stays open. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S51 | 2026-10-02 | Pass | Digital Fingers office shows Front desk and `admin@digitalfingers.co.za` on the tickets page and on ticket 2 after reload. Ticket 2 stayed open and still has no comments. No new message was sent. Org 2 does not see the contact. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S52 | 2026-10-02 | Pass | `vps3231588` shows `69.164.244.199` and `FED-WIN-001` shows `165.255.3.247`. Both remained after reload. Those two are still the only devices. Ticket 2 stayed open. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S53 | 2026-10-02 | Pass | `vps3231588` has two samples on the device page. The newer one is CPU 0%, memory 18%, and disk 20%, matching the device page. The older one stayed after the next sample. 6 samples are stored, inside the limit of 48. The dashboard still shows one current reading. No new ticket was opened. Ticket 2 stayed open. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S54 | 2026-10-02 | Pass | Typing `FED` left `FED-WIN-001` and hid `vps3231588`. Clearing the box showed both. Org 2 still has no devices. Ticket 2 stayed open. SSH works on all three hosts. API health reports Postgres and Redis ok. |
+| S55 | | Not run | Waiting for GitHub `main` to contain the account steps. |

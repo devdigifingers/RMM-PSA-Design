@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { createCustomer, createTicket, saveSla } from "../actions";
+import { createCustomer, createTicket, saveContact, saveSla } from "../actions";
 import { ConsoleBar } from "../bar";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -29,7 +29,8 @@ export default async function TicketsPage({ searchParams }) {
       <main className="main">
         <h1>Tickets</h1>
         {params?.error === "sla" ? <p className="error">Those SLA targets could not be saved.</p> : null}
-        {params?.error && params.error !== "sla" ? <p className="error">That ticket could not be saved.</p> : null}
+        {params?.error === "contact" ? <p className="error">That contact could not be saved.</p> : null}
+        {params?.error && params.error !== "sla" && params.error !== "contact" ? <p className="error">That ticket could not be saved.</p> : null}
         <section className="job">
           <h2>SLA</h2>
           <form action={saveSla}>
@@ -53,6 +54,34 @@ export default async function TicketsPage({ searchParams }) {
             </label>
             <button type="submit">Add customer</button>
           </form>
+          {customers.map((customer) => (
+            <p className="org-name" key={customer.id}>
+              {customer.contactName
+                ? `${customer.name}: ${customer.contactName} · ${customer.contactEmail}`
+                : `${customer.name}: no contact yet`}
+            </p>
+          ))}
+          {customers.length > 0 ? (
+            <form action={saveContact}>
+              <label>
+                Customer
+                <select name="customerId" required defaultValue={customers[0].id}>
+                  {customers.map((customer) => (
+                    <option key={customer.id} value={customer.id}>{customer.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Contact name
+                <input name="contactName" required defaultValue={customers[0].contactName || ""} />
+              </label>
+              <label>
+                Contact email
+                <input name="contactEmail" type="email" required defaultValue={customers[0].contactEmail || ""} />
+              </label>
+              <button type="submit">Save contact</button>
+            </form>
+          ) : null}
         </section>
         {customers.length > 0 && devices.length > 0 ? (
           <section className="job">

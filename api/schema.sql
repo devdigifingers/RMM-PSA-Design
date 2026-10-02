@@ -88,6 +88,22 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS make text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS model text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS serial text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS software jsonb;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS ipv4 text;
+
+CREATE TABLE IF NOT EXISTS device_samples (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  device_id bigint NOT NULL REFERENCES devices (id),
+  cpu_percent integer,
+  memory_percent integer,
+  disk_percent integer,
+  sampled_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS device_samples_device_id_idx ON device_samples (device_id, id DESC);
+
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact_name text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact_email text;
 
 CREATE TABLE IF NOT EXISTS enroll_tokens (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

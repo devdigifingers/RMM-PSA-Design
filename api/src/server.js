@@ -64,7 +64,22 @@ async function actorFrom(req) {
     "SELECT id, email, name, org_id, is_platform_admin FROM users WHERE id = $1",
     [session.userId],
   );
-  return result.rows[0] || null;
+  const actor = result.rows[0];
+  if (!actor) return null;
+  const roles = await pool.query(
+    `SELECT r.name
+     FROM user_roles ur
+     JOIN roles r ON r.id = ur.role_id
+     WHERE ur.user_id = $1`,
+    [actor.id],
+  );
+  actor.roles = roles.rows.map((row) => row.name);
+  return actor;
+}
+
+function canOperate(actor) {
+  const roles = actor?.roles || [];
+  return roles.includes("owner") || roles.includes("admin");
 }
 
 function sha256(value) {
@@ -193,6 +208,37 @@ function metricsFrom(body) {
   return { cpuPercent, memoryPercent, memoryUsedBytes, memoryTotalBytes, diskPercent, diskUsedBytes, diskTotalBytes, uptimeSeconds };
 }
 
+function cleanAssetText(value, max) {
+  if (typeof value !== "string") return "";
+  return value.replaceAll("\u0000", "").trim().slice(0, max);
+}
+
+function assetFrom(body) {
+  const raw = body?.asset;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const make = cleanAssetText(raw.make, 200);
+  const model = cleanAssetText(raw.model, 200);
+  const serial = cleanAssetText(raw.serial, 200);
+  if (!Array.isArray(raw.software)) return { make, model, serial, software: null };
+  const software = [];
+  for (const item of raw.software) {
+    if (!item || typeof item !== "object") continue;
+    const name = cleanAssetText(item.name, 200);
+    if (!name) continue;
+    software.push({ name, version: cleanAssetText(item.version, 120) });
+    if (software.length >= 4000) break;
+  }
+  return { make, model, serial, software };
+}
+
+function installedVersion(software, name) {
+  if (!Array.isArray(software)) return null;
+  for (const item of software) {
+    if (item && item.name === name) return typeof item.version === "string" ? item.version : "";
+  }
+  return null;
+}
+
 function updatesFrom(body) {
   if (!Object.hasOwn(body, "updates") || !Array.isArray(body.updates)) return null;
   const items = [];
@@ -284,6 +330,26 @@ async function requireReporting(actor, res, options = {}) {
   return true;
 }
 
+function patchState(updates, software, succeededNames) {
+  const patched = [...succeededNames];
+  const installed = new Set(patched);
+  const missing = [];
+  const inventory = Array.isArray(updates) ? updates : [];
+  for (const item of inventory) {
+    const name = typeof item?.name === "string" ? item.name.trim() : "";
+    if (!name || installed.has(name)) continue;
+    const available = typeof item?.availableVersion === "string" ? item.availableVersion.trim() : "";
+    const version = installedVersion(software, name);
+    if (version != null && available && version === available) {
+      patched.push(name);
+      installed.add(name);
+      continue;
+    }
+    missing.push(name);
+  }
+  return { patched, missing };
+}
+
 function complianceFrom(devices, succeeded) {
   const patchedByDevice = new Map();
   for (const row of succeeded) {
@@ -302,18 +368,11 @@ function complianceFrom(devices, succeeded) {
         devices: [],
       });
     }
-    const patched = patchedByDevice.get(String(device.id)) || [];
-    const installed = new Set(patched);
-    const inventory = Array.isArray(device.updates) ? device.updates : [];
-    const missing = [];
-    for (const item of inventory) {
-      const name = typeof item?.name === "string" ? item.name.trim() : "";
-      if (name && !installed.has(name)) missing.push(name);
-    }
+    const state = patchState(device.updates, device.software, patchedByDevice.get(String(device.id)) || []);
     groups.get(customerId).devices.push({
       hostname: device.hostname,
-      patched,
-      missing,
+      patched: state.patched,
+      missing: state.missing,
     });
   }
   return [...groups.values()];
@@ -355,6 +414,88 @@ async function requireMonitoring(actor, res, options = {}) {
     return false;
   }
   return true;
+}
+
+async function openWorkTicket(orgId, customerId, deviceId, subject, detail) {
+  const created = await pool.query(
+    `INSERT INTO tickets (org_id, customer_id, device_id, subject, status, priority)
+     SELECT $1, $2, $3, $4, 'open', 'normal'
+     WHERE NOT EXISTS (
+       SELECT 1 FROM tickets
+       WHERE org_id = $1 AND device_id = $3 AND subject = $4 AND status <> 'resolved'
+     )
+     RETURNING id`,
+    [orgId, customerId, deviceId, subject],
+  );
+  if (!created.rows[0]) return null;
+  await writeAudit(orgId, null, "ticket.create", "ticket", String(created.rows[0].id), {
+    customerId: Number(customerId),
+    deviceId: Number(deviceId),
+    status: "open",
+    priority: "normal",
+    ...detail,
+  });
+  return Number(created.rows[0].id);
+}
+
+async function attachMissingTickets(deviceId) {
+  const device = await pool.query(
+    `SELECT d.id, d.org_id, d.hostname, d.updates, d.software, s.customer_id
+     FROM devices d
+     LEFT JOIN sites s ON s.id = d.site_id
+     WHERE d.id = $1`,
+    [deviceId],
+  );
+  const row = device.rows[0];
+  if (!row || row.customer_id == null) return;
+  const license = await pool.query(
+    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+    [row.org_id],
+  );
+  if (!ticketingAllowed(license.rows[0]) || !patchAllowed(license.rows[0])) return;
+  const succeeded = await pool.query(
+    "SELECT package_name FROM patch_deploys WHERE device_id = $1 AND status = 'succeeded'",
+    [deviceId],
+  );
+  const { missing } = patchState(
+    row.updates,
+    row.software,
+    succeeded.rows.map((item) => item.package_name),
+  );
+  for (const name of missing) {
+    const subject = `Missing ${name} on ${row.hostname}`.slice(0, 200);
+    await openWorkTicket(row.org_id, row.customer_id, row.id, subject, {
+      reason: "missing",
+      packageName: name,
+    });
+  }
+}
+
+let offlineSweepRunning = false;
+
+async function sweepOffline() {
+  if (offlineSweepRunning) return;
+  offlineSweepRunning = true;
+  try {
+    const devices = await pool.query(
+      `SELECT d.id, d.org_id, d.hostname, s.customer_id
+       FROM devices d
+       JOIN sites s ON s.id = d.site_id
+       JOIN licenses l ON l.org_id = d.org_id
+       WHERE d.last_seen_at IS NOT NULL
+         AND d.last_seen_at < now() - interval '60 seconds'
+         AND l.modules->>'ticketing' = 'true'
+         AND (l.expires_at IS NULL OR l.expires_at > now())`,
+    );
+    for (const row of devices.rows) {
+      const subject = `Offline on ${row.hostname}`.slice(0, 200);
+      await openWorkTicket(row.org_id, row.customer_id, row.id, subject, { reason: "offline" });
+    }
+  } catch (error) {
+    console.error(error.message);
+  } finally {
+    offlineSweepRunning = false;
+  }
 }
 
 async function evaluateAlerts(deviceId) {
@@ -452,8 +593,9 @@ async function linkDeviceToCustomer(client, orgId, customerId, deviceId) {
   }
   if (device.rows[0].site_id == null) {
     await client.query("UPDATE devices SET site_id = $1 WHERE id = $2", [site.rows[0].id, deviceId]);
+    return { linked: true, siteId: Number(site.rows[0].id) };
   }
-  return {};
+  return { linked: false, siteId: Number(site.rows[0].id) };
 }
 
 function slaMinutes(value) {
@@ -474,6 +616,41 @@ async function orgSla(orgId) {
   };
 }
 
+function elapsedMinutes(from, to) {
+  const start = new Date(from).getTime();
+  const end = new Date(to).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+  return Math.floor((end - start) / 60000);
+}
+
+function slaClock(row, targets, now) {
+  if (!targets || !row?.created_at) return null;
+  const responseStop = row.first_response_at ? new Date(row.first_response_at) : now;
+  const resolveStop = row.status === "resolved" ? new Date(row.resolved_at || row.updated_at) : now;
+  return {
+    responseMinutes: targets.responseMinutes,
+    resolveMinutes: targets.resolveMinutes,
+    responseElapsed: elapsedMinutes(row.created_at, responseStop),
+    resolveElapsed: elapsedMinutes(row.created_at, resolveStop),
+  };
+}
+
+const TICKET_CLOCK_SQL = `
+  (
+    SELECT MIN(tc.created_at)
+    FROM ticket_comments tc
+    JOIN users u ON u.id = tc.author_user_id AND u.org_id = t.org_id
+    WHERE tc.ticket_id = t.id
+  ) AS first_response_at,
+  (
+    SELECT MIN(e.created_at)
+    FROM audit_events e
+    WHERE e.action = 'ticket.update'
+      AND e.target_type = 'ticket'
+      AND e.target_id = t.id::text
+      AND e.detail->>'status' = 'resolved'
+  ) AS resolved_at`;
+
 function csvCell(value) {
   const text = String(value ?? "");
   if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
@@ -489,11 +666,19 @@ async function dashboardSnapshot(orgId) {
   const [org, devices, tickets] = await Promise.all([
     pool.query("SELECT id, name FROM orgs WHERE id = $1", [orgId]),
     pool.query(
-      "SELECT id, hostname, last_seen_at, metrics FROM devices WHERE org_id = $1 ORDER BY hostname",
+      `SELECT d.hostname, d.last_seen_at, d.metrics, c.name AS customer_name
+       FROM devices d
+       LEFT JOIN sites s ON s.id = d.site_id
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE d.org_id = $1
+       ORDER BY d.hostname`,
       [orgId],
     ),
     pool.query(
-      "SELECT id, subject, status FROM tickets WHERE org_id = $1 AND status = 'open' ORDER BY id",
+      `SELECT t.id, t.subject, t.status, t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
+       FROM tickets t
+       WHERE t.org_id = $1 AND t.status = 'open'
+       ORDER BY t.id`,
       [orgId],
     ),
   ]);
@@ -503,7 +688,7 @@ async function dashboardSnapshot(orgId) {
   if (patch) {
     const [fleet, succeeded] = await Promise.all([
       pool.query(
-        `SELECT d.id, d.hostname, d.updates, c.id AS customer_id, c.name AS customer_name
+        `SELECT d.id, d.hostname, d.updates, d.software, c.id AS customer_id, c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -522,6 +707,8 @@ async function dashboardSnapshot(orgId) {
     compliance = complianceFrom(fleet.rows, succeeded.rows);
   }
   const freshAfter = Date.now() - 3 * 60 * 1000;
+  const now = new Date();
+  const sla = await orgSla(orgId);
   return {
     org: org.rows[0] || null,
     canTicket: ticketingAllowed(row),
@@ -531,6 +718,7 @@ async function dashboardSnapshot(orgId) {
     deviceCount: devices.rows.length,
     devices: devices.rows.map((device) => ({
       hostname: device.hostname,
+      customerName: device.customer_name || null,
       reporting: device.last_seen_at != null && new Date(device.last_seen_at).getTime() >= freshAfter,
       cpuPercent: monitor && device.metrics ? device.metrics.cpuPercent : null,
       memoryPercent: monitor && device.metrics ? device.metrics.memoryPercent : null,
@@ -540,8 +728,9 @@ async function dashboardSnapshot(orgId) {
       id: Number(ticket.id),
       subject: ticket.subject,
       status: ticket.status,
+      clock: slaClock(ticket, sla, now),
     })),
-    sla: await orgSla(orgId),
+    sla,
     compliance,
   };
 }
@@ -983,13 +1172,18 @@ const server = createServer(async (req, res) => {
       const osName = typeof body.osName === "string" ? body.osName.trim() : "";
       const metrics = metricsFrom(body);
       const updates = updatesFrom(body);
+      const asset = assetFrom(body);
       await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
              hostname = COALESCE(NULLIF($2, ''), hostname),
              os_name = COALESCE(NULLIF($3, ''), os_name),
              metrics = COALESCE($4::jsonb, metrics),
-             updates = CASE WHEN $5::boolean THEN $6::jsonb ELSE updates END
+             updates = CASE WHEN $5::boolean THEN $6::jsonb ELSE updates END,
+             make = COALESCE(NULLIF($7, ''), make),
+             model = COALESCE(NULLIF($8, ''), model),
+             serial = COALESCE(NULLIF($9, ''), serial),
+             software = CASE WHEN $10::boolean THEN $11::jsonb ELSE software END
          WHERE id = $1`,
         [
           device.id,
@@ -998,9 +1192,15 @@ const server = createServer(async (req, res) => {
           metrics ? JSON.stringify(metrics) : null,
           updates != null,
           updates ? JSON.stringify(updates) : "[]",
+          asset?.make || "",
+          asset?.model || "",
+          asset?.serial || "",
+          asset?.software != null,
+          asset?.software ? JSON.stringify(asset.software) : "[]",
         ],
       );
       if (metrics) await evaluateAlerts(device.id);
+      await attachMissingTickets(device.id);
       const jobs = await pool.query(
         `UPDATE jobs
          SET status = 'running'
@@ -1078,10 +1278,13 @@ const server = createServer(async (req, res) => {
       );
       const access = remoteAccess(license.rows[0]);
       const result = await pool.query(
-        `SELECT id, hostname, os_name, last_seen_at, metrics, updates
-         FROM devices
-         WHERE org_id = $1
-         ORDER BY hostname`,
+        `SELECT d.id, d.hostname, d.os_name, d.last_seen_at, d.metrics, d.updates,
+                d.make, d.model, d.serial, d.software, c.name AS customer_name
+         FROM devices d
+         LEFT JOIN sites s ON s.id = d.site_id
+         LEFT JOIN customers c ON c.id = s.customer_id
+         WHERE d.org_id = $1
+         ORDER BY d.hostname`,
         [actor.org_id],
       );
       const jobs = await pool.query(
@@ -1100,6 +1303,7 @@ const server = createServer(async (req, res) => {
         canMonitor: monitoringAllowed(license.rows[0]),
         canPatch: patchAllowed(license.rows[0]),
         canReport: reportingAllowed(license.rows[0]),
+        canOperate: canOperate(actor),
         remoteReason: access.remoteReason,
         deviceCount: result.rows.length,
         devices: result.rows.map((row) => {
@@ -1107,7 +1311,12 @@ const server = createServer(async (req, res) => {
           return {
             id: row.id,
             hostname: row.hostname,
+            customerName: row.customer_name || null,
             osName: row.os_name,
+            make: row.make,
+            model: row.model,
+            serial: row.serial,
+            software: row.software,
             lastSeenAt: row.last_seen_at,
             metrics: monitoringAllowed(license.rows[0]) ? row.metrics : null,
             updates: patchAllowed(license.rows[0]) ? row.updates : null,
@@ -1130,6 +1339,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceJobMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "job.deny", "device", deviceJobMatch[1], { reason: "role" });
+        return send(res, 403, { error: "A technician cannot run a shell." });
+      }
       const body = await readJson(req);
       const command = typeof body.command === "string" ? body.command.trim() : "";
       if (!command || command.length > 400 || command.includes("\n") || command.includes("\0")) {
@@ -1140,11 +1353,20 @@ const server = createServer(async (req, res) => {
         [deviceJobMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const ticketId = body.ticketId == null || body.ticketId === "" ? null : Number(body.ticketId);
+      if (ticketId != null) {
+        if (!Number.isInteger(ticketId)) return send(res, 404, { error: "Ticket not found." });
+        const ticket = await pool.query(
+          "SELECT id FROM tickets WHERE id = $1 AND org_id = $2 AND device_id = $3",
+          [ticketId, actor.org_id, device.rows[0].id],
+        );
+        if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      }
       const job = await pool.query(
-        `INSERT INTO jobs (org_id, device_id, command, created_by)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO jobs (org_id, device_id, command, created_by, ticket_id)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        [actor.org_id, device.rows[0].id, command, actor.id],
+        [actor.org_id, device.rows[0].id, command, actor.id, ticketId],
       );
       await pool.query(
         `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
@@ -1398,12 +1620,15 @@ const server = createServer(async (req, res) => {
         ? await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id])
         : { rows: [] };
       const row = license.rows[0];
+      const scopeOrgId = actor.is_platform_admin || canOperate(actor) ? null : actor.org_id;
       const usage = await pool.query(
         `SELECT o.id, o.name, l.seats, l.device_cap,
                 (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
          FROM orgs o
          JOIN licenses l ON l.org_id = o.id
+         WHERE ($1::bigint IS NULL OR o.id = $1)
          ORDER BY o.id`,
+        [scopeOrgId],
       );
       return send(res, 200, {
         canTicket: ticketingAllowed(row),
@@ -1499,7 +1724,7 @@ const server = createServer(async (req, res) => {
           [actor.org_id],
         ),
         pool.query(
-          `SELECT d.id, d.hostname, d.updates, c.id AS customer_id, c.name AS customer_name
+          `SELECT d.id, d.hostname, d.updates, d.software, c.id AS customer_id, c.name AS customer_name
            FROM devices d
            LEFT JOIN sites s ON s.id = d.site_id
            LEFT JOIN customers c ON c.id = s.customer_id
@@ -1521,6 +1746,7 @@ const server = createServer(async (req, res) => {
         canMonitor: monitoringAllowed(license.rows[0]),
         canPatch: patchAllowed(license.rows[0]),
         canReport: reportingAllowed(license.rows[0]),
+        canOperate: canOperate(actor),
         policies: policies.rows.map((row) => ({
           id: Number(row.id),
           name: row.name,
@@ -1602,6 +1828,10 @@ const server = createServer(async (req, res) => {
     const patchApproveMatch = url.pathname.match(/^\/v1\/patch-deploys\/(\d+)\/approve$/);
     if (req.method === "POST" && patchApproveMatch) {
       if (!(await requirePatch(actor, res))) return;
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "patch.deny", "patch_deploy", patchApproveMatch[1], { reason: "role" });
+        return send(res, 403, { error: "A technician cannot approve a patch." });
+      }
       const found = await pool.query(
         `SELECT d.id, d.status, d.package_name, d.device_id, p.mode, p.id AS policy_id
          FROM patch_deploys d
@@ -1650,9 +1880,10 @@ const server = createServer(async (req, res) => {
         ),
         pool.query("SELECT id, name FROM customers WHERE org_id = $1 ORDER BY name", [actor.org_id]),
         pool.query(
-          `SELECT d.id, d.hostname, s.customer_id
+          `SELECT d.id, d.hostname, s.customer_id, c.name AS customer_name
            FROM devices d
            LEFT JOIN sites s ON s.id = d.site_id
+           LEFT JOIN customers c ON c.id = s.customer_id
            WHERE d.org_id = $1
            ORDER BY d.hostname`,
           [actor.org_id],
@@ -1666,6 +1897,7 @@ const server = createServer(async (req, res) => {
           id: Number(row.id),
           hostname: row.hostname,
           customerId: row.customer_id == null ? null : Number(row.customer_id),
+          customerName: row.customer_name || null,
         })),
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
         sla: await orgSla(actor.org_id),
@@ -1734,6 +1966,12 @@ const server = createServer(async (req, res) => {
           );
         }
         await client.query("COMMIT");
+        if (linked.linked) {
+          await writeAudit(actor.org_id, actor.id, "device.link", "device", String(deviceId), {
+            customerId,
+            siteId: linked.siteId,
+          });
+        }
         await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
           customerId,
           deviceId,
@@ -1812,8 +2050,10 @@ const server = createServer(async (req, res) => {
       }
       const ticket = await pool.query(
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
-                t.device_id, d.hostname AS device_hostname, d.mesh_node_id IS NOT NULL AS device_has_remote,
-                t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at
+                t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
+                d.mesh_node_id IS NOT NULL AS device_has_remote,
+                t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email,
+                t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
          FROM tickets t
          JOIN customers c ON c.id = t.customer_id
          JOIN devices d ON d.id = t.device_id
@@ -1839,15 +2079,41 @@ const server = createServer(async (req, res) => {
         [actor.org_id],
       );
       const view = ticketView(ticket.rows[0]);
+      const latestJob = await pool.query(
+        `SELECT id, command, status, exit_code, output, finished_at
+         FROM jobs
+         WHERE ticket_id = $1
+         ORDER BY id DESC
+         LIMIT 1`,
+        [ticket.rows[0].id],
+      );
+      const job = latestJob.rows[0];
+      const sla = await orgSla(actor.org_id);
       return send(res, 200, {
         canRemote: remoteAccess(license.rows[0]).canRemote,
         canPatch: patchAllowed(license.rows[0]),
         canReport: reportingAllowed(license.rows[0]),
         canMonitor: monitoringAllowed(license.rows[0]),
-        sla: await orgSla(actor.org_id),
+        canOperate: canOperate(actor),
+        sla,
+        clock: slaClock(ticket.rows[0], sla, new Date()),
         ticket: {
           ...view,
-          device: { ...view.device, hasRemote: Boolean(ticket.rows[0].device_has_remote) },
+          device: {
+            ...view.device,
+            osName: ticket.rows[0].device_os_name,
+            hasRemote: Boolean(ticket.rows[0].device_has_remote),
+          },
+          latestJob: job
+            ? {
+                id: Number(job.id),
+                command: job.command,
+                status: job.status,
+                exitCode: job.exit_code,
+                output: job.output,
+                finishedAt: job.finished_at,
+              }
+            : null,
           comments: comments.rows.map((row) => ({
             id: Number(row.id),
             body: row.body,
@@ -1888,6 +2154,8 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`df-api listening on 127.0.0.1:${port}`);
   setInterval(() => {
     runDueExports();
+    sweepOffline();
   }, 15000);
   runDueExports();
+  sweepOffline();
 });

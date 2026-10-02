@@ -192,6 +192,54 @@ func readUptime() (int64, error) {
 	return int64(seconds), nil
 }
 
+func collectAsset() (asset, error) {
+	software, err := installedPackages()
+	if err != nil {
+		return asset{}, err
+	}
+	serial := readTrim("/sys/class/dmi/id/product_serial")
+	if serial == "" {
+		serial = readTrim("/sys/class/dmi/id/product_uuid")
+	}
+	return asset{
+		Make:     readTrim("/sys/class/dmi/id/sys_vendor"),
+		Model:    readTrim("/sys/class/dmi/id/product_name"),
+		Serial:   serial,
+		Software: software,
+	}, nil
+}
+
+func readTrim(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func installedPackages() ([]softwareItem, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f", "${Package}\t${Version}\n")
+	cmd.Env = []string{"LANG=C", "PATH=/usr/bin:/bin"}
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("dpkg-query: %w", err)
+	}
+	items := []softwareItem{}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, version, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok || name == "" {
+			continue
+		}
+		items = append(items, softwareItem{Name: name, Version: version})
+		if len(items) >= 4000 {
+			break
+		}
+	}
+	return items, nil
+}
+
 func collectUpdates() ([]updateItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

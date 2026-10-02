@@ -118,7 +118,7 @@ export default async function PatchesPage({ searchParams }) {
                     {deploy.detail ? <div className="org-name">{deploy.detail}</div> : null}
                   </td>
                   <td>
-                    {deploy.status === "waiting" ? (
+                    {body.canOperate && deploy.status === "waiting" ? (
                       <form action={approvePatchDeploy}>
                         <input type="hidden" name="deployId" value={deploy.id} />
                         <button type="submit">Approve</button>

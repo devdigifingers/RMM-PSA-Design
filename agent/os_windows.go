@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -237,6 +238,76 @@ func memoryUsage() (byteUsage, error) {
 	total := int64(status.TotalPhys)
 	used := int64(status.TotalPhys - status.AvailPhys)
 	return byteUsage{used: used, total: total, percent: int(used * 100 / total)}, nil
+}
+
+func collectAsset() (asset, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	script := `$ErrorActionPreference = 'Stop'
+$cs = Get-CimInstance Win32_ComputerSystem
+$bios = Get-CimInstance Win32_BIOS
+$tab = [char]9
+function Clean([string]$value) { if ($null -eq $value) { return '' }; return (($value -replace "[\r\n\t]", ' ').Trim()) }
+Write-Output ('MAKE' + $tab + (Clean $cs.Manufacturer))
+Write-Output ('MODEL' + $tab + (Clean $cs.Model))
+Write-Output ('SERIAL' + $tab + (Clean $bios.SerialNumber))
+$paths = @(
+  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+foreach ($item in (Get-ItemProperty $paths -ErrorAction SilentlyContinue)) {
+  if ($item.DisplayName) {
+    Write-Output ('APP' + $tab + (Clean $item.DisplayName) + $tab + (Clean ([string]$item.DisplayVersion)))
+  }
+}
+`
+	cmd := exec.CommandContext(ctx, `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, "-NoProfile", "-NonInteractive", "-Command", script)
+	out, err := cmd.Output()
+	if err != nil {
+		return asset{}, fmt.Errorf("asset: %w", err)
+	}
+	parsed := asset{Software: []softwareItem{}}
+	for _, line := range strings.Split(decodePowerShell(out), "\n") {
+		line = strings.TrimSpace(line)
+		kind, rest, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		switch kind {
+		case "MAKE":
+			parsed.Make = strings.TrimSpace(rest)
+		case "MODEL":
+			parsed.Model = strings.TrimSpace(rest)
+		case "SERIAL":
+			parsed.Serial = strings.TrimSpace(rest)
+		case "APP":
+			name, version, _ := strings.Cut(rest, "\t")
+			name = strings.TrimSpace(name)
+			if name == "" || len(parsed.Software) >= 4000 {
+				continue
+			}
+			parsed.Software = append(parsed.Software, softwareItem{Name: name, Version: strings.TrimSpace(version)})
+		}
+	}
+	return parsed, nil
+}
+
+func decodePowerShell(out []byte) string {
+	if len(out) >= 2 && out[0] == 0xFF && out[1] == 0xFE {
+		out = out[2:]
+	}
+	nuls := bytes.Count(out, []byte{0})
+	if nuls == 0 || nuls < len(out)/4 {
+		return string(out)
+	}
+	if len(out)%2 == 1 {
+		out = out[:len(out)-1]
+	}
+	units := make([]uint16, len(out)/2)
+	for i := range units {
+		units[i] = uint16(out[i*2]) | uint16(out[i*2+1])<<8
+	}
+	return string(utf16.Decode(units))
 }
 
 func collectUpdates() ([]updateItem, error) {

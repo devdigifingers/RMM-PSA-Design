@@ -4,7 +4,7 @@ Multi-tenant **RMM + PSA** for **Digital Fingers**: operate as a support company
 
 **Complete chat capture for IDE:** [CHAT_HANDOFF.md](./CHAT_HANDOFF.md) · [DECISIONS.md](./DECISIONS.md) · [SETUP_AND_DR.md](./SETUP_AND_DR.md) · **Step order and smoke gates:** [EXECUTION_PLAN.md](./EXECUTION_PLAN.md)
 
-**Last updated:** 2026-10-01
+**Last updated:** 2026-10-02
 
 ## Architecture (locked)
 
@@ -146,6 +146,22 @@ Depends on clean events from Phases 1–4.
 
 ---
 
+## Expansion — one system
+
+Starts only after S35. These steps join the modules already built. Each step finishes only when its smoke test passes. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+
+| Step | Work | Smoke pass |
+|------|------|------------|
+| S36 | Customer on every device | Both devices show Digital Fingers office on devices, tickets, patches, and the dashboard |
+| S37 | Device asset | Make, model, serial, and installed software show for both devices. `libxpm4` is no longer missing. `thermald` is not installed |
+| S38 | One path for the work | Offline, a missing update, and an alert attach to a ticket for that customer and device. Remote and the OS command stay on the ticket |
+| S39 | Roles that limit actions | A tech cannot run a shell or approve a patch. An admin still can |
+| S40 | SLA clock | The open ticket and the dashboard show the same clocks against 30 and 240 minutes |
+
+Email notification and a Postgres plus Mesh dump follow S40.
+
+---
+
 ## Later / optional
 
 - OpenClaw (or similar) skill on **our** APIs for chat/ops
@@ -182,5 +198,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S35 have passed.
-2. The sequence through S35 is complete. Do not start Mesh password rotation or later work until asked.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S40 have passed.
+2. Email notification and a Postgres plus Mesh dump follow S40. They have not started. Do not start them until asked.

@@ -47,6 +47,7 @@ export default async function DevicesPage({ searchParams }) {
           <thead>
             <tr>
               <th>Hostname</th>
+              <th>Customer</th>
               <th>Operating system</th>
               <th>Last seen</th>
               <th>Remote</th>
@@ -55,12 +56,13 @@ export default async function DevicesPage({ searchParams }) {
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td className="empty" colSpan={4}>No devices enrolled yet.</td>
+                <td className="empty" colSpan={5}>No devices enrolled yet.</td>
               </tr>
             ) : (
               devices.map((device) => (
                 <tr key={device.id}>
                   <td>{device.hostname}</td>
+                  <td>{device.customerName || "No customer"}</td>
                   <td>{device.osName || "—"}</td>
                   <td>{formatSeen(device.lastSeenAt)}</td>
                   <td>
@@ -78,16 +80,20 @@ export default async function DevicesPage({ searchParams }) {
         {devices.map((device) => (
           <section className="job" key={`job-${device.id}`}>
             <h2>{device.hostname}</h2>
+            <p className="org-name">{assetLine(device)}</p>
+            <SoftwareList software={device.software} />
             {body.canMonitor && device.metrics ? <p className="org-name">{formatMetrics(device.metrics)}</p> : null}
             {body.canPatch ? <UpdateList updates={device.updates} /> : null}
-            <form action={runJob}>
-              <input type="hidden" name="deviceId" value={device.id} />
-              <label>
-                Command
-                <input name="command" defaultValue={defaultCommand(device.osName)} required />
-              </label>
-              <button type="submit">Run</button>
-            </form>
+            {body.canOperate ? (
+              <form action={runJob}>
+                <input type="hidden" name="deviceId" value={device.id} />
+                <label>
+                  Command
+                  <input name="command" defaultValue={defaultCommand(device.osName)} required />
+                </label>
+                <button type="submit">Run</button>
+              </form>
+            ) : null}
             {device.latestJob ? (
               <pre className="output">{device.latestJob.status === "finished" ? device.latestJob.output : device.latestJob.status}</pre>
             ) : null}
@@ -115,6 +121,23 @@ function formatSeen(value) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function assetLine(device) {
+  if (!device.make && !device.model && !device.serial) return "Asset details have not been collected yet.";
+  return `Make ${device.make || "—"}. Model ${device.model || "—"}. Serial ${device.serial || "—"}.`;
+}
+
+function SoftwareList({ software }) {
+  if (!Array.isArray(software)) return <p className="org-name">Installed software has not been collected yet.</p>;
+  if (software.length === 0) return <p className="org-name">No installed software reported.</p>;
+  return (
+    <ul className="updates">
+      {software.map((item) => (
+        <li key={`${item.name} ${item.version}`}>{item.version ? `${item.name} ${item.version}` : item.name}</li>
+      ))}
+    </ul>
+  );
 }
 
 function UpdateList({ updates }) {

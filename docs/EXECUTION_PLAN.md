@@ -1,6 +1,6 @@
 # Execution plan — phased steps and smoke gates
 
-**Last updated:** 2026-10-01  
+**Last updated:** 2026-10-02  
 **Product phases:** [PHASED_PLAN.md](./PHASED_PLAN.md) · **Locked choices:** [DECISIONS.md](./DECISIONS.md)
 
 This is the order of work. Product phases 0–5 stay as they are. Each phase is split into steps. A step is finished only when its smoke test passes. The next step does not start on a failure.
@@ -64,8 +64,13 @@ If a step can break an earlier gate, re-run that earlier smoke before calling th
 | Daily export | Passed (S33). The CSV is once a day, still matches the dashboard, and 23 files are kept |
 | Linux install helper | Passed (S34). `libxpm4` upgraded. The agent still cannot use sudo and keeps NoNewPrivileges |
 | Command that fits the OS | Passed (S35). `FED-WIN-001` starts with `ver`. `vps3231588` starts with `uname -srm` |
+| Customer on every device | Passed (S36). Both devices show Digital Fingers office. Org 2 still has no devices |
+| Device asset | Passed (S37). Both devices show make, model, serial, and installed software. `libxpm4` is patched. `thermald` is still missing |
+| One path for the work | Passed (S38). Offline, missing `thermald`, and the disk alert each sit on a ticket for Digital Fingers office and `vps3231588` |
+| Roles that limit actions | Passed (S39). A technician can open devices, tickets, and remote. A shell and a patch approval return 403 |
+| SLA clock | Passed (S40). Ticket 2 and the dashboard show the same response and resolve clocks against 30 and 240 minutes |
 
-Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate.
+Portal `thermald` is held by Ubuntu's phased rollout. That hold is accepted. It is not a failed gate. Email notification and a Postgres plus Mesh dump follow S40 and have not started.
 
 ## Hosts
 
@@ -408,6 +413,52 @@ A Windows device starts with `ver`. Any other device starts with `uname -srm`.
 
 **Smoke:** `FED-WIN-001` is Microsoft Windows 11 Pro. Its command box is `ver`. The run returned `Microsoft Windows [Version 10.0.26200.9278]`, and that line remained after reload. `vps3231588` is Ubuntu 24.04.5 LTS. Its command box is `uname -srm`. The run returned `Linux 6.8.0-146-generic x86_64`, and that line remained after reload. SSH works on all three hosts. API health reports Postgres and Redis ok.
 
+## Expansion — one system
+
+Starts only after S35. These steps join the customers, devices, tickets, alerts, patches, remote, and dashboard already built. A step is finished only when its smoke test passes.
+
+### S36 — Customer on every device
+
+**Status:** Passed 2026-10-02.
+
+`FED-WIN-001` is linked to the existing customer Digital Fingers office, the same customer as `vps3231588`. Devices, tickets, patches, and the dashboard show that customer on both devices. No second customer is created. Tickets 1 and 2 stay.
+
+**Smoke:** Both devices show Digital Fingers office on the device list, on patch compliance, and on the dashboard. Those names remained after reload. Ticket "Windows device linked" shows Digital Fingers office and `FED-WIN-001`, and it is resolved. The open ticket is still "Disk 20% on vps3231588". Digital Fingers still has one customer. Second Test Org has no devices. `device.link` for device 2 is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S37 — Device asset
+
+**Status:** Passed 2026-10-02.
+
+The agent stores make, model, serial, and installed software for each device. Patched and missing come from that installed list together with updates still waiting. `thermald` is not installed. The Windows PC is not rebooted.
+
+**Smoke:** `vps3231588` shows a make, model, and serial. Installed software includes `libxpm4` at `1:3.5.17-1ubuntu0.24.04.2`, and compliance no longer lists it as missing. `thermald` is still missing and is still `2.5.6-2ubuntu0.24.04.5`. `FED-WIN-001` shows a make, model, and serial, and lists installed software. KB5129195 remains missing. Those rows remain after reload. Org 2 sees no assets. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S38 — One path for the work
+
+**Status:** Passed 2026-10-02.
+
+An offline agent, a missing update, or an alert attaches to a ticket for that customer and device. The ticket keeps Open remote and the command that fits the OS. The portal agent may be stopped only for the offline check, and the smoke fails if it is not active again at the end. `thermald` is not installed. The Windows PC is not rebooted.
+
+**Smoke:** The disk alert on `vps3231588` stays on ticket "Disk 20% on vps3231588" for Digital Fingers office. Missing `thermald` is on a ticket for that same customer and device, and the package is not installed. Stopping `df-agent` on the portal opens an offline ticket or alert for `vps3231588` and Digital Fingers office. `df-agent` is active again and last seen is fresh before the step can pass. The ticket for each device still opens remote, and its command box is `ver` on `FED-WIN-001` and `uname -srm` on `vps3231588`. Org 2 cannot open that path. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S39 — Roles that limit actions
+
+**Status:** Passed 2026-10-02.
+
+The technician password is in `/root/df-tech.env` on Contabo A, mode 600. It is not in git.
+
+`owner` and `admin` may run a shell and approve a patch. `tech` may open devices, tickets, and remote, and may not run a shell or approve a patch. The tech password stays out of git and out of this log. The Windows service account stays as it is.
+
+**Smoke:** A tech in Digital Fingers sees the devices and the tickets. Creating a job and approving a patch return 403, and each denial is audited. The console admin still runs `uname -srm` on `vps3231588` and the result is stored. Org 2 is still denied by its license. The tech cannot see org 2. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
+### S40 — SLA clock
+
+**Status:** Passed 2026-10-02.
+
+The response clock starts when the ticket is created and stops at the first comment by an org user. The resolve clock stops when the ticket is resolved. The targets stay 30 and 240 minutes. The ticket and the dashboard show the same clock. Ticket 2 stays open.
+
+**Smoke:** Ticket "Disk 20% on vps3231588" and the dashboard show the same response clock and the same resolve clock against 30 and 240 minutes. The clocks remain after reload. Org 2 has no SLA. The targets are still 30 and 240. SSH works on all three hosts. API health reports Postgres and Redis ok.
+
 ## Phase 4 — Patch
 
 Starts only after S22. License flag: `patch`.
@@ -435,9 +486,21 @@ Starts only after S26. License flag: `reporting`. Uses events from earlier phase
 | S34 | Allowlisted Linux install | One named package records success or a clear failure. The agent keeps NoNewPrivileges and has no sudo |
 | S35 | Command that fits the OS | A Windows device runs `ver`. A Linux device still runs `uname -srm` |
 
+## Expansion
+
+Starts only after S35. Each step joins the modules already built. Do not start a step whose previous smoke test failed.
+
+| Step | Work | Smoke pass |
+|------|------|------------|
+| S36 | Customer on every device | Both devices show Digital Fingers office on devices, tickets, patches, and the dashboard. Org 2 still has no devices |
+| S37 | Device asset | Both devices show make, model, serial, and installed software. `libxpm4` is no longer missing. `thermald` is still missing and was not installed |
+| S38 | One path for the work | Offline, a missing update, and an alert each attach to a ticket for that customer and device. Remote and the OS command stay on the ticket. The portal agent is active again at the end |
+| S39 | Roles that limit actions | A tech cannot run a shell or approve a patch. An admin still can. Org 2 stays behind its license |
+| S40 | SLA clock | The open ticket and the dashboard show the same response and resolve clocks against 30 and 240 minutes |
+
 ## Later
 
-OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are out of this sequence. Revisit them only after S30.
+Email notification and a Postgres plus Mesh dump follow S40. OpenClaw, white-label domains, on-prem installs, a separate Mesh relay, and full PSA billing stay out of this sequence. Mesh password rotation stays out until asked.
 
 ## Smoke log
 
@@ -479,3 +542,8 @@ OpenClaw, white-label domains, on-prem installs, and a separate Mesh relay are o
 | S33 | 2026-10-02 | Pass | Digital Fingers CSV is once a day, next file in 23 hours, and still matches the dashboard: 2 devices, 1 open ticket, SLA 30 and 240, 2 patched, 3 missing. 23 files are stored, inside the limit of 30. SSH works on all three hosts. API health ok. |
 | S34 | 2026-10-02 | Pass | `libxpm4` on `vps3231588` upgraded to `1:3.5.17-1ubuntu0.24.04.2`. `thermald` was not changed. The agent user is `dfagent`, `NoNewPrivileges` is yes, and sudo still asks for a password. SSH works on all three hosts. API health ok. |
 | S35 | 2026-10-02 | Pass | `FED-WIN-001` command is `ver` and returned `Microsoft Windows [Version 10.0.26200.9278]`. `vps3231588` command is `uname -srm` and returned `Linux 6.8.0-146-generic x86_64`. Both lines remained after reload. SSH works on all three hosts. API health ok. |
+| S36 | 2026-10-02 | Pass | Both devices show Digital Fingers office on devices, patches, and the dashboard after reload. Ticket "Windows device linked" for `FED-WIN-001` is resolved. The open ticket is still "Disk 20% on vps3231588". One customer. Org 2 has no devices. `device.link` is by `console@digitalfingers.co.za`. SSH works on all three hosts. API health ok. |
+| S37 | 2026-10-02 | Pass | `vps3231588` is QEMU, Ubuntu 24.04 PC, serial `ab3c914e-b579-44be-9338-67267582dd08`, with 536 packages. `libxpm4` is `1:3.5.17-1ubuntu0.24.04.2` and is patched. `thermald` is still `2.5.6-2ubuntu0.24.04.5` and still missing. `FED-WIN-001` is innotek GmbH VirtualBox, serial `VirtualBox-87859da1-b350-483f-98f7-df3dee79ac23`, with 32 programs. KB5129195 is still missing. Rows remained after reload. Org 2 has no devices. SSH works on all three hosts. API health ok. |
+| S38 | 2026-10-02 | Pass | Disk alert stays on "Disk 20% on vps3231588" for Digital Fingers office. "Missing thermald on vps3231588" is open for that customer and device. `thermald` is still `2.5.6-2ubuntu0.24.04.5`. Stopping `df-agent` opened "Offline on vps3231588". The agent is active again and last seen is 02 Oct 2026, 09:04. Tickets open remote. Command is `ver` on `FED-WIN-001` and `uname -srm` on `vps3231588`. Org 2 ticketing returns 403. SSH works on all three hosts. API health ok. |
+| S39 | 2026-10-02 | Pass | `tech@digitalfingers.co.za` sees both devices and the tickets, including Open remote, and does not see Second Test Org. A shell and a patch approval return 403. `job.deny` and `patch.deny` are by that technician, reason `role`. The console admin ran `uname -srm` on `vps3231588`; job 8 stored `Linux 6.8.0-146-generic x86_64`. Org 2 ticketing and patch approval stay denied by its license. The admin license report still lists both orgs. SSH works on all three hosts. API health ok. |
+| S40 | 2026-10-02 | Pass | Ticket "Disk 20% on vps3231588" stays open and shows Response 663 of 30 minutes and Resolve 663 of 240 minutes. The dashboard shows the same clock after reload. Targets on the tickets page stay 30 and 240. Org 2 has no SLA. SSH works on all three hosts. API health ok. |

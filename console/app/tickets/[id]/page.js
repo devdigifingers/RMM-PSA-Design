@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { addComment, updateTicket } from "../../actions";
+import { addComment, runJob, updateTicket } from "../../actions";
 import { ConsoleBar } from "../../bar";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -30,11 +30,28 @@ export default async function TicketPage({ params, searchParams }) {
         <p className="org-name">
           {ticket.customer.name} · {ticket.device.hostname}
         </p>
-        {body.sla ? (
-          <p className="org-name">Response {body.sla.responseMinutes} minutes. Resolve {body.sla.resolveMinutes} minutes.</p>
+        {body.clock ? (
+          <p className="org-name">{clockLine(body.clock)}</p>
         ) : null}
         {body.canRemote && ticket.device.hasRemote ? (
           <p><a className="remote" href={`/tickets/${ticket.id}/remote`}>Open remote</a></p>
+        ) : null}
+        {body.canOperate ? (
+          <section className="job">
+            <h2>Command</h2>
+            <form action={runJob}>
+              <input type="hidden" name="deviceId" value={ticket.device.id} />
+              <input type="hidden" name="ticketId" value={ticket.id} />
+              <label>
+                Command
+                <input name="command" defaultValue={defaultCommand(ticket.device.osName)} required />
+              </label>
+              <button type="submit">Run</button>
+            </form>
+            {ticket.latestJob ? (
+              <pre className="output">{ticket.latestJob.status === "finished" ? ticket.latestJob.output : ticket.latestJob.status}</pre>
+            ) : null}
+          </section>
         ) : null}
         {query?.error === "remote" ? (
           <p className="error">Remote desktop is not available for this device.</p>
@@ -92,4 +109,12 @@ export default async function TicketPage({ params, searchParams }) {
       </main>
     </div>
   );
+}
+
+function defaultCommand(osName) {
+  return /windows/i.test(osName || "") ? "ver" : "uname -srm";
+}
+
+function clockLine(clock) {
+  return `Response ${clock.responseElapsed} of ${clock.responseMinutes} minutes. Resolve ${clock.resolveElapsed} of ${clock.resolveMinutes} minutes.`;
 }

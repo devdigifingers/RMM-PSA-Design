@@ -6,7 +6,7 @@ Self-hosted, multi-tenant remote monitoring & management with **MeshCentral** as
 
 **Planning complete (2026-10-01).** Servers are online, patched, and reachable by SSH.  
 **GitHub:** https://github.com/devdigifingers/RMM-PSA-Design  
-S35 command that fits the OS passed. The sequence through S35 is complete.
+S40 SLA clock passed. Email notification and a Postgres plus Mesh dump follow. They have not started.
 
 | Doc | Contents |
 |-----|----------|

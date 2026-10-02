@@ -74,7 +74,7 @@ export default async function TicketsPage({ searchParams }) {
                 Device
                 <select name="deviceId" required defaultValue={devices[0].id}>
                   {devices.map((device) => (
-                    <option key={device.id} value={device.id}>{device.hostname}</option>
+                    <option key={device.id} value={device.id}>{device.customerName ? `${device.hostname} · ${device.customerName}` : device.hostname}</option>
                   ))}
                 </select>
               </label>

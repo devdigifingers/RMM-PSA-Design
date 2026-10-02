@@ -60,6 +60,7 @@ func run(ctx context.Context) error {
 	}
 
 	go collectUpdatesLoop(ctx)
+	go collectAssetLoop(ctx)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -128,12 +129,19 @@ func heartbeat(api string, state savedState) error {
 	if includeUpdates {
 		payload["updates"] = updates
 	}
+	assetItem, assetCollected, includeAsset := pendingAsset()
+	if includeAsset {
+		payload["asset"] = assetItem
+	}
 	body, err := postJSON(api+"/v1/agent/heartbeat", state.DeviceToken, payload)
 	if err != nil {
 		return err
 	}
 	if includeUpdates {
 		markUpdatesSent(collected)
+	}
+	if includeAsset {
+		markAssetSent(assetCollected)
 	}
 	var parsed struct {
 		Jobs    []job    `json:"jobs"`
@@ -254,6 +262,71 @@ func markUpdatesSent(collected time.Time) {
 	updateState.mu.Lock()
 	updateState.sent = collected
 	updateState.mu.Unlock()
+}
+
+type softwareItem struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type asset struct {
+	Make     string         `json:"make"`
+	Model    string         `json:"model"`
+	Serial   string         `json:"serial"`
+	Software []softwareItem `json:"software"`
+}
+
+var assetState struct {
+	mu        sync.Mutex
+	item      asset
+	collected time.Time
+	sent      time.Time
+}
+
+func collectAssetLoop(ctx context.Context) {
+	wait := time.Duration(0)
+	for {
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		item, err := collectAsset()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "asset:", err)
+			wait = time.Minute
+			continue
+		}
+		if item.Software == nil {
+			item.Software = []softwareItem{}
+		}
+		assetState.mu.Lock()
+		assetState.item = item
+		assetState.collected = time.Now()
+		assetState.mu.Unlock()
+		wait = 15 * time.Minute
+	}
+}
+
+func pendingAsset() (asset, time.Time, bool) {
+	assetState.mu.Lock()
+	defer assetState.mu.Unlock()
+	if assetState.collected.IsZero() || !assetState.collected.After(assetState.sent) {
+		return asset{}, time.Time{}, false
+	}
+	item := assetState.item
+	item.Software = append([]softwareItem{}, assetState.item.Software...)
+	return item, assetState.collected, true
+}
+
+func markAssetSent(collected time.Time) {
+	assetState.mu.Lock()
+	assetState.sent = collected
+	assetState.mu.Unlock()
 }
 
 func decodeUpdates(raw []byte) ([]updateItem, error) {

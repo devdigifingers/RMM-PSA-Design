@@ -39,7 +39,7 @@ export default async function DashboardPage() {
         <p className="org-name">{body.deviceCount || 0} enrolled</p>
         <ul className="updates">
           {devices.map((device) => (
-            <li key={device.hostname}>{device.hostname}</li>
+            <li key={device.hostname}>{`${device.hostname} · ${device.customerName || "No customer"}`}</li>
           ))}
         </ul>
         <h2>Open tickets</h2>
@@ -53,11 +53,15 @@ export default async function DashboardPage() {
           </ul>
         )}
         <h2>SLA</h2>
-        <p className="org-name">
-          {body.sla
-            ? `Response ${body.sla.responseMinutes} minutes. Resolve ${body.sla.resolveMinutes} minutes.`
-            : "No SLA targets yet."}
-        </p>
+        {body.sla ? (
+          tickets.map((ticket) => (
+            <p className="org-name" key={`sla-${ticket.id}`}>
+              {ticket.subject}. {clockLine(ticket.clock)}
+            </p>
+          ))
+        ) : (
+          <p className="org-name">No SLA targets yet.</p>
+        )}
         <h2>Health</h2>
         <ul className="updates">
           {devices.map((device) => (
@@ -130,6 +134,11 @@ export default async function DashboardPage() {
       </main>
     </div>
   );
+}
+
+function clockLine(clock) {
+  if (!clock) return "";
+  return `Response ${clock.responseElapsed} of ${clock.responseMinutes} minutes. Resolve ${clock.resolveElapsed} of ${clock.resolveMinutes} minutes.`;
 }
 
 function healthLine(device) {

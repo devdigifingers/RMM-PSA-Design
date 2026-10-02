@@ -170,15 +170,16 @@ export async function runJob(formData) {
   if (!token) redirect("/");
   const deviceId = String(formData.get("deviceId") || "");
   const command = String(formData.get("command") || "");
+  const ticketId = String(formData.get("ticketId") || "");
   const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/jobs`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ command }),
+    body: JSON.stringify({ command, ticketId: ticketId || null }),
     cache: "no-store",
   });
-  if (!response.ok) redirect("/devices?error=job");
-  redirect("/devices");
+  if (!response.ok) redirect(ticketId ? `/tickets/${ticketId}?error=job` : "/devices?error=job");
+  redirect(ticketId ? `/tickets/${ticketId}` : "/devices");
 }

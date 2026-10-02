@@ -84,6 +84,10 @@ CREATE INDEX IF NOT EXISTS devices_site_id_idx ON devices (site_id);
 
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS metrics jsonb;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS updates jsonb;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS make text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS model text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS serial text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS software jsonb;
 
 CREATE TABLE IF NOT EXISTS enroll_tokens (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -146,6 +150,8 @@ CREATE TABLE IF NOT EXISTS tickets (
 CREATE INDEX IF NOT EXISTS tickets_org_id_idx ON tickets (org_id, id DESC);
 CREATE INDEX IF NOT EXISTS tickets_customer_id_idx ON tickets (customer_id);
 CREATE INDEX IF NOT EXISTS tickets_device_id_idx ON tickets (device_id);
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ticket_id bigint REFERENCES tickets (id);
 
 CREATE TABLE IF NOT EXISTS ticket_comments (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

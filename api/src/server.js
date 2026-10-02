@@ -534,6 +534,29 @@ async function attachMissingTickets(deviceId) {
   }
 }
 
+async function clearOfflineTicket(deviceId) {
+  const device = await pool.query(
+    "SELECT id, org_id, hostname FROM devices WHERE id = $1",
+    [deviceId],
+  );
+  const row = device.rows[0];
+  if (!row) return;
+  const subject = `Offline on ${row.hostname}`.slice(0, 200);
+  const updated = await pool.query(
+    `UPDATE tickets
+     SET status = 'resolved', updated_at = now()
+     WHERE org_id = $1 AND device_id = $2 AND subject = $3 AND status <> 'resolved'
+     RETURNING id`,
+    [row.org_id, row.id, subject],
+  );
+  for (const ticket of updated.rows) {
+    await writeAudit(row.org_id, null, "ticket.update", "ticket", String(ticket.id), {
+      status: "resolved",
+      reason: "online",
+    });
+  }
+}
+
 let offlineSweepRunning = false;
 
 async function sweepOffline() {
@@ -558,6 +581,83 @@ async function sweepOffline() {
     console.error(error.message);
   } finally {
     offlineSweepRunning = false;
+  }
+}
+
+async function breachBaseline() {
+  const existing = await pool.query(
+    "SELECT target_id FROM audit_events WHERE action = 'breach.baseline' ORDER BY id ASC LIMIT 1",
+  );
+  if (existing.rows[0]) return Number(existing.rows[0].target_id);
+  const max = await pool.query("SELECT COALESCE(MAX(id), 0)::text AS id FROM tickets");
+  const inserted = await pool.query(
+    `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+     SELECT NULL, NULL, 'breach.baseline', 'ticket', $1, '{}'::jsonb
+     WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE action = 'breach.baseline')
+     RETURNING target_id`,
+    [max.rows[0].id],
+  );
+  if (inserted.rows[0]) return Number(inserted.rows[0].target_id);
+  const again = await pool.query(
+    "SELECT target_id FROM audit_events WHERE action = 'breach.baseline' ORDER BY id ASC LIMIT 1",
+  );
+  return Number(again.rows[0].target_id);
+}
+
+async function notifyBreach(orgId, ticketId, subject) {
+  const to = String(process.env.MAIL_TO || "").trim();
+  if (!to) return;
+  try {
+    const sent = await sendMail({
+      to,
+      subject: `SLA breach: ${subject}`,
+      text: `A ticket is past its SLA: ${subject}\nhttps://rmm.digitalfingers.co.za/tickets/${ticketId}\n`,
+    });
+    if (!sent) return;
+    await writeAudit(orgId, null, "ticket.breach", "ticket", String(ticketId), {});
+  } catch {
+    console.error("ticket mail failed");
+  }
+}
+
+let breachSweepRunning = false;
+
+async function sweepBreaches() {
+  if (breachSweepRunning) return;
+  breachSweepRunning = true;
+  try {
+    const afterId = await breachBaseline();
+    const tickets = await pool.query(
+      `SELECT t.id, t.org_id, t.subject, t.status, t.created_at, t.updated_at,
+              ${TICKET_CLOCK_SQL}
+       FROM tickets t
+       JOIN licenses l ON l.org_id = t.org_id
+       WHERE t.id > $1
+         AND t.status <> 'resolved'
+         AND l.modules->>'ticketing' = 'true'
+         AND (l.expires_at IS NULL OR l.expires_at > now())
+         AND NOT EXISTS (
+           SELECT 1 FROM audit_events e
+           WHERE e.action = 'ticket.breach'
+             AND e.target_type = 'ticket'
+             AND e.target_id = t.id::text
+         )`,
+      [afterId],
+    );
+    const now = new Date();
+    for (const ticket of tickets.rows) {
+      const sla = await orgSla(ticket.org_id);
+      const clock = slaClock(ticket, sla, now);
+      if (!clock) continue;
+      const responseLate = clock.responseElapsed > clock.responseMinutes;
+      const resolveLate = clock.resolveElapsed > clock.resolveMinutes;
+      if (!responseLate && !resolveLate) continue;
+      await notifyBreach(ticket.org_id, ticket.id, ticket.subject);
+    }
+  } catch (error) {
+    console.error(error.message);
+  } finally {
+    breachSweepRunning = false;
   }
 }
 
@@ -826,7 +926,18 @@ function dashboardCsv(snapshot) {
     ["patched", patched].join(","),
     ["missing", missing].join(","),
     ...snapshot.devices.map((device) => ["device", csvCell(device.hostname)].join(",")),
-    ...snapshot.openTickets.map((ticket) => ["ticket", csvCell(ticket.subject)].join(",")),
+    ...snapshot.openTickets.map((ticket) => [
+      "ticket",
+      csvCell(ticket.subject),
+      "response_elapsed",
+      ticket.clock ? ticket.clock.responseElapsed : "",
+      "response_minutes",
+      ticket.clock ? ticket.clock.responseMinutes : "",
+      "resolve_elapsed",
+      ticket.clock ? ticket.clock.resolveElapsed : "",
+      "resolve_minutes",
+      ticket.clock ? ticket.clock.resolveMinutes : "",
+    ].join(",")),
     ...complianceLines,
   ];
   return {
@@ -1263,6 +1374,7 @@ const server = createServer(async (req, res) => {
         ],
       );
       if (metrics) await evaluateAlerts(device.id);
+      await clearOfflineTicket(device.id);
       await attachMissingTickets(device.id);
       const jobs = await pool.query(
         `UPDATE jobs
@@ -2194,17 +2306,38 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       const action = url.searchParams.get("action");
       const orgId = actor.is_platform_admin ? null : actor.org_id || 0;
+      const license = actor.org_id
+        ? await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id])
+        : { rows: [] };
+      const row = license.rows[0];
       const result = await pool.query(
-        `SELECT e.id, e.org_id, e.actor_user_id, u.email AS actor_email, e.action, e.target_type, e.target_id, e.detail, e.created_at
+        `SELECT e.id, e.action, e.target_type, e.target_id, e.created_at,
+                u.email AS actor_email, t.subject AS ticket_subject
          FROM audit_events e
          LEFT JOIN users u ON u.id = e.actor_user_id
+         LEFT JOIN tickets t
+           ON e.target_type = 'ticket' AND t.org_id = e.org_id AND t.id::text = e.target_id
          WHERE ($1::bigint IS NULL OR e.org_id = $1)
            AND ($2::text IS NULL OR e.action = $2)
          ORDER BY e.id DESC
          LIMIT 50`,
         [orgId, action],
       );
-      return send(res, 200, { events: result.rows });
+      return send(res, 200, {
+        canTicket: ticketingAllowed(row),
+        canMonitor: monitoringAllowed(row),
+        canPatch: patchAllowed(row),
+        canReport: reportingAllowed(row),
+        events: result.rows.map((event) => ({
+          id: Number(event.id),
+          action: event.action,
+          targetType: event.target_type,
+          targetId: event.target_id,
+          ticketSubject: event.ticket_subject || null,
+          actorEmail: event.actor_email || null,
+          createdAt: event.created_at,
+        })),
+      });
     }
 
     send(res, 404, { error: "Not found." });
@@ -2220,7 +2353,9 @@ server.listen(port, "127.0.0.1", () => {
   setInterval(() => {
     runDueExports();
     sweepOffline();
+    sweepBreaches();
   }, 15000);
   runDueExports();
   sweepOffline();
+  sweepBreaches();
 });

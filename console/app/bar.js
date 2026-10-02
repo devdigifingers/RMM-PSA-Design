@@ -12,6 +12,7 @@ export function ConsoleBar({ showTickets, showAlerts, showPatches, showDashboard
           {showAlerts ? <a href="/alerts">Alerts</a> : null}
           {showPatches ? <a href="/patches">Patches</a> : null}
           {showTickets ? <a href="/tickets">Tickets</a> : null}
+          <a href="/audit">Audit</a>
         </nav>
       </div>
       <form action={logout}>

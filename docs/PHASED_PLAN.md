@@ -172,7 +172,7 @@ Starts only after S40. S41 through S45 have passed. The checks are in [EXECUTION
 
 ## Desk — say what is true
 
-Starts only after S45. These steps are drafted and have not started. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
+Starts only after S45. S46 through S50 have passed. The checks are in [EXECUTION_PLAN.md](./EXECUTION_PLAN.md).
 
 | Step | Work | Smoke pass |
 |------|------|------------|
@@ -220,5 +220,5 @@ Digital Fingers runs as **Org #1** (operator). Paying companies are additional o
 
 ## Next action
 
-1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S45 have passed. S46 through S50 are drafted and have not started.
-2. Continue at **S46 GitHub backup of S42–S45** when asked. Do not start a step whose previous smoke test failed.
+1. Read [EXECUTION_PLAN.md](./EXECUTION_PLAN.md). S0 through S50 have passed.
+2. Mesh password rotation stays out until asked. Do not start a step whose previous smoke test failed.

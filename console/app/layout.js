@@ -1,4 +1,5 @@
 import localFont from "next/font/local";
+import Script from "next/script";
 import "./globals.css";
 
 const noto = localFont({
@@ -19,7 +20,12 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={noto.className}>{children}</body>
+      <body className={noto.className}>
+        <Script id="df-theme" strategy="beforeInteractive">
+          {"try{if(localStorage.getItem('df-theme')==='dark')document.documentElement.dataset.theme='dark'}catch(e){}"}
+        </Script>
+        {children}
+      </body>
     </html>
   );
 }

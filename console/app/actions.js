@@ -24,7 +24,143 @@ export async function login(formData) {
     path: "/",
     maxAge: 60 * 60 * 12,
   });
-  redirect("/devices");
+  redirect(body.user?.isPlatformAdmin ? "/control" : "/devices");
+}
+
+const LICENSE_MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
+
+export async function saveLicense(formData) {
+  const orgId = String(formData.get("orgId") || "");
+  const response = await callApi(`/v1/platform/orgs/${orgId}/license`, {
+    method: "PUT",
+    body: licenseBody(formData),
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/control?error=${await controlError(response, "license")}`);
+  redirect("/control?saved=license");
+}
+
+export async function resetTenantPassword(formData) {
+  const userId = String(formData.get("userId") || "");
+  const password = String(formData.get("password") || "");
+  const confirmPassword = String(formData.get("confirmPassword") || "");
+  if (password !== confirmPassword) redirect("/control?error=match");
+  if (password.length < 8 || password.length > 200) redirect("/control?error=short");
+  const response = await callApi(`/v1/platform/users/${userId}/password`, { body: { password } });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/control?error=${await controlError(response, "password")}`);
+  redirect("/control?saved=password");
+}
+
+export async function createTenant(formData) {
+  const password = String(formData.get("adminPassword") || "");
+  const confirmPassword = String(formData.get("adminConfirm") || "");
+  if (password !== confirmPassword) redirect("/control?error=match");
+  if (password.length < 8 || password.length > 200) redirect("/control?error=short");
+  const response = await callApi("/v1/platform/tenants", {
+    body: {
+      ...licenseBody(formData),
+      name: String(formData.get("name") || "").trim(),
+      slug: String(formData.get("slug") || "").trim(),
+      adminName: String(formData.get("adminName") || "").trim(),
+      adminEmail: String(formData.get("adminEmail") || "").trim(),
+      adminPassword: password,
+    },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/control?error=${await controlError(response, "tenant")}`);
+  redirect("/control?saved=tenant");
+}
+
+function licenseBody(formData) {
+  const modules = {};
+  for (const key of LICENSE_MODULES) modules[key] = formData.get(`module.${key}`) === "on";
+  const expiresAt = String(formData.get("expiresAt") || "").trim();
+  return {
+    plan: String(formData.get("plan") || "").trim(),
+    seats: Number(formData.get("seats")),
+    deviceCap: Number(formData.get("deviceCap")),
+    expiresAt: expiresAt || null,
+    modules,
+  };
+}
+
+async function controlError(response, fallback) {
+  const body = await response.json().catch(() => ({}));
+  const error = String(body.error || "");
+  if (error.includes("first admin") || error.includes("license type") || error.includes("name, slug")) return "fields";
+  if (error.includes("slug")) return "slug";
+  if (error.includes("email")) return "email";
+  if (error.includes("seats") || error.includes("deviceCap")) return "seats";
+  if (error.includes("expires")) return "date";
+  if (error.includes("modules")) return "modules";
+  if (error.includes("8 characters")) return "short";
+  if (error.includes("Login")) return "user";
+  if (response.status === 403) return "denied";
+  return fallback;
+}
+
+export async function changePassword(formData) {
+  const currentPassword = String(formData.get("currentPassword") || "");
+  const password = String(formData.get("password") || "");
+  const confirmPassword = String(formData.get("confirmPassword") || "");
+  if (password !== confirmPassword) redirect("/account?error=match");
+  if (password.length < 8 || password.length > 200) redirect("/account?error=short");
+  const response = await authed("/v1/account/password", { currentPassword, password });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    redirect(body.error === "current" ? "/account?error=current" : "/account?error=save");
+  }
+  redirect("/account?saved=1");
+}
+
+export async function markDeviceNoticeRead(id) {
+  const noticeId = Number(id);
+  if (!Number.isInteger(noticeId) || noticeId < 1) return false;
+  const response = await callApi(`/v1/notices/devices/${noticeId}/read`, { method: "POST" });
+  return response.ok;
+}
+
+export async function deleteDeviceNotice(id) {
+  const noticeId = Number(id);
+  if (!Number.isInteger(noticeId) || noticeId < 1) return false;
+  const response = await callApi(`/v1/notices/devices/${noticeId}`, { method: "DELETE" });
+  return response.ok;
+}
+
+export async function dismissRibbon(id) {
+  const noticeId = Number(id);
+  if (!Number.isInteger(noticeId) || noticeId < 1) return false;
+  const response = await callApi(`/v1/notices/ribbon/${noticeId}/dismiss`, { method: "POST" });
+  return response.ok;
+}
+
+export async function publishRibbon(formData) {
+  const orgValue = String(formData.get("orgId") || "all");
+  const response = await callApi("/v1/platform/ribbons", {
+    body: {
+      body: String(formData.get("body") || "").trim(),
+      linkLabel: String(formData.get("linkLabel") || "").trim(),
+      linkUrl: String(formData.get("linkUrl") || "").trim(),
+      orgId: orgValue === "all" ? null : Number(orgValue),
+    },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const code = body.error === "link" || body.error === "message" || body.error === "tenant" ? body.error : "ribbon";
+    redirect(`/control?error=${code}`);
+  }
+  redirect("/control?saved=ribbon");
+}
+
+export async function removeRibbon(formData) {
+  const noticeId = Number(formData.get("noticeId"));
+  const response = await callApi(`/v1/platform/ribbons/${noticeId}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect("/control?error=ribbon");
+  redirect("/control?saved=ribbon-off");
 }
 
 export async function logout() {
@@ -34,19 +170,22 @@ export async function logout() {
 }
 
 async function authed(path, body) {
+  return callApi(path, { body });
+}
+
+async function callApi(path, { method = "POST", body } = {}) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
-  const response = await fetch(`${apiUrl}${path}`, {
-    method: "POST",
+  return fetch(`${apiUrl}${path}`, {
+    method,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
   });
-  return response;
 }
 
 export async function scheduleExport(formData) {
@@ -183,6 +322,202 @@ export async function addComment(formData) {
   });
   if (!response.ok) redirect(`/tickets/${id}?error=comment`);
   redirect(`/tickets/${id}`);
+}
+
+export async function deviceSoftware(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/software`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "Installed software is not available." };
+  return { ok: true, ...body };
+}
+
+export async function renameDevice(deviceId, name) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/name`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The name was not saved." };
+  return { ok: true, name: body.name };
+}
+
+export async function deviceFiles(deviceId, path) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/files?path=${encodeURIComponent(path || "")}`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "Files are not available." };
+  return { ok: true, ...body };
+}
+
+export async function createDeviceFolder(deviceId, path, name) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/folders`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ path, name }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The folder was not created." };
+  return { ok: true, name: body.name };
+}
+
+export async function uploadDeviceFile(deviceId, path, file) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/upload`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/octet-stream",
+      "x-df-path": encodeURIComponent(path || ""),
+      "x-df-name": encodeURIComponent(file.name || ""),
+    },
+    body: file,
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The file was not uploaded." };
+  return { ok: true, name: body.name };
+}
+
+export async function deviceDiagnostics(deviceId, tool) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/diagnostics?tool=${encodeURIComponent(tool)}`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "This diagnostic is not available." };
+  return { ok: true, ...body };
+}
+
+export async function setDeviceStartup(deviceId, item) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/startup`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      name: item.name,
+      location: item.location,
+      enabled: item.enabled,
+    }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The startup item was not changed." };
+  return { ok: true, enabled: body.enabled };
+}
+
+export async function setDeviceService(deviceId, item) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/services`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ name: item.name, action: item.action }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The service was not changed." };
+  return { ok: true };
+}
+
+export async function endDeviceProcess(deviceId, pid) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/processes/${encodeURIComponent(pid)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The process was not ended." };
+  return { ok: true };
+}
+
+export async function deviceDetails(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/details`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "Details are not available." };
+  return { ok: true, ...body };
+}
+
+export async function powerDevice(deviceId, action) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/power`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ action }),
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    return { ok: false, error: body.error || "The power action was not sent." };
+  }
+  return { ok: true, error: "" };
+}
+
+export async function startRemoteSession(deviceId, user) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/remote`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ user: user || "" }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.url) {
+    return { ok: false, error: body.error || "The remote session did not start." };
+  }
+  return { ok: true, url: body.url, error: "" };
 }
 
 export async function runJob(formData) {

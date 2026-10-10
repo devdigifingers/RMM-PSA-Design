@@ -27,7 +27,7 @@ await pool.query(
   `INSERT INTO user_roles (user_id, role_id)
    SELECT u.id, $2
    FROM users u
-   WHERE u.email = 'console@digitalfingers.co.za' AND u.org_id = $1
+   WHERE u.email = 'tech@digitalfingers.co.za' AND u.org_id = $1
    ON CONFLICT DO NOTHING`,
   [orgId, admin.rows[0].id],
 );

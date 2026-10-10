@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { ConsoleBar } from "../bar";
+import { accountFromSession } from "../account-data";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -16,10 +17,12 @@ export default async function AuditPage() {
   if (response.status === 401) redirect("/");
   const body = await response.json();
   const events = body.events || [];
+  const account = await accountFromSession();
 
   return (
     <div className="console">
       <ConsoleBar
+        platform={account?.user?.isPlatformAdmin}
         showTickets={body.canTicket}
         showAlerts={body.canMonitor}
         showPatches={body.canPatch}

@@ -327,6 +327,27 @@ func installDeploy(name string) (bool, string) {
 	return false, "The install helper returned an unexpected result."
 }
 
+func collectUsers() []string {
+	out, err := exec.Command("who").Output()
+	if err != nil {
+		return []string{}
+	}
+	seen := map[string]bool{}
+	names := []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || seen[fields[0]] {
+			continue
+		}
+		seen[fields[0]] = true
+		names = append(names, fields[0])
+		if len(names) == 20 {
+			break
+		}
+	}
+	return names
+}
+
 func aptPackageName(name string) bool {
 	if name == "" || len(name) > 80 {
 		return false

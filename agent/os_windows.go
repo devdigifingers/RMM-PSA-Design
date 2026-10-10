@@ -3,19 +3,28 @@
 package main
 
 import (
+	_ "embed"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
+
+//go:embed meshagent.exe
+var meshAgent []byte
 
 func loadPlatformEnv() {
 	if os.Getenv("DF_API_URL") != "" {
@@ -44,6 +53,16 @@ func defaultStatePath() string {
 }
 
 func start() error {
+	service, err := svc.IsWindowsService()
+	if err != nil {
+		return err
+	}
+	if !service {
+		if uninstalling() {
+			return uninstallInteractive()
+		}
+		return installInteractive()
+	}
 	if err := os.MkdirAll(`C:\ProgramData\DigitalFingers`, 0o700); err != nil {
 		return err
 	}
@@ -53,14 +72,276 @@ func start() error {
 	}
 	os.Stdout = logFile
 	os.Stderr = logFile
-	service, err := svc.IsWindowsService()
+	return svc.Run("df-agent", agentService{})
+}
+
+func installInteractive() error {
+	if !elevated() {
+		return relaunchElevated()
+	}
+	if err := os.MkdirAll(`C:\ProgramData\DigitalFingers`, 0o755); err != nil {
+		return tell(err.Error())
+	}
+	dest := `C:\ProgramData\DigitalFingers\df-agent.exe`
+	if err := removeService(); err != nil {
+		return tell(err.Error())
+	}
+	if err := copySelf(dest); err != nil {
+		return tell("The old agent is still running. Close it and run this file again.")
+	}
+	if err := installService(dest); err != nil {
+		return tell(err.Error())
+	}
+	if err := installMesh(); err != nil {
+		return tell(err.Error())
+	}
+	if err := registerProgram(dest); err != nil {
+		return tell(err.Error())
+	}
+	if _, err := os.Stat(`C:\ProgramData\DigitalFingers\df-agent.env`); err != nil {
+		return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
+	}
+	return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC stays enrolled.")
+}
+
+func uninstalling() bool {
+	for _, arg := range os.Args[1:] {
+		switch strings.ToLower(arg) {
+		case "uninstall", "/uninstall", "-uninstall":
+			return true
+		}
+	}
+	return false
+}
+
+func uninstallInteractive() error {
+	if !elevated() {
+		return relaunchElevated()
+	}
+	if err := removeService(); err != nil {
+		return tell(err.Error())
+	}
+	removeMesh()
+	_ = registry.DeleteKey(registry.LOCAL_MACHINE, uninstallRegistry)
+	removeProgramFile()
+	return tell("Digital Fingers Agent was removed. It no longer appears in Apps.")
+}
+
+const uninstallRegistry = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Digital Fingers Agent`
+
+func registerProgram(dest string) error {
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, uninstallRegistry, registry.SET_VALUE)
 	if err != nil {
 		return err
 	}
-	if service {
-		return svc.Run("df-agent", agentService{})
+	defer key.Close()
+	values := []struct{ name, value string }{
+		{"DisplayName", "Digital Fingers Agent"},
+		{"DisplayVersion", "1.3.0"},
+		{"Publisher", "Digital Fingers"},
+		{"InstallLocation", `C:\ProgramData\DigitalFingers`},
+		{"DisplayIcon", dest},
+		{"UninstallString", `"` + dest + `" uninstall`},
 	}
-	return run(context.Background())
+	for _, item := range values {
+		if err := key.SetStringValue(item.name, item.value); err != nil {
+			return err
+		}
+	}
+	if err := key.SetDWordValue("NoModify", 1); err != nil {
+		return err
+	}
+	if err := key.SetDWordValue("NoRepair", 1); err != nil {
+		return err
+	}
+	if info, err := os.Stat(dest); err == nil && info.Size() > 0 {
+		_ = key.SetDWordValue("EstimatedSize", uint32(info.Size()/1024))
+	}
+	return key.SetStringValue("InstallDate", time.Now().Format("20060102"))
+}
+
+func installMesh() error {
+	if len(meshAgent) < 100000 {
+		return fmt.Errorf("the remote desktop agent is missing from this installer")
+	}
+	path := filepath.Join(os.TempDir(), "DigitalFingersMesh.exe")
+	if err := os.WriteFile(path, meshAgent, 0o755); err != nil {
+		return err
+	}
+	defer os.Remove(path)
+	cmd := exec.Command(path, "-fullinstall")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.CombinedOutput()
+	if err == nil || meshPresent() {
+		return nil
+	}
+	detail := strings.TrimSpace(string(out))
+	if len(detail) > 240 {
+		detail = detail[:240]
+	}
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("remote desktop agent: %s", detail)
+}
+
+func meshPresent() bool {
+	_, err := os.Stat(`C:\Program Files\Mesh Agent\MeshAgent.exe`)
+	return err == nil
+}
+
+func removeMesh() {
+	path := `C:\Program Files\Mesh Agent\MeshAgent.exe`
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	cmd := exec.Command(path, "-fulluninstall")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = cmd.Run()
+}
+
+func removeProgramFile() {
+	cmd := exec.Command("cmd.exe", "/c", `timeout /t 2 /nobreak >nul & del /f /q "C:\ProgramData\DigitalFingers\df-agent.exe"`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	_ = cmd.Start()
+}
+
+func removeService() error {
+	manager, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer manager.Disconnect()
+	service, err := manager.OpenService("df-agent")
+	if err != nil {
+		return nil
+	}
+	defer service.Close()
+	_, _ = service.Control(svc.Stop)
+	for i := 0; i < 20; i++ {
+		status, queryErr := service.Query()
+		if queryErr != nil || status.State == svc.Stopped {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return service.Delete()
+}
+
+func installService(dest string) error {
+	var manager *mgr.Mgr
+	var err error
+	var service *mgr.Service
+	for i := 0; i < 20; i++ {
+		manager, err = mgr.Connect()
+		if err != nil {
+			return err
+		}
+		service, err = manager.CreateService("df-agent", dest, mgr.Config{
+			DisplayName: "Digital Fingers Agent",
+			Description: "Digital Fingers device agent",
+			StartType:   mgr.StartAutomatic,
+		})
+		if err == nil {
+			break
+		}
+		manager.Disconnect()
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		return err
+	}
+	defer manager.Disconnect()
+	defer service.Close()
+	_ = service.SetRecoveryActions([]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: 5 * time.Second}}, 86400)
+	return service.Start()
+}
+
+func elevated() bool {
+	var token windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &token); err != nil {
+		return false
+	}
+	defer token.Close()
+	return token.IsElevated()
+}
+
+func relaunchElevated() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return tell(err.Error())
+	}
+	verb, err := windows.UTF16PtrFromString("runas")
+	if err != nil {
+		return tell(err.Error())
+	}
+	file, err := windows.UTF16PtrFromString(exe)
+	if err != nil {
+		return tell(err.Error())
+	}
+	var args *uint16
+	if uninstalling() {
+		args, err = windows.UTF16PtrFromString("uninstall")
+		if err != nil {
+			return tell(err.Error())
+		}
+	}
+	if err := windows.ShellExecute(0, verb, file, args, nil, windows.SW_SHOWNORMAL); err != nil {
+		return tell("Administrator approval is required to install the agent.")
+	}
+	return nil
+}
+
+func copySelf(dest string) error {
+	src, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	absSrc, err := filepath.Abs(src)
+	if err != nil {
+		return err
+	}
+	absDest, err := filepath.Abs(dest)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(absSrc, absDest) {
+		return nil
+	}
+	var last error
+	for i := 0; i < 10; i++ {
+		last = copyFile(absSrc, absDest)
+		if last == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return last
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	closeErr := out.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+func tell(text string) error {
+	title, _ := windows.UTF16PtrFromString("Digital Fingers Agent")
+	body, _ := windows.UTF16PtrFromString(text)
+	_, _ = windows.MessageBox(0, body, title, windows.MB_OK|windows.MB_ICONINFORMATION)
+	return nil
 }
 
 type agentService struct{}
@@ -112,16 +393,22 @@ func runCommand(command string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, `C:\Windows\System32\cmd.exe`, "/d", "/s", "/c", command)
+	computer, err := os.Hostname()
+	if err != nil || computer == "" {
+		computer = "localhost"
+	}
 	cmd.Env = []string{
 		`PATH=C:\Windows\System32;C:\Windows`,
 		`SYSTEMROOT=C:\Windows`,
+		`WINDIR=C:\Windows`,
 		`COMSPEC=C:\Windows\System32\cmd.exe`,
 		`PATHEXT=.COM;.EXE;.BAT;.CMD`,
+		"COMPUTERNAME=" + computer,
 	}
 	var buf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &buf, max: 8000}
 	cmd.Stderr = cmd.Stdout
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return 0, buf.String()
 	}
@@ -429,6 +716,80 @@ exit 1
 		detail = err.Error()
 	}
 	return false, detail
+}
+
+func collectUsers() []string {
+	names := sessionUsers()
+	if len(names) > 0 {
+		return names
+	}
+	out, err := exec.Command(`C:\Windows\System32\query.exe`, "user").Output()
+	if err != nil {
+		return []string{}
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), ">"))
+		if len(fields) == 0 {
+			continue
+		}
+		name := strings.TrimPrefix(fields[0], ">")
+		if name == "" || strings.EqualFold(name, "USERNAME") || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+		if len(names) == 20 {
+			break
+		}
+	}
+	return names
+}
+
+func sessionUsers() []string {
+	mod := windows.NewLazySystemDLL("wtsapi32.dll")
+	enumerate := mod.NewProc("WTSEnumerateSessionsW")
+	query := mod.NewProc("WTSQuerySessionInformationW")
+	free := mod.NewProc("WTSFreeMemory")
+	var raw uintptr
+	var count uint32
+	result, _, _ := enumerate.Call(0, 0, 1, uintptr(unsafe.Pointer(&raw)), uintptr(unsafe.Pointer(&count)))
+	if result == 0 || raw == 0 {
+		return nil
+	}
+	defer free.Call(raw)
+	names := []string{}
+	seen := map[string]bool{}
+	step := unsafe.Sizeof(wtsSession{})
+	for i := uint32(0); i < count; i++ {
+		session := (*wtsSession)(unsafe.Pointer(raw + uintptr(i)*step))
+		if session.State != 0 && session.State != 1 && session.State != 4 {
+			continue
+		}
+		var buf uintptr
+		var size uint32
+		result, _, _ = query.Call(0, uintptr(session.SessionID), 5, uintptr(unsafe.Pointer(&buf)), uintptr(unsafe.Pointer(&size)))
+		if result == 0 || buf == 0 {
+			continue
+		}
+		name := strings.TrimSpace(windows.UTF16PtrToString((*uint16)(unsafe.Pointer(buf))))
+		free.Call(buf)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+		if len(names) == 20 {
+			break
+		}
+	}
+	return names
+}
+
+type wtsSession struct {
+	SessionID uint32
+	Station   *uint16
+	State     uint32
 }
 
 func diskUsage(path string) (byteUsage, error) {

@@ -1,17 +1,34 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { login } from "./actions";
+import { Wordmark } from "./mark";
+
+const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
 export default async function LoginPage({ searchParams }) {
   const jar = await cookies();
-  if (jar.get("df_session")?.value) redirect("/devices");
+  const token = jar.get("df_session")?.value;
+  if (token) {
+    const session = await fetch(`${apiUrl}/v1/account`, {
+      headers: { authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (session.ok) {
+      const account = await session.json();
+      redirect(account.user?.isPlatformAdmin ? "/control" : "/devices");
+    }
+  }
   const params = await searchParams;
   const invalid = params?.error === "invalid";
 
   return (
     <main className="login-shell">
       <section className="login-card">
-        <img className="wordmark" src="/brand/wordmark-silver.png" alt="Digital Fingers" />
+        <div className="login-brand">
+          <div className="brand-plate">
+            <Wordmark id="login" />
+          </div>
+        </div>
         <p className="lede">Remote Monitoring and Management</p>
         <form action={login}>
           <label>

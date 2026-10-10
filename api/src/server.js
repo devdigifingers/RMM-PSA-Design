@@ -1,10 +1,15 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import Redis from "ioredis";
 import { pool } from "./db.js";
 import { sendMail } from "./mail.js";
-import { verifyPassword } from "./passwords.js";
+import { hashPassword, verifyPassword } from "./passwords.js";
 
 const MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
@@ -12,6 +17,8 @@ const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 const EXPORT_HISTORY_LIMIT = 30;
 const port = Number(process.env.PORT || 4000);
+const downloadTickets = new Map();
+const DOWNLOAD_LIMIT = 256 * 1024 * 1024;
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || "127.0.0.1",
@@ -27,6 +34,36 @@ function send(res, status, body) {
     "cache-control": "no-store",
   });
   res.end(payload);
+}
+
+function readBytes(req, max) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > max) {
+        reject(Object.assign(new Error("That file is too large."), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+function filePathValue(value) {
+  const path = String(value || "").replace(/\\/g, "/").trim();
+  if (path.length > 400 || path.includes("\0") || path.split("/").includes("..")) return null;
+  return path;
+}
+
+function fileNameValue(value) {
+  const name = String(value || "").trim();
+  if (!name || name.length > 120 || name === "." || name === ".." || /[\\/\0:*?"<>|]/.test(name)) return "";
+  return name;
 }
 
 function readJson(req) {
@@ -62,7 +99,7 @@ async function actorFrom(req) {
   if (!raw) return null;
   const session = JSON.parse(raw);
   const result = await pool.query(
-    "SELECT id, email, name, org_id, is_platform_admin FROM users WHERE id = $1",
+    "SELECT id, email, name, org_id, is_platform_admin, account_number FROM users WHERE id = $1",
     [session.userId],
   );
   const actor = result.rows[0];
@@ -108,21 +145,1282 @@ function meshControl(args) {
       { cwd: "/opt/meshcentral" },
     );
     const out = [];
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+    }, 25000);
+    const finish = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (ok) resolve(value);
+      else reject(value);
+    };
     child.stdout.on("data", (chunk) => out.push(chunk));
     child.stderr.on("data", () => {});
-    child.on("error", reject);
+    child.on("error", (error) => finish(false, error));
     child.on("close", (code) => {
       if (code !== 0) {
-        reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
         return;
       }
-      resolve(Buffer.concat(out).toString("utf8"));
+      finish(true, Buffer.concat(out).toString("utf8"));
     });
   });
 }
 
 function remoteView(osName) {
   return /windows/i.test(osName || "") ? "11" : "12";
+}
+
+async function connectedMeshNode(hostname) {
+  const text = await meshControl(["ListDevices", "--json"]);
+  const rows = JSON.parse(text);
+  if (!Array.isArray(rows)) return "";
+  const wanted = String(hostname || "").toLowerCase();
+  for (const row of rows) {
+    if (String(row?.name || "").toLowerCase() !== wanted) continue;
+    if ((Number(row.conn) || 0) & 1) return String(row._id || "");
+  }
+  return "";
+}
+
+function meshJson(text) {
+  const source = String(text || "");
+  const objectAt = source.indexOf("{");
+  const listAt = source.indexOf("[");
+  const start = objectAt < 0 ? listAt : listAt < 0 ? objectAt : Math.min(objectAt, listAt);
+  if (start < 0) return null;
+  const end = source.lastIndexOf(source[start] === "[" ? "]" : "}");
+  if (end <= start) return null;
+  try {
+    return JSON.parse(source.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function meshNodeMatch(rows, hostname, displayName) {
+  if (!Array.isArray(rows)) return null;
+  const host = String(hostname || "").trim().toLowerCase();
+  const display = String(displayName || "").trim().toLowerCase();
+  let best = null;
+  for (const row of rows) {
+    const names = [row?.name, row?.rname, row?.host]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    let score = 0;
+    if (host && names.includes(host)) score = 2;
+    else if (display && display !== host && names.includes(display)) score = 1;
+    if (!score || !row?._id) continue;
+    const hostnameMatch = score >= 2;
+    if ((Number(row.conn) || 0) & 1) score += 2;
+    if (!best || score > best.score) {
+      best = {
+        score,
+        hostnameMatch,
+        id: String(row._id),
+        group: String(row.groupname || ""),
+        online: ((Number(row.conn) || 0) & 1) === 1,
+      };
+    }
+  }
+  return best;
+}
+
+async function resolveMeshNode(row) {
+  const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+  const match = meshNodeMatch(listed, row.hostname, row.display_name);
+  const nodeId = match?.id || row.mesh_node_id || "";
+  if (match?.hostnameMatch && match.id && match.id !== row.mesh_node_id) {
+    await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
+  }
+  return { nodeId, online: match ? match.online : null };
+}
+
+function meshSoftware(nodeId) {
+  return meshScript("mesh-software.cjs", [nodeId]);
+}
+
+function meshQuery(nodeId, kind, extra) {
+  const args = [nodeId, kind];
+  if (extra) args.push(String(extra));
+  return meshScript("mesh-query.cjs", args);
+}
+
+function meshStartupSet(nodeId, hive, path, name, enabled) {
+  return meshScript("mesh-query.cjs", [nodeId, "startup-set", hive, path, name, enabled ? "1" : "0"]);
+}
+
+function meshServiceSet(nodeId, action, name) {
+  return meshScript("mesh-query.cjs", [nodeId, "service-set", action, name]);
+}
+
+function meshRename(nodeId, name) {
+  return meshScript("mesh-query.cjs", [nodeId, "rename", name]);
+}
+
+function meshFiles(nodeId, action, filePath, name, localFile) {
+  const args = [nodeId, action, filePath];
+  if (name) args.push(name);
+  if (localFile) args.push(localFile);
+  return meshScript("mesh-files.cjs", args, action === "upload" ? 120000 : 50000);
+}
+
+function meshFilesUpload(nodeId, filePath, name, localFile, onProgress) {
+  const script = fileURLToPath(new URL("../mesh-files.cjs", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/local/bin/node", [script, nodeId, "upload", filePath, name, localFile], { cwd: "/opt/df-api" });
+    const out = [];
+    let pending = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+    }, 120000);
+    const finish = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (ok) resolve(value);
+      else reject(value);
+    };
+    child.stdout.on("data", (chunk) => out.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      pending += chunk.toString("utf8");
+      let split = pending.indexOf("\n");
+      while (split >= 0) {
+        const line = pending.slice(0, split);
+        pending = pending.slice(split + 1);
+        const match = /^P (\d+) (\d+)$/.exec(line);
+        if (match) onProgress(Number(match[1]), Number(match[2]));
+        split = pending.indexOf("\n");
+      }
+    });
+    child.on("error", (error) => finish(false, error));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+        return;
+      }
+      finish(true, Buffer.concat(out).toString("utf8"));
+    });
+  });
+}
+
+function meshFilesDownload(nodeId, filePath, name, kind, localFile, size, onEvent) {
+  const script = fileURLToPath(new URL("../mesh-files.cjs", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/local/bin/node", [script, nodeId, "download", filePath, name, kind, localFile, String(size || 0)], { cwd: "/opt/df-api" });
+    const out = [];
+    let pending = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+    }, 20 * 60 * 1000 + 15000);
+    const finish = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (ok) resolve(value);
+      else reject(value);
+    };
+    child.stdout.on("data", (chunk) => out.push(chunk));
+    child.stderr.on("data", (chunk) => {
+      pending += chunk.toString("utf8");
+      let split = pending.indexOf("\n");
+      while (split >= 0) {
+        const line = pending.slice(0, split);
+        pending = pending.slice(split + 1);
+        if (line.startsWith("S ")) onEvent({ status: line.slice(2) });
+        const zip = /^Z (\d+)$/.exec(line);
+        if (zip) onEvent({ status: "Zipping", progress: Number(zip[1]) });
+        const match = /^P (\d+) (\d+)$/.exec(line);
+        if (match) onEvent({ status: "Downloading", acked: Number(match[1]), size: Number(match[2]) });
+        split = pending.indexOf("\n");
+      }
+    });
+    child.on("error", (error) => finish(false, error));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+        return;
+      }
+      finish(true, Buffer.concat(out).toString("utf8"));
+    });
+  });
+}
+
+function safeFileName(name) {
+  const value = String(name || "");
+  if (!value || value.length > 120 || value === "." || value === ".." || /[\\/\0:*?"<>|]/.test(value)) return "";
+  return value;
+}
+
+async function listFolderFiles(nodeId, folderPath, folderName) {
+  const files = [];
+  const dirs = [];
+  let total = 0;
+  const pending = [{ path: `${folderPath}/${folderName}`, relative: folderName }];
+  const seen = new Set();
+  while (pending.length) {
+    const current = pending.shift();
+    if (seen.has(current.path) || current.relative.split("/").length > 12) {
+      throw Object.assign(new Error("That folder could not be packed."), { status: 400 });
+    }
+    seen.add(current.path);
+    dirs.push(current.relative);
+    const listed = meshJson(await meshFiles(nodeId, "ls", current.path));
+    if (!listed || listed.error) throw Object.assign(new Error(listed?.error || "That folder is not available."), { status: 502 });
+    for (const entry of listed.entries || []) {
+      const name = safeFileName(entry.name);
+      if (!name) continue;
+      if (entry.kind === "folder") pending.push({ path: `${current.path}/${name}`, relative: `${current.relative}/${name}` });
+      else if (entry.kind === "file") {
+        const size = Number(entry.size) || 0;
+        total += size;
+        if (total > DOWNLOAD_LIMIT || files.length >= 2000) {
+          throw Object.assign(new Error("That folder is larger than 256 MB."), { status: 413 });
+        }
+        files.push({ path: current.path, name, relative: `${current.relative}/${name}`, size });
+      }
+    }
+  }
+  return { files, dirs, total };
+}
+
+function writeZip(tree, folderName, zipPath) {
+  const script = [
+    "import sys, zipfile",
+    "from pathlib import Path",
+    "root = Path(sys.argv[1])",
+    "with zipfile.ZipFile(sys.argv[2], 'w', compression=zipfile.ZIP_DEFLATED) as archive:",
+    "    wrote = False",
+    "    if root.exists():",
+    "        for path in sorted(root.rglob('*')):",
+    "            rel = path.relative_to(root).as_posix()",
+    "            if path.is_dir(): archive.writestr(rel + '/', b'')",
+    "            else: archive.write(path, rel)",
+    "            wrote = True",
+    "    if not wrote: archive.writestr(sys.argv[3].replace('\\\\', '/') + '/', b'')",
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn("python3", ["-c", script, tree, zipPath, folderName]);
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(Object.assign(new Error("That folder could not be packed."), { status: 502 }));
+    }, 60000);
+    child.on("error", () => finish(Object.assign(new Error("That folder could not be packed."), { status: 502 })));
+    child.on("close", (code) => finish(code === 0 ? null : Object.assign(new Error("That folder could not be packed."), { status: 502 })));
+  });
+}
+
+async function downloadFolderArchive(nodeId, folderPath, folderName, zipPath, onEvent) {
+  const { files, dirs, total } = await listFolderFiles(nodeId, folderPath, folderName);
+  onEvent({ status: "Downloading", acked: 0, size: total });
+  const tree = join(dirname(zipPath), "tree");
+  for (const dir of dirs) await mkdir(join(tree, ...dir.split("/")), { recursive: true });
+  let done = 0;
+  for (const file of files) {
+    const dest = join(tree, ...file.relative.split("/"));
+    await mkdir(dirname(dest), { recursive: true });
+    const result = meshJson(await meshFilesDownload(nodeId, file.path, file.name, "file", dest, file.size, (event) => {
+      if (event.status === "Downloading" && typeof event.acked === "number") {
+        onEvent({ status: "Downloading", acked: Math.min(total, done + event.acked), size: total });
+      }
+    }));
+    if (!result?.ok) throw Object.assign(new Error(result?.error || "The file was not downloaded."), { status: 502 });
+    done += file.size;
+    onEvent({ status: "Downloading", acked: Math.min(total, done), size: total });
+  }
+  onEvent({ status: "Packing" });
+  await writeZip(tree, folderName, zipPath);
+  const info = await stat(zipPath);
+  return { ok: true, bytes: info.size };
+}
+
+const terminalSessions = new Map();
+
+function shellProtocol(osName, shell, runAs) {
+  const windows = /windows/i.test(osName || "");
+  const asSystem = runAs === "system";
+  if (shell === "powershell") return windows ? (asSystem ? 6 : 9) : null;
+  return asSystem ? 1 : 8;
+}
+
+function openMeshTerminal(nodeId, protocol, cols, rows) {
+  const script = fileURLToPath(new URL("../mesh-terminal.cjs", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/local/bin/node", [script, nodeId, String(protocol), String(cols), String(rows)], {
+      cwd: "/opt/df-api",
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+    });
+    const session = { child, buffer: [], res: null, closed: false };
+    let pending = "";
+    let ready = false;
+    const finish = (error) => {
+      if (ready) return;
+      ready = true;
+      clearTimeout(timer);
+      if (error) {
+        child.kill("SIGKILL");
+        reject(error);
+      } else resolve(session);
+    };
+    const timer = setTimeout(() => finish(Object.assign(new Error("MeshCentral did not answer."), { status: 502 })), 25000);
+    child.stderr.on("data", (chunk) => {
+      pending += chunk.toString("utf8");
+      let split = pending.indexOf("\n");
+      while (split >= 0) {
+        const line = pending.slice(0, split);
+        pending = pending.slice(split + 1);
+        if (line === "READY") finish(null);
+        else if (line.startsWith("ERR ")) finish(Object.assign(new Error(line.slice(4) || "MeshCentral did not answer."), { status: 502 }));
+        split = pending.indexOf("\n");
+      }
+    });
+    child.stdout.on("data", (chunk) => {
+      if (session.res && !session.res.writableEnded) session.res.write(chunk);
+      else session.buffer.push(chunk);
+    });
+    child.on("error", (error) => finish(error));
+    child.on("close", () => {
+      session.closed = true;
+      if (session.res && !session.res.writableEnded) session.res.end();
+      finish(Object.assign(new Error("The shell stopped."), { status: 502 }));
+    });
+    child.stdio[3].on("error", () => {});
+  });
+}
+
+function closeTerminal(ticket) {
+  const session = terminalSessions.get(ticket);
+  if (!session) return;
+  terminalSessions.delete(ticket);
+  clearTimeout(session.timer);
+  try { session.child.kill("SIGKILL"); } catch { /* already gone */ }
+  if (session.res && !session.res.writableEnded) session.res.end();
+}
+
+function rememberDownload(orgId, deviceId, dir, filePath, downloadName) {
+  const ticket = randomBytes(18).toString("hex");
+  const timer = setTimeout(() => {
+    const item = downloadTickets.get(ticket);
+    downloadTickets.delete(ticket);
+    if (item) rm(item.dir, { recursive: true, force: true }).catch(() => {});
+  }, 120000);
+  timer.unref?.();
+  downloadTickets.set(ticket, { orgId: String(orgId), deviceId: String(deviceId), dir, filePath, downloadName, timer });
+  return ticket;
+}
+
+function downloadDisposition(name) {
+  const clean = String(name || "download").replace(/[\r\n"]/g, "");
+  const ascii = clean.replace(/[^\x20-\x7E]/g, "_") || "download";
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean)}`;
+}
+
+function meshScript(file, args, timeoutMs = 50000) {
+  const script = fileURLToPath(new URL(`../${file}`, import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/local/bin/node", [script, ...args], { cwd: "/opt/df-api" });
+    const out = [];
+    let settled = false;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+    }, timeoutMs);
+    const finish = (ok, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (ok) resolve(value);
+      else reject(value);
+    };
+    child.stdout.on("data", (chunk) => out.push(chunk));
+    child.stderr.on("data", () => {});
+    child.on("error", (error) => finish(false, error));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+        return;
+      }
+      finish(true, Buffer.concat(out).toString("utf8"));
+    });
+  });
+}
+
+function installDateLabel(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (!match) return text;
+  const when = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  if (Number.isNaN(when.getTime())) return text;
+  return new Intl.DateTimeFormat("en-ZA", { timeZone: "UTC", dateStyle: "medium" }).format(when);
+}
+
+function softwareSize(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  if (number >= 1024 * 1024) return `${(number / (1024 * 1024)).toFixed(2)} GB`;
+  if (number >= 1024) return `${(number / 1024).toFixed(2)} MB`;
+  return `${Math.round(number)} KB`;
+}
+
+function softwareRows(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  const apps = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const name = String(item.name || "").trim();
+    if (!name) continue;
+    apps.push({
+      name: name.slice(0, 200),
+      version: String(item.version || "").trim().slice(0, 80),
+      vendor: String(item.publisher || item.vendor || "").trim().slice(0, 160),
+      installed: installDateLabel(item.date),
+      location: String(item.location || "").trim().slice(0, 300),
+      size: softwareSize(item.size ?? item.estimatedSize),
+    });
+    if (apps.length >= 4000) break;
+  }
+  apps.sort((a, b) => a.name.localeCompare(b.name, "en"));
+  return apps;
+}
+
+function softwareNote(error) {
+  const text = String(error || "");
+  if (/offline/i.test(text)) return "The Mesh agent is offline, so installed software cannot be read.";
+  if (/denied/i.test(text)) return "MeshCentral did not allow the software list.";
+  if (/not supported/i.test(text)) return "MeshCentral does not list installed software for this operating system.";
+  return "MeshCentral did not return the software list.";
+}
+
+const DIAGNOSTIC_KINDS = {
+  events: "events",
+  accounts: "users",
+  printers: "printers",
+  groups: "groups",
+  shares: "shares",
+  tasks: "processes",
+  startup: "startup",
+  services: "services",
+};
+
+const PROTECTED_PROCESSES = new Set([
+  "system",
+  "idle",
+  "registry",
+  "[system process]",
+  "smss.exe",
+  "csrss.exe",
+  "wininit.exe",
+  "services.exe",
+  "lsass.exe",
+  "winlogon.exe",
+  "meshagent.exe",
+  "meshagent",
+]);
+
+function recordField(item, name) {
+  if (!item || typeof item !== "object") return "";
+  if (item[name] != null && item[name] !== "") return item[name];
+  const key = Object.keys(item).find((entry) => entry.toLowerCase() === name.toLowerCase());
+  return key == null || item[key] == null ? "" : item[key];
+}
+
+function processLabel(item) {
+  const raw = String(recordField(item, "cmd") || recordField(item, "name") || recordField(item, "path") || "").trim();
+  if (!raw) return "";
+  if (!/[\\/]/.test(raw)) return raw.slice(0, 180);
+  const token = raw.split(/\s+/)[0];
+  return (token.split(/[/\\]/).filter(Boolean).pop() || raw).slice(0, 180);
+}
+
+function protectedProcess(name) {
+  return PROTECTED_PROCESSES.has(String(name || "").trim().toLowerCase());
+}
+
+function processEntries(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) && Object.prototype.hasOwnProperty.call(raw, "processes")
+    ? raw.processes
+    : raw;
+  if (Array.isArray(source)) return source.map((item, index) => [String(recordField(item, "pid") || index), item]);
+  if (source && typeof source === "object") return Object.entries(source);
+  return [];
+}
+
+function perfByPid(raw) {
+  const map = new Map();
+  const list = Array.isArray(raw) ? raw : [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    if (String(recordField(item, "Name") || "") === "_Total") continue;
+    const pid = String(recordField(item, "IDProcess") || "").trim();
+    if (pid) map.set(pid, item);
+  }
+  return map;
+}
+
+function cpuLabel(value) {
+  const number = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(number)) return { text: "—", value: null };
+  return { text: `${number.toFixed(2)}%`, value: number };
+}
+
+function memoryLabel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return { text: "—", value: null };
+  return { text: `${(number / (1024 * 1024)).toFixed(2)} MB`, value: number };
+}
+
+const STARTUP_SWITCH = /^(?:S-1-5-[0-9-]+\\)?SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\(?:Run|Run32|StartupFolder)$/;
+
+function startupAccount(user) {
+  return String(user || "").trim().split("\\").pop().toLowerCase();
+}
+
+function startupSwitch(item, users) {
+  const name = String(recordField(item, "Name") || "").trim();
+  const location = String(recordField(item, "Location") || "").trim();
+  const command = String(recordField(item, "Command") || "").trim();
+  const user = String(recordField(item, "User") || "").trim();
+  const base = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\";
+  const file = (command || name).split(/[/\\]/).filter(Boolean).pop() || name;
+  if (!name || /[\\/\u0000-\u001f]/.test(name) || /[\\/\u0000-\u001f]/.test(file)) return null;
+  if (/^HKLM\\/i.test(location) && /\\Run$/i.test(location)) {
+    const leaf = /Wow6432Node/i.test(location) ? "Run32" : "Run";
+    return { hive: "HKLM", path: base + leaf, value: name };
+  }
+  const sid = location.match(/^HKU\\(S-1-5-[^\\]+)\\/i);
+  if (sid && /\\Run$/i.test(location)) {
+    const leaf = /Wow6432Node/i.test(location) ? "Run32" : "Run";
+    return { hive: "HKU", path: `${sid[1]}\\${base}${leaf}`, value: name };
+  }
+  if (!/startup/i.test(location)) return null;
+  if (/common/i.test(location) || /programdata/i.test(command) || /^public$/i.test(user)) {
+    return { hive: "HKLM", path: `${base}StartupFolder`, value: file };
+  }
+  const profile = users && /^S-1-5-[0-9-]+$/.test(String(users[startupAccount(user)] || "")) ? users[startupAccount(user)] : "";
+  if (!profile) return null;
+  return { hive: "HKU", path: `${profile}\\${base}StartupFolder`, value: file };
+}
+
+function startupEnabled(approved, target) {
+  if (!target) return true;
+  const key = `${target.hive}|${target.path}|${target.value}`;
+  const byte = Number(approved?.[key]);
+  if (!Number.isFinite(byte)) return true;
+  return (byte & 1) === 0;
+}
+
+function diagnosticNote(error) {
+  const text = String(error || "");
+  if (/offline/i.test(text)) return "The Mesh agent is offline, so this list cannot be read.";
+  if (/denied/i.test(text)) return "MeshCentral did not allow this list.";
+  if (/unknown command|not supported/i.test(text)) return "MeshCentral does not provide this list for this operating system.";
+  return "MeshCentral did not return this list.";
+}
+
+function byteLabel(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return "—";
+  if (number === 0) return "0 B";
+  if (number >= 1024 ** 3) return `${(number / 1024 ** 3).toFixed(2)} GB`;
+  if (number >= 1024 ** 2) return `${(number / 1024 ** 2).toFixed(2)} MB`;
+  if (number >= 1024) return `${(number / 1024).toFixed(2)} KB`;
+  return `${Math.round(number)} B`;
+}
+
+function cell(value) {
+  const text = value == null ? "" : String(value).trim();
+  return text || "—";
+}
+
+const SERVICE_ACTIONS = new Set(["stop", "start", "restart", "pause", "resume", "manual", "auto", "disabled"]);
+
+function serviceState(status) {
+  if (status && typeof status === "object") return String(status.state || "").toUpperCase();
+  return String(status || "").toUpperCase();
+}
+
+function serviceStatusLabel(state) {
+  const labels = {
+    RUNNING: "Running",
+    STOPPED: "Stopped",
+    PAUSED: "Paused",
+    START_PENDING: "Start Pending",
+    STOP_PENDING: "Stop Pending",
+    CONTINUE_PENDING: "Continue Pending",
+    PAUSE_PENDING: "Pause Pending",
+  };
+  if (labels[state]) return labels[state];
+  if (!state) return "—";
+  const lower = state.toLowerCase().replace(/_/g, " ");
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function serviceStartLabel(mode) {
+  const text = String(mode || "").trim();
+  if (/^auto$/i.test(text)) return "Automatic";
+  if (/^manual$/i.test(text)) return "Manual";
+  if (/^disabled$/i.test(text)) return "Disabled";
+  return text || "—";
+}
+
+function serviceAccount(value) {
+  const text = String(value || "").trim();
+  if (/^localsystem$/i.test(text)) return "Local System";
+  if (/localservice$/i.test(text)) return "Local Service";
+  if (/networkservice$/i.test(text)) return "Network Service";
+  return text || "—";
+}
+
+function serviceProtected(name, display) {
+  const text = `${name || ""} ${display || ""}`.toLowerCase();
+  if (/mesh\s*agent/.test(text)) return true;
+  return ["rpcss", "dcomlaunch", "samss"].includes(String(name || "").toLowerCase());
+}
+
+function serviceRows(raw) {
+  const services = Array.isArray(raw) ? raw : Object.values(raw || {});
+  return services
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const service = String(item.name || "").trim();
+      const name = String(item.displayName || item.name || "").trim();
+      if (!service || !name) return null;
+      const status = item.status;
+      const state = serviceState(status);
+      const accepted = status && typeof status === "object" && Array.isArray(status.controlsAccepted) ? status.controlsAccepted : [];
+      const pid = Number(status && typeof status === "object" ? status.pid : 0);
+      const pidValue = Number.isFinite(pid) && pid > 0 ? pid : 0;
+      const description = String(item.description || "").replace(/\s+/g, " ").trim().slice(0, 400);
+      const protectedService = serviceProtected(service, name);
+      return {
+        name: name.slice(0, 180),
+        service,
+        status: serviceStatusLabel(state),
+        statusValue: state === "RUNNING" ? 2 : state === "PAUSED" ? 1 : 0,
+        start: serviceStartLabel(item.startMode),
+        pid: pidValue ? String(pidValue) : "—",
+        pidValue: pidValue || null,
+        description: description || "—",
+        account: serviceAccount(item.startName),
+        location: item.startMode || item.startName ? `HKLM\\SYSTEM\\CurrentControlSet\\Services\\${service}` : "—",
+        canStart: !protectedService && state === "STOPPED",
+        canStop: !protectedService && accepted.includes("SERVICE_CONTROL_STOP"),
+        canPause: !protectedService && state === "RUNNING" && accepted.includes("SERVICE_CONTROL_PAUSE"),
+        canResume: !protectedService && (state === "PAUSED" || state === "PAUSE_PENDING") && accepted.includes("SERVICE_CONTROL_CONTINUE"),
+        canRestart: !protectedService,
+        canConfigure: !protectedService,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name, "en"))
+    .slice(0, 2000);
+}
+
+function diagnosticTable(tool, raw) {
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === "object" ? Object.entries(raw) : [];
+  if (tool === "events") {
+    const order = ["application", "security", "setup", "system", "forwardedevents"];
+    const rows = list
+      .filter((item) => item && typeof item === "object")
+      .map((item) => ({
+        name: cell(item.LogfileName || item.LogFileName),
+        type: "Administrative",
+        total: item.NumberOfRecords == null ? "—" : String(item.NumberOfRecords),
+        size: byteLabel(item.FileSize),
+      }))
+      .sort((a, b) => {
+        const left = order.indexOf(a.name.toLowerCase().replace(/\s/g, ""));
+        const right = order.indexOf(b.name.toLowerCase().replace(/\s/g, ""));
+        if (left === -1 && right === -1) return a.name.localeCompare(b.name, "en");
+        if (left === -1) return 1;
+        if (right === -1) return -1;
+        return left - right;
+      });
+    return {
+      columns: [
+        { key: "name", label: "Display Name" },
+        { key: "type", label: "Node Type" },
+        { key: "total", label: "Total Events" },
+        { key: "size", label: "Size" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "accounts") {
+    const rows = list
+      .filter((item) => item && typeof item === "object" && item.Name)
+      .map((item) => ({
+        name: cell(item.Name),
+        full: cell(item.FullName),
+        status: item.Disabled === true || String(item.Disabled).toLowerCase() === "true" ? "Disabled" : cell(item.Status || "OK"),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+    return {
+      columns: [
+        { key: "name", label: "Name" },
+        { key: "full", label: "Full name" },
+        { key: "status", label: "Status" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "groups") {
+    const rows = list
+      .filter((item) => item && typeof item === "object" && item.Name)
+      .map((item) => ({ name: cell(item.Name), description: cell(item.Description) }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+    return {
+      columns: [
+        { key: "name", label: "Name" },
+        { key: "description", label: "Description" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "shares") {
+    const rows = list
+      .filter((item) => item && typeof item === "object" && item.Name)
+      .map((item) => ({ name: cell(item.Name), path: cell(item.Path), description: cell(item.Description) }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+    return {
+      columns: [
+        { key: "name", label: "Name" },
+        { key: "path", label: "Path" },
+        { key: "description", label: "Description" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "printers") {
+    const status = { 1: "Other", 2: "Unknown", 3: "Idle", 4: "Printing", 5: "Warmup", 6: "Stopped", 7: "Offline" };
+    const rows = list
+      .filter((item) => item && typeof item === "object" && item.Name)
+      .map((item) => ({
+        name: cell(item.Name),
+        port: cell(item.PortName),
+        status: status[Number(item.PrinterStatus)] || cell(item.PrinterStatus),
+        default: item.Default === true || String(item.Default).toLowerCase() === "true" ? "Yes" : "No",
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, "en"));
+    return {
+      columns: [
+        { key: "name", label: "Name" },
+        { key: "port", label: "Port" },
+        { key: "status", label: "Status" },
+        { key: "default", label: "Default" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "tasks") {
+    const usage = perfByPid(raw && raw.perf);
+    const rows = processEntries(raw)
+      .map(([pid, item]) => {
+        if (!item || typeof item !== "object") return null;
+        const id = String(recordField(item, "pid") || pid).trim();
+        const name = processLabel(item);
+        if (!name || !/^\d+$/.test(id)) return null;
+        const sample = usage.get(id);
+        const cpu = cpuLabel(sample ? recordField(sample, "PercentProcessorTime") : "");
+        const memory = memoryLabel(sample ? recordField(sample, "WorkingSet") : "");
+        return {
+          name,
+          pid: id,
+          status: "Running",
+          user: cell(recordField(item, "user")),
+          cpu: cpu.text,
+          memory: memory.text,
+          pidValue: Number(id),
+          cpuValue: cpu.value,
+          memValue: memory.value,
+          command: String(recordField(item, "cmd") || recordField(item, "path") || name).trim().slice(0, 400),
+          endable: !protectedProcess(name),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 2000);
+    return {
+      columns: [
+        { key: "name", label: "Process Name" },
+        { key: "pid", label: "PID" },
+        { key: "status", label: "Status" },
+        { key: "user", label: "User Name" },
+        { key: "cpu", label: "CPU" },
+        { key: "memory", label: "Memory" },
+      ],
+      rows,
+    };
+  }
+  if (tool === "startup") {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) && raw.items ? raw.items : raw;
+    const approved = raw && typeof raw === "object" && !Array.isArray(raw) && raw.approved ? raw.approved : {};
+    const users = raw && typeof raw === "object" && !Array.isArray(raw) && raw.users ? raw.users : {};
+    const items = Array.isArray(source)
+      ? source
+      : source && typeof source === "object"
+        ? (recordField(source, "Name") ? [source] : Object.values(source).filter((item) => item && typeof item === "object"))
+        : [];
+    const rows = items
+      .map((item) => {
+        const name = String(recordField(item, "Name") || "").trim().slice(0, 180);
+        if (!name) return null;
+        const locationRaw = String(recordField(item, "Location") || "").trim();
+        const command = String(recordField(item, "Command") || "").trim();
+        const registry = /^HK/i.test(locationRaw);
+        const location = registry || /[\\/]/.test(locationRaw)
+          ? locationRaw
+          : (/[\\/]/.test(command) ? command : (locationRaw && command ? `${locationRaw}\\${command}` : (command || locationRaw)));
+        const target = startupSwitch(item, users);
+        const enabled = startupEnabled(approved, target);
+        const allowed = Boolean(target && STARTUP_SWITCH.test(target.path));
+        return {
+          name,
+          type: registry ? "Registry" : "Folder",
+          location: cell(location).slice(0, 400),
+          locationRaw: locationRaw.slice(0, 400),
+          user: cell(recordField(item, "User")),
+          status: enabled ? "On" : "Off",
+          enabled,
+          enabledValue: enabled ? 1 : 0,
+          canToggle: allowed,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name, "en"))
+      .slice(0, 500);
+    return {
+      columns: [
+        { key: "name", label: "Name" },
+        { key: "type", label: "Startup Type" },
+        { key: "location", label: "Location" },
+        { key: "user", label: "User" },
+        { key: "status", label: "Status" },
+      ],
+      rows,
+      warning: raw && raw.approvedError ? String(raw.approvedError).slice(0, 180) : "",
+    };
+  }
+  if (tool === "services") {
+    return {
+      columns: [
+        { key: "name", label: "Display Name" },
+        { key: "status", label: "Status" },
+        { key: "start", label: "Startup Type" },
+        { key: "pid", label: "PID" },
+        { key: "description", label: "Description" },
+        { key: "account", label: "Log On As" },
+        { key: "location", label: "Location" },
+      ],
+      rows: serviceRows(raw),
+    };
+  }
+  return { columns: [], rows: [] };
+}
+
+function detailLine(label, value) {
+  const text = value == null ? "" : String(value).trim();
+  return { label, value: text || "—" };
+}
+
+function seenLabel(value) {
+  if (!value) return "—";
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-ZA", {
+    timeZone: "Africa/Johannesburg",
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(when);
+}
+
+function platformFrom(version, osName) {
+  const text = `${version || ""} ${osName || ""}`;
+  if (/windows/i.test(text)) return "Windows";
+  if (/linux|ubuntu|debian/i.test(text)) return "Linux";
+  if (/mac/i.test(text)) return "macOS";
+  return "";
+}
+
+function gpuNames(board) {
+  const names = [];
+  for (const [key, value] of Object.entries(board || {})) {
+    if (/^GPU\d+$/.test(key) && value) names.push(String(value).trim());
+  }
+  return names.filter(Boolean).join(", ");
+}
+
+function memoryTotal(memory) {
+  let totalMb = 0;
+  let found = false;
+  for (const bank of Object.values(memory || {})) {
+    if (!bank || typeof bank !== "object") continue;
+    const text = String(bank["Capacity/Speed"] || bank.Capacity || "");
+    const match = text.match(/(\d+(?:\.\d+)?)\s*Mb/i);
+    if (!match) continue;
+    totalMb += Number(match[1]);
+    found = true;
+  }
+  if (!found || !Number.isFinite(totalMb)) return "";
+  if (totalMb >= 1024) return `${(totalMb / 1024).toFixed(2)} GB`;
+  return `${Math.round(totalMb)} MB`;
+}
+
+function isLanAddress(ip) {
+  const parts = String(ip || "").split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  return a === 172 && b >= 16 && b <= 31;
+}
+
+function layerPart(text, label) {
+  const match = String(text || "").match(new RegExp(`${label}:\\s*([^,]+)`, "i"));
+  return match ? match[1].trim() : "";
+}
+
+function networkCards(networking) {
+  const cards = [];
+  for (const [name, iface] of Object.entries(networking || {})) {
+    if (!iface || typeof iface !== "object" || Array.isArray(iface)) continue;
+    const macText = String(iface["MAC Layer"] || "");
+    const v4Text = String(iface["IPv4 Layer"] || "");
+    const v6Text = String(iface["IPv6 Layer"] || "");
+    cards.push({
+      name,
+      mac: macText.match(/MAC:\s*([0-9A-Fa-f:]{11,17})/)?.[1] || "",
+      ip: layerPart(v4Text, "IP"),
+      mask: layerPart(v4Text, "Mask"),
+      gateway: layerPart(v4Text, "Gateway"),
+      v6: layerPart(v6Text, "IP"),
+    });
+  }
+  return cards;
+}
+
+function adapterDetails(card) {
+  return [
+    detailLine("IP Address", card.ip),
+    detailLine("IPv6 Address", card.v6),
+    detailLine("MAC Address", card.mac),
+    detailLine("Gateway", card.gateway),
+    detailLine("Subnet Mask", card.mask),
+  ].filter((row) => row.value !== "—");
+}
+
+function utcOffsetLabel(minutes) {
+  const value = Number(minutes);
+  if (!Number.isFinite(value)) return "";
+  const sign = value < 0 ? "-" : "+";
+  const abs = Math.abs(Math.trunc(value));
+  const hours = Math.floor(abs / 60);
+  const mins = abs % 60;
+  if (mins === 0) return `UTC${sign}${hours}`;
+  return `UTC${sign}${hours}:${String(mins).padStart(2, "0")}`;
+}
+
+function wmiTimeLabel(value) {
+  const match = String(value || "").match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if (!match) return "";
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  const when = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (Number.isNaN(when.getTime())) return "";
+  return new Intl.DateTimeFormat("en-ZA", {
+    timeZone: "UTC",
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(when);
+}
+
+function osClock(raw) {
+  const osinfo = raw?.hardware?.windows?.osinfo || raw?.result?.hardware?.windows?.osinfo || {};
+  const bootOffset = String(osinfo.LastBootUpTime || "").match(/([+-]\d+)$/)?.[1];
+  const minutes = osinfo.CurrentTimeZone == null || osinfo.CurrentTimeZone === ""
+    ? (bootOffset == null ? null : Number(bootOffset))
+    : Number(osinfo.CurrentTimeZone);
+  return {
+    timeZone: utcOffsetLabel(minutes),
+    lastBoot: wmiTimeLabel(osinfo.LastBootUpTime),
+    productId: String(osinfo.SerialNumber || "").trim(),
+  };
+}
+
+function flattenBanks(block, prefix) {
+  const rows = [];
+  for (const [name, value] of Object.entries(block || {})) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [label, inner] of Object.entries(value)) {
+        if (inner && typeof inner === "object") continue;
+        rows.push(detailLine(`${name} · ${label}`, inner));
+      }
+    } else {
+      rows.push(detailLine(prefix ? `${prefix} ${name}` : name, value));
+    }
+  }
+  return rows;
+}
+
+function detailSections(device, info, groupName, clock = {}) {
+  const general = info?.General || {};
+  const os = info?.["Operating System"] || {};
+  const agent = info?.["Mesh Agent"] || {};
+  const bios = info?.BIOS || {};
+  const board = info?.Motherboard || {};
+  const system = info?.System || {};
+  const version = os.Version || device.os_name || "";
+  const cards = networkCards(info?.Networking);
+  const wifi = cards.find((card) => /wi-?fi|wlan|wireless/i.test(card.name));
+  const primary = cards.find((card) => isLanAddress(card.ip) && card.ip !== device.ipv4 && /Gateway:/i.test(card.v4Text))
+    || cards.find((card) => isLanAddress(card.ip) && card.ip !== device.ipv4)
+    || null;
+  const privateIp = primary?.ip || "";
+  const networkRows = [
+    detailLine("Public IP Address", device.ipv4),
+    detailLine("Private IP Address", privateIp),
+    detailLine("MAC Address", primary?.mac || cards.find((card) => card.mac)?.mac),
+    detailLine("Network Adapters", cards.length ? String(cards.length) : ""),
+  ];
+  const adapters = cards
+    .map((card) => ({ name: card.name, rows: adapterDetails(card) }))
+    .filter((adapter) => adapter.rows.length > 0)
+    .sort((a, b) => Number(wifi && b.name === wifi.name) - Number(wifi && a.name === wifi.name));
+  const users = Array.isArray(device.users) ? device.users.filter(Boolean) : [];
+  const left = [
+    {
+      key: "device",
+      title: "Device Details",
+      icon: "device",
+      rows: [
+        detailLine("Device Name", device.display_name || device.hostname),
+        detailLine("Hostname", general.Hostname || device.hostname),
+        detailLine("Time Zone", clock.timeZone),
+        detailLine("Last Boot Time", clock.lastBoot),
+        detailLine("Active Users", users.join(", ")),
+        detailLine("Last Seen", seenLabel(device.last_seen_at)),
+        detailLine("Customer", device.customer_name),
+      ],
+    },
+    {
+      key: "os",
+      title: "Operating System",
+      icon: "os",
+      rows: [
+        detailLine("Platform", platformFrom(version, device.os_name)),
+        detailLine("Version", version),
+        detailLine("Architecture", os.Architecture),
+        detailLine("Kernel Release", os["Kernel Release"]),
+        detailLine("Kernel Build", os["Kernel Build"]),
+        detailLine("Product ID", clock.productId),
+      ].filter((row) => row.label !== "Kernel Release" && row.label !== "Kernel Build" ? true : row.value !== "—"),
+    },
+    {
+      key: "hardware",
+      title: "Hardware Details",
+      icon: "hardware",
+      rows: [
+        detailLine("Manufacturer", system.Manufacturer || device.make),
+        detailLine("Model", system["Product Name"] || board.Name || device.model),
+        detailLine("Processor Name", board.CPU),
+        detailLine("System RAM", memoryTotal(info?.Memory)),
+        detailLine("System GPU", gpuNames(board)),
+        detailLine("BIOS Version", bios.Version),
+        detailLine("Serial Number", system.Serial || bios.Serial || device.serial),
+      ],
+    },
+    {
+      key: "bios",
+      title: "BIOS",
+      icon: "bios",
+      rows: [
+        detailLine("Vendor", bios.Vendor),
+        detailLine("Version", bios.Version),
+        detailLine("Serial", bios.Serial),
+        detailLine("Mode", bios.Mode),
+      ],
+    },
+    {
+      key: "board",
+      title: "Motherboard",
+      icon: "board",
+      rows: [
+        detailLine("Vendor", board.Vendor),
+        detailLine("Name", board.Name),
+        detailLine("Version", board.Version),
+        detailLine("Serial", board.Serial),
+        detailLine("Identifier", board.Identifier),
+      ],
+    },
+  ];
+  const right = [
+    {
+      key: "agent",
+      title: "Mesh Agent",
+      icon: "agent",
+      rows: [
+        detailLine("Agent Version", agent["Mesh Agent"]),
+        detailLine("Agent status", agent["Agent status"]),
+        detailLine("Last agent connection", agent["Last agent connection"]),
+        detailLine("Last agent address", agent["Last agent address"]),
+      ],
+    },
+    {
+      key: "groups",
+      title: "Department & Groups",
+      icon: "groups",
+      rows: [
+        detailLine("Department", ""),
+        detailLine("Groups", groupName),
+      ],
+    },
+    {
+      key: "network",
+      title: "Network Details",
+      icon: "network",
+      rows: networkRows,
+      adapters,
+    },
+  ];
+  const memoryRows = flattenBanks(info?.Memory);
+  if (memoryRows.length) {
+    right.push({ key: "memory", title: "Memory", icon: "memory", rows: memoryRows });
+  }
+  const storageRows = flattenBanks(info?.Storage);
+  if (storageRows.length) {
+    right.push({ key: "storage", title: "Storage", icon: "storage", rows: storageRows });
+  }
+  return { left, right };
+}
+
+function blank(value) {
+  const text = value == null ? "" : String(value).trim();
+  return text || "N/A";
+}
+
+function gbFromBytes(bytes) {
+  const number = Number(bytes);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  const gb = number / (1024 ** 3);
+  if (gb >= 10) return `${Math.round(gb)} GB`;
+  return `${gb.toFixed(1)} GB`;
+}
+
+function systemType(architecture) {
+  const text = String(architecture || "");
+  if (/arm/i.test(text) && /64/.test(text)) return "ARM64-based PC";
+  if (/64/.test(text)) return "x64-based PC";
+  if (/32/.test(text)) return "X86-based PC";
+  return "";
+}
+
+function pickVolume(volumes) {
+  const root = volumes && typeof volumes === "object" ? (volumes.drives || volumes) : {};
+  const list = [];
+  for (const [letter, disk] of Object.entries(root)) {
+    if (!disk || typeof disk !== "object") continue;
+    const size = Number(disk.size || disk.Size || 0);
+    if (!size) continue;
+    list.push({
+      letter: String(letter),
+      size,
+      free: Number(disk.sizeremaining || disk.free || disk.FreeSpace || 0),
+      kind: Number(disk.dType || disk.DriveType || 0),
+    });
+  }
+  const fixed = list.filter((item) => item.kind === 0 || item.kind === 3);
+  const pool = fixed.length ? fixed : list;
+  return pool.find((item) => /^c:?$/i.test(item.letter)) || [...pool].sort((a, b) => b.size - a.size)[0] || null;
+}
+
+function storageHeadline(storage) {
+  let mb = 0;
+  for (const disk of Object.values(storage || {})) {
+    const match = String(disk?.Capacity || "").match(/(\d+)/);
+    if (match) mb += Number(match[1]);
+  }
+  if (!mb) return "";
+  const gb = mb / 1024;
+  return gb >= 10 ? `${Math.round(gb)} GB` : `${gb.toFixed(1)} GB`;
+}
+
+function memoryHeadline(memory) {
+  const text = memoryTotal(memory);
+  const match = text.match(/(\d+(?:\.\d+)?)\s*GB/i);
+  if (!match) return text;
+  return `${Number(match[1]).toFixed(1)} GB`;
+}
+
+function experiencePack(osinfo) {
+  for (const [key, value] of Object.entries(osinfo || {})) {
+    if (/experience/i.test(key) && value) return String(value).trim();
+  }
+  return "";
+}
+
+function deviceOverview(device, info, raw) {
+  const os = info?.["Operating System"] || {};
+  const board = info?.Motherboard || {};
+  const system = info?.System || {};
+  const osinfo = raw?.hardware?.windows?.osinfo || raw?.result?.hardware?.windows?.osinfo || {};
+  const windows = Boolean(osinfo.Caption || osinfo.Version || /windows/i.test(`${os.Version || ""} ${device.os_name || ""}`));
+  const volume = pickVolume(info?.Volumes);
+  const used = volume ? Math.max(0, volume.size - volume.free) : 0;
+  const storageValue = volume ? gbFromBytes(volume.size) : storageHeadline(info?.Storage);
+  const cpu = String(board.CPU || "");
+  const speed = cpu.match(/^(.*?)\s+@\s+(.+)$/);
+  const architecture = osinfo.OSArchitecture || os.Architecture || "";
+  return {
+    windows,
+    tiles: [
+      {
+        label: "Storage",
+        value: blank(storageValue),
+        detail: volume && storageValue ? `${gbFromBytes(used) || "0 GB"} of ${storageValue} used` : "",
+      },
+      { label: "Graphics Card", value: blank(gpuNames(board)), detail: "" },
+      { label: "Installed Memory", value: blank(memoryHeadline(info?.Memory)), detail: "" },
+      { label: "Processor", value: blank(speed ? speed[1] : cpu), detail: speed ? speed[2].trim() : "" },
+    ],
+    device: [
+      { label: "Device Name", value: device.display_name || device.hostname || "" },
+      { label: "Device ID", value: blank(board.Identifier) },
+      { label: "Product ID", value: blank(osinfo.SerialNumber) },
+      { label: "Model", value: blank(system["Product Name"] || board.Name || device.model) },
+      { label: "Manufacturer", value: blank(system.Manufacturer || device.make) },
+      { label: "System type", value: blank(systemType(architecture)) },
+      { label: "Service tag", value: blank(system.Serial || info?.BIOS?.Serial || device.serial) },
+    ],
+    windowsTitle: windows ? "Windows Specifications" : "Operating System",
+    windows: [
+      { label: "OS Name", value: blank(osinfo.Caption || os.Version || device.os_name) },
+      { label: "Version", value: blank(osinfo.Version) },
+      { label: "OS Build", value: blank(osinfo.BuildNumber) },
+      { label: "Experience Pack", value: blank(experiencePack(osinfo)) },
+      { label: "Installed On", value: blank(wmiTimeLabel(osinfo.InstallDate)) },
+    ],
+  };
 }
 
 async function meshDesktopUrl(nodeId, tokenName, osName) {
@@ -167,6 +1465,15 @@ function requireActor(actor, res) {
   return false;
 }
 
+function requirePlatform(actor, res) {
+  if (!requireActor(actor, res)) return false;
+  if (!actor.is_platform_admin) {
+    send(res, 403, { error: "Only the control panel can do this." });
+    return false;
+  }
+  return true;
+}
+
 function licenseView(row) {
   return {
     plan: row.plan,
@@ -191,6 +1498,27 @@ function ticketingReason(row) {
   if (licenseExpired(row)) return "expired";
   if (row?.modules?.ticketing !== true) return "module";
   return null;
+}
+
+function usersFrom(body) {
+  if (!body || !Object.hasOwn(body, "users") || !Array.isArray(body.users)) return null;
+  const names = [];
+  for (const item of body.users) {
+    if (typeof item !== "string") continue;
+    const name = item.replaceAll("\u0000", "").trim().slice(0, 80);
+    if (!name || names.includes(name)) continue;
+    names.push(name);
+    if (names.length >= 20) break;
+  }
+  return names;
+}
+
+function presenceFrom(lastSeenAt) {
+  if (!lastSeenAt) return "offline";
+  const age = Date.now() - new Date(lastSeenAt).getTime();
+  if (age < 60 * 1000) return "online";
+  if (age < 5 * 60 * 1000) return "rebooting";
+  return "offline";
 }
 
 function ipv4From(req) {
@@ -219,6 +1547,30 @@ async function storeHealthSample(orgId, deviceId, metrics) {
      )`,
     [deviceId],
   );
+}
+
+function powerCommand(action, osName, hostname) {
+  const windows = {
+    shutdown: "shutdown /s /t 0 /f",
+    restart: "shutdown /r /t 5 /f",
+    logoff: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAByAGEAdwAgAD0AIAAmACAAIgAkAGUAbgB2ADoAUwB5AHMAdABlAG0AUgBvAG8AdABcAFMAeQBzAHQAZQBtADMAMgBcAHEAdQBlAHIAeQAuAGUAeABlACIAIABzAGUAcwBzAGkAbwBuACAAfAAgAE8AdQB0AC0AUwB0AHIAaQBuAGcACgAkAGYAbwB1AG4AZAAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAByAGEAdwAgAC0AcwBwAGwAaQB0ACAAIgBgAHIAYABuACIAKQApACAAewAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbQBhAHQAYwBoACAAJwBcAHMAKABcAGQAKwApAFwAcwArAEEAYwB0AGkAdgBlACcAKQAgAHsACgAgACAAIAAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAbABvAGcAbwBmAGYALgBlAHgAZQAiACAAJABNAGEAdABjAGgAZQBzAFsAMQBdAAoAIAAgACAAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACIAbABvAGcAbwBmAGYAIAAkACgAJABNAGEAdABjAGgAZQBzAFsAMQBdACkAIABmAGEAaQBsAGUAZAA6ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAiADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgAgACAAIAAgACQAZgBvAHUAbgBkACAAPQAgACQAdAByAHUAZQAKACAAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAZgBvAHUAbgBkACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAE4AbwAgAGEAYwB0AGkAdgBlACAAcwBlAHMAcwBpAG8AbgAgAHQAbwAgAGwAbwBnACAAbwBmAGYALgAiADsAIABlAHgAaQB0ACAAMQAgAH0ACgBXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACIATABvAGcAZwBlAGQAIABvAGYAZgAuACIA",
+    hibernate: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAB0AGUAeAB0ACAAPQAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcABvAHcAZQByAGMAZgBnAC4AZQB4AGUAIgAgAC8AYQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnAAoAJABpAG4AIAA9ACAAJABmAGEAbABzAGUACgAkAG8AawAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAB0AGUAeAB0ACAALQBzAHAAbABpAHQAIAAiAGAAcgBgAG4AIgApACkAIAB7AAoAIAAgAGkAZgAgACgAJABsAGkAbgBlACAALQBsAGkAawBlACAAIgBUAGgAZQAgAGYAbwBsAGwAbwB3AGkAbgBnACAAcwBsAGUAZQBwACAAcwB0AGEAdABlAHMAIABhAHIAZQAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAdAByAHUAZQA7ACAAYwBvAG4AdABpAG4AdQBlACAAfQAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbABpAGsAZQAgACIAVABoAGUAIABmAG8AbABsAG8AdwBpAG4AZwAgAHMAbABlAGUAcAAgAHMAdABhAHQAZQBzACAAYQByAGUAIABuAG8AdAAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAZgBhAGwAcwBlADsAIABjAG8AbgB0AGkAbgB1AGUAIAB9AAoAIAAgAGkAZgAgACgAJABpAG4AIAAtAGEAbgBkACAAJABsAGkAbgBlACAALQBtAGEAdABjAGgAIAAiAEgAaQBiAGUAcgBuAGEAdABlACIAKQAgAHsAIAAkAG8AawAgAD0AIAAkAHQAcgB1AGUAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAbwBrACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAEgAaQBiAGUAcgBuAGEAdABlACAAaQBzACAAbgBvAHQAIABhAHYAYQBpAGwAYQBiAGwAZQAgAG8AbgAgAHQAaABpAHMAIABQAEMALgAiADsAIABXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACQAdABlAHgAdAA7ACAAZQB4AGkAdAAgADEAIAB9AAoAJgAgACIAJABlAG4AdgA6AFMAeQBzAHQAZQBtAFIAbwBvAHQAXABTAHkAcwB0AGUAbQAzADIAXABzAGgAdQB0AGQAbwB3AG4ALgBlAHgAZQAiACAALwBoACAALwBmAAoAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUA",
+    sleep: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAB0AGUAeAB0ACAAPQAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcABvAHcAZQByAGMAZgBnAC4AZQB4AGUAIgAgAC8AYQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnAAoAJABpAG4AIAA9ACAAJABmAGEAbABzAGUACgAkAG8AawAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAB0AGUAeAB0ACAALQBzAHAAbABpAHQAIAAiAGAAcgBgAG4AIgApACkAIAB7AAoAIAAgAGkAZgAgACgAJABsAGkAbgBlACAALQBsAGkAawBlACAAIgBUAGgAZQAgAGYAbwBsAGwAbwB3AGkAbgBnACAAcwBsAGUAZQBwACAAcwB0AGEAdABlAHMAIABhAHIAZQAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAdAByAHUAZQA7ACAAYwBvAG4AdABpAG4AdQBlACAAfQAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbABpAGsAZQAgACIAVABoAGUAIABmAG8AbABsAG8AdwBpAG4AZwAgAHMAbABlAGUAcAAgAHMAdABhAHQAZQBzACAAYQByAGUAIABuAG8AdAAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAZgBhAGwAcwBlADsAIABjAG8AbgB0AGkAbgB1AGUAIAB9AAoAIAAgAGkAZgAgACgAJABpAG4AIAAtAGEAbgBkACAAJABsAGkAbgBlACAALQBtAGEAdABjAGgAIAAiAFMAdABhAG4AZABiAHkAIABcACgAUwAzAFwAKQB8AFMAdABhAG4AZABiAHkAIABcACgAUwAwACIAKQAgAHsAIAAkAG8AawAgAD0AIAAkAHQAcgB1AGUAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAbwBrACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAFMAbABlAGUAcAAgAGkAcwAgAG4AbwB0ACAAYQB2AGEAaQBsAGEAYgBsAGUAIABvAG4AIAB0AGgAaQBzACAAUABDAC4AIgA7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAkAHQAZQB4AHQAOwAgAGUAeABpAHQAIAAxACAAfQAKACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcgB1AG4AZABsAGwAMwAyAC4AZQB4AGUAIgAgACIAcABvAHcAcgBwAHIAbwBmAC4AZABsAGwALABTAGUAdABTAHUAcwBwAGUAbgBkAFMAdABhAHQAZQAiACAAIgAwACwAMQAsADAAIgA=",
+    lock: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAEEAZABkAC0AVAB5AHAAZQAgAC0AVAB5AHAAZQBEAGUAZgBpAG4AaQB0AGkAbwBuACAAQAAiAAoAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0AOwAKAHUAcwBpAG4AZwAgAFMAeQBzAHQAZQBtAC4AUgB1AG4AdABpAG0AZQAuAEkAbgB0AGUAcgBvAHAAUwBlAHIAdgBpAGMAZQBzADsACgB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQAOwAKAHAAdQBiAGwAaQBjACAAYwBsAGEAcwBzACAARABGAEwAbwBjAGsAIAB7AAoAIAAgAFsARABsAGwASQBtAHAAbwByAHQAKAAiAGsAZQByAG4AZQBsADMAMgAuAGQAbABsACIAKQBdACAAcAB1AGIAbABpAGMAIABzAHQAYQB0AGkAYwAgAGUAeAB0AGUAcgBuACAAdQBpAG4AdAAgAFcAVABTAEcAZQB0AEEAYwB0AGkAdgBlAEMAbwBuAHMAbwBsAGUAUwBlAHMAcwBpAG8AbgBJAGQAKAApADsACgAgACAAWwBEAGwAbABJAG0AcABvAHIAdAAoACIAawBlAHIAbgBlAGwAMwAyAC4AZABsAGwAIgApAF0AIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIAB1AGkAbgB0ACAAVwBhAGkAdABGAG8AcgBTAGkAbgBnAGwAZQBPAGIAagBlAGMAdAAoAEkAbgB0AFAAdAByACAAaABhAG4AZABsAGUALAAgAHUAaQBuAHQAIABtAHMAKQA7AAoAIAAgAFsARABsAGwASQBtAHAAbwByAHQAKAAiAHcAdABzAGEAcABpADMAMgAuAGQAbABsACIALAAgAFMAZQB0AEwAYQBzAHQARQByAHIAbwByAD0AdAByAHUAZQApAF0AIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABiAG8AbwBsACAAVwBUAFMAUQB1AGUAcgB5AFUAcwBlAHIAVABvAGsAZQBuACgAdQBpAG4AdAAgAHMAZQBzAHMAaQBvAG4ASQBkACwAIABvAHUAdAAgAEkAbgB0AFAAdAByACAAdABvAGsAZQBuACkAOwAKACAAIABbAEQAbABsAEkAbQBwAG8AcgB0ACgAIgBhAGQAdgBhAHAAaQAzADIALgBkAGwAbAAiACwAIABTAGUAdABMAGEAcwB0AEUAcgByAG8AcgA9AHQAcgB1AGUAKQBdACAAcAB1AGIAbABpAGMAIABzAHQAYQB0AGkAYwAgAGUAeAB0AGUAcgBuACAAYgBvAG8AbAAgAEQAdQBwAGwAaQBjAGEAdABlAFQAbwBrAGUAbgBFAHgAKABJAG4AdABQAHQAcgAgAHQAbwBrAGUAbgAsACAAdQBpAG4AdAAgAGEAYwBjAGUAcwBzACwAIABJAG4AdABQAHQAcgAgAGEAdAB0AHIAcwAsACAAaQBuAHQAIABsAGUAdgBlAGwALAAgAGkAbgB0ACAAdAB5AHAAZQAsACAAbwB1AHQAIABJAG4AdABQAHQAcgAgAGQAdQBwACkAOwAKACAAIABbAEQAbABsAEkAbQBwAG8AcgB0ACgAIgBhAGQAdgBhAHAAaQAzADIALgBkAGwAbAAiACwAIABTAGUAdABMAGEAcwB0AEUAcgByAG8AcgA9AHQAcgB1AGUALAAgAEMAaABhAHIAUwBlAHQAPQBDAGgAYQByAFMAZQB0AC4AVQBuAGkAYwBvAGQAZQApAF0AIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABiAG8AbwBsACAAQwByAGUAYQB0AGUAUAByAG8AYwBlAHMAcwBBAHMAVQBzAGUAcgAoAEkAbgB0AFAAdAByACAAdABvAGsAZQBuACwAIABzAHQAcgBpAG4AZwAgAGEAcABwACwAIABTAHQAcgBpAG4AZwBCAHUAaQBsAGQAZQByACAAYwBtAGQALAAgAEkAbgB0AFAAdAByACAAcABhACwAIABJAG4AdABQAHQAcgAgAHQAYQAsACAAYgBvAG8AbAAgAGkAbgBoAGUAcgBpAHQALAAgAHUAaQBuAHQAIABmAGwAYQBnAHMALAAgAEkAbgB0AFAAdAByACAAZQBuAHYALAAgAHMAdAByAGkAbgBnACAAZABpAHIALAAgAHIAZQBmACAAUwBJACAAcwBpACwAIABvAHUAdAAgAFAASQAgAHAAaQApADsACgAgACAAWwBTAHQAcgB1AGMAdABMAGEAeQBvAHUAdAAoAEwAYQB5AG8AdQB0AEsAaQBuAGQALgBTAGUAcQB1AGUAbgB0AGkAYQBsACwAIABDAGgAYQByAFMAZQB0AD0AQwBoAGEAcgBTAGUAdAAuAFUAbgBpAGMAbwBkAGUAKQBdAAoAIAAgAHAAdQBiAGwAaQBjACAAcwB0AHIAdQBjAHQAIABTAEkAIAB7AAoAIAAgACAAIABwAHUAYgBsAGkAYwAgAGkAbgB0ACAAYwBiADsAIABwAHUAYgBsAGkAYwAgAHMAdAByAGkAbgBnACAAcgBlAHMAZQByAHYAZQBkADsAIABwAHUAYgBsAGkAYwAgAHMAdAByAGkAbgBnACAAZABlAHMAawB0AG8AcAA7ACAAcAB1AGIAbABpAGMAIABzAHQAcgBpAG4AZwAgAHQAaQB0AGwAZQA7AAoAIAAgACAAIABwAHUAYgBsAGkAYwAgAGkAbgB0ACAAeAAsACAAeQAsACAAeABTAGkAegBlACwAIAB5AFMAaQB6AGUALAAgAHgAQwBvAHUAbgB0ACwAIAB5AEMAbwB1AG4AdAAsACAAZgBpAGwAbAAsACAAZgBsAGEAZwBzADsACgAgACAAIAAgAHAAdQBiAGwAaQBjACAAcwBoAG8AcgB0ACAAcwBoAG8AdwBXAGkAbgBkAG8AdwAsACAAcgBlAHMAZQByAHYAZQBkADIAOwAgAHAAdQBiAGwAaQBjACAASQBuAHQAUAB0AHIAIAByAGUAcwBlAHIAdgBlAGQAMwAsACAAcwB0AGQASQBuACwAIABzAHQAZABPAHUAdAAsACAAcwB0AGQARQByAHIAOwAKACAAIAB9AAoAIAAgAFsAUwB0AHIAdQBjAHQATABhAHkAbwB1AHQAKABMAGEAeQBvAHUAdABLAGkAbgBkAC4AUwBlAHEAdQBlAG4AdABpAGEAbAApAF0ACgAgACAAcAB1AGIAbABpAGMAIABzAHQAcgB1AGMAdAAgAFAASQAgAHsAIABwAHUAYgBsAGkAYwAgAEkAbgB0AFAAdAByACAAcAByAG8AYwBlAHMAcwAsACAAdABoAHIAZQBhAGQAOwAgAHAAdQBiAGwAaQBjACAAaQBuAHQAIABwAHIAbwBjAGUAcwBzAEkAZAAsACAAdABoAHIAZQBhAGQASQBkADsAIAB9AAoAIAAgAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIAB2AG8AaQBkACAATABhAHUAbgBjAGgAKABzAHQAcgBpAG4AZwAgAGMAbwBtAG0AYQBuAGQAKQAgAHsACgAgACAAIAAgAHUAaQBuAHQAIABzAGUAcwBzAGkAbwBuACAAPQAgAFcAVABTAEcAZQB0AEEAYwB0AGkAdgBlAEMAbwBuAHMAbwBsAGUAUwBlAHMAcwBpAG8AbgBJAGQAKAApADsACgAgACAAIAAgAEkAbgB0AFAAdAByACAAdABvAGsAZQBuACAAPQAgAEkAbgB0AFAAdAByAC4AWgBlAHIAbwA7AAoAIAAgACAAIABiAG8AbwBsACAAbwBwAGUAbgBlAGQAIAA9ACAAcwBlAHMAcwBpAG8AbgAgACEAPQAgADAAeABGAEYARgBGAEYARgBGAEYAIAAmACYAIABXAFQAUwBRAHUAZQByAHkAVQBzAGUAcgBUAG8AawBlAG4AKABzAGUAcwBzAGkAbwBuACwAIABvAHUAdAAgAHQAbwBrAGUAbgApADsACgAgACAAIAAgAGkAZgAgACgAIQBvAHAAZQBuAGUAZAApACAAewAKACAAIAAgACAAIAAgAEMAbwBuAHMAbwBsAGUALgBXAHIAaQB0AGUATABpAG4AZQAoACIAQwBvAHUAbABkACAAbgBvAHQAIABvAHAAZQBuACAAdABoAGUAIABzAGkAZwBuAGUAZAAtAGkAbgAgAHMAZQBzAHMAaQBvAG4ALgAgACIAIAArACAATQBhAHIAcwBoAGEAbAAuAEcAZQB0AEwAYQBzAHQAVwBpAG4AMwAyAEUAcgByAG8AcgAoACkAKQA7AAoAIAAgACAAIAAgACAARQBuAHYAaQByAG8AbgBtAGUAbgB0AC4ARQB4AGkAdAAoADEAKQA7AAoAIAAgACAAIAB9AAoAIAAgACAAIABJAG4AdABQAHQAcgAgAGQAdQBwACAAPQAgAEkAbgB0AFAAdAByAC4AWgBlAHIAbwA7AAoAIAAgACAAIABpAGYAIAAoACEARAB1AHAAbABpAGMAYQB0AGUAVABvAGsAZQBuAEUAeAAoAHQAbwBrAGUAbgAsACAAMAB4ADAAMgAwADAAMAAwADAAMAAsACAASQBuAHQAUAB0AHIALgBaAGUAcgBvACwAIAAyACwAIAAxACwAIABvAHUAdAAgAGQAdQBwACkAKQAgAHsACgAgACAAIAAgACAAIABDAG8AbgBzAG8AbABlAC4AVwByAGkAdABlAEwAaQBuAGUAKAAiAEMAbwB1AGwAZAAgAG4AbwB0ACAAdQBzAGUAIAB0AGgAZQAgAHMAaQBnAG4AZQBkAC0AaQBuACAAcwBlAHMAcwBpAG8AbgAuACAAIgAgACsAIABNAGEAcgBzAGgAYQBsAC4ARwBlAHQATABhAHMAdABXAGkAbgAzADIARQByAHIAbwByACgAKQApADsACgAgACAAIAAgACAAIABFAG4AdgBpAHIAbwBuAG0AZQBuAHQALgBFAHgAaQB0ACgAMQApADsACgAgACAAIAAgAH0ACgAgACAAIAAgAFMASQAgAHMAaQAgAD0AIABuAGUAdwAgAFMASQAoACkAOwAKACAAIAAgACAAcwBpAC4AYwBiACAAPQAgAE0AYQByAHMAaABhAGwALgBTAGkAegBlAE8AZgAoAHQAeQBwAGUAbwBmACgAUwBJACkAKQA7AAoAIAAgACAAIABzAGkALgBkAGUAcwBrAHQAbwBwACAAPQAgACIAdwBpAG4AcwB0AGEAMABcAFwAZABlAGYAYQB1AGwAdAAiADsACgAgACAAIAAgAFAASQAgAHAAaQAgAD0AIABuAGUAdwAgAFAASQAoACkAOwAKACAAIAAgACAAdgBhAHIAIABjAG0AZAAgAD0AIABuAGUAdwAgAFMAdAByAGkAbgBnAEIAdQBpAGwAZABlAHIAKABjAG8AbQBtAGEAbgBkACkAOwAKACAAIAAgACAAaQBmACAAKAAhAEMAcgBlAGEAdABlAFAAcgBvAGMAZQBzAHMAQQBzAFUAcwBlAHIAKABkAHUAcAAsACAAbgB1AGwAbAAsACAAYwBtAGQALAAgAEkAbgB0AFAAdAByAC4AWgBlAHIAbwAsACAASQBuAHQAUAB0AHIALgBaAGUAcgBvACwAIABmAGEAbABzAGUALAAgADAALAAgAEkAbgB0AFAAdAByAC4AWgBlAHIAbwAsACAAbgB1AGwAbAAsACAAcgBlAGYAIABzAGkALAAgAG8AdQB0ACAAcABpACkAKQAgAHsACgAgACAAIAAgACAAIABDAG8AbgBzAG8AbABlAC4AVwByAGkAdABlAEwAaQBuAGUAKAAiAEMAbwB1AGwAZAAgAG4AbwB0ACAAbABvAGMAawAgAHQAaABlACAAZABlAHMAawB0AG8AcAAuACAAIgAgACsAIABNAGEAcgBzAGgAYQBsAC4ARwBlAHQATABhAHMAdABXAGkAbgAzADIARQByAHIAbwByACgAKQApADsACgAgACAAIAAgACAAIABFAG4AdgBpAHIAbwBuAG0AZQBuAHQALgBFAHgAaQB0ACgAMQApADsACgAgACAAIAAgAH0ACgAgACAAIAAgAFcAYQBpAHQARgBvAHIAUwBpAG4AZwBsAGUATwBiAGoAZQBjAHQAKABwAGkALgBwAHIAbwBjAGUAcwBzACwAIAA4ADAAMAAwACkAOwAKACAAIAAgACAAQwBvAG4AcwBvAGwAZQAuAFcAcgBpAHQAZQBMAGkAbgBlACgAIgBMAG8AYwBrAGUAZAAuACIAKQA7AAoAIAAgAH0ACgB9AAoAIgBAAAoAWwBEAEYATABvAGMAawBdADoAOgBMAGEAdQBuAGMAaAAoACIAQwA6AFwAVwBpAG4AZABvAHcAcwBcAFMAeQBzAHQAZQBtADMAMgBcAHIAdQBuAGQAbABsADMAMgAuAGUAeABlACAAdQBzAGUAcgAzADIALgBkAGwAbAAsAEwAbwBjAGsAVwBvAHIAawBTAHQAYQB0AGkAbwBuACIAKQA=",
+  };
+  const linux = {
+    shutdown: "sudo -n /bin/systemctl poweroff",
+    restart: "sudo -n /bin/systemctl reboot",
+    logoff: "sudo -n /bin/loginctl terminate-user \"$(/usr/bin/who | /usr/bin/awk 'NR==1{print $1}')\"",
+    hibernate: "sudo -n /bin/systemctl hibernate",
+    sleep: "sudo -n /bin/systemctl suspend",
+    lock: "sudo -n /bin/loginctl lock-sessions",
+  };
+  const table = /windows/i.test(osName || "") ? windows : linux;
+  const command = table[action] || "";
+  if (!command || !/windows/i.test(osName || "")) return command;
+  const name = String(hostname || "").replace(/[^A-Za-z0-9.-]/g, "") || "localhost";
+  return `set COMPUTERNAME=${name}& ${command}`;
 }
 
 function metricsFrom(body) {
@@ -1168,13 +2520,58 @@ function parseOrgInput(body) {
     }
     modules[key] = body.modules[key];
   }
-  let expiresAt = null;
-  if (body.expiresAt != null) {
-    const parsed = new Date(body.expiresAt);
-    if (Number.isNaN(parsed.getTime())) return { error: "expiresAt must be an ISO date." };
-    expiresAt = parsed.toISOString();
+  const expiry = expiryFrom(body.expiresAt);
+  if (expiry.error) return expiry;
+  return { value: { name, slug, plan, seats, deviceCap, expiresAt: expiry.value, modules } };
+}
+
+function parseLicenseInput(body) {
+  const plan = typeof body.plan === "string" ? body.plan.trim() : "";
+  if (!plan || plan.length > 40) return { error: "Enter a license type." };
+  if (!Number.isInteger(body.seats) || body.seats < 1 || !Number.isInteger(body.deviceCap) || body.deviceCap < 0) {
+    return { error: "seats must be a positive integer and deviceCap must be zero or greater." };
   }
-  return { value: { name, slug, plan, seats, deviceCap, expiresAt, modules } };
+  if (body.modules == null || typeof body.modules !== "object" || Array.isArray(body.modules)) {
+    return { error: "modules must be an object of feature flags." };
+  }
+  const modules = {};
+  for (const key of MODULES) {
+    if (typeof body.modules[key] !== "boolean") return { error: `modules.${key} must be true or false.` };
+    modules[key] = body.modules[key];
+  }
+  const expiry = expiryFrom(body.expiresAt);
+  if (expiry.error) return expiry;
+  return { value: { plan, seats: body.seats, deviceCap: body.deviceCap, expiresAt: expiry.value, modules } };
+}
+
+function expiryFrom(value) {
+  if (value == null || value === "") return { value: null };
+  if (typeof value !== "string") return { error: "expiresAt must be a date." };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const end = new Date(`${value}T23:59:59+02:00`);
+    if (Number.isNaN(end.getTime())) return { error: "expiresAt must be a date." };
+    return { value: end.toISOString() };
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return { error: "expiresAt must be a date." };
+  return { value: parsed.toISOString() };
+}
+
+function parseTenantAdmin(body) {
+  const name = typeof body.adminName === "string" ? body.adminName.trim() : "";
+  const email = typeof body.adminEmail === "string" ? body.adminEmail.trim().toLowerCase() : "";
+  const password = typeof body.adminPassword === "string" ? body.adminPassword : "";
+  if (!name || name.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) {
+    return { error: "Enter the first admin's name, email, and password." };
+  }
+  if (password.length < 8 || password.length > 200) return { error: "Use at least 8 characters." };
+  return { value: { name, email, password } };
+}
+
+function moduleFlags(modules) {
+  const flags = {};
+  for (const key of MODULES) flags[key] = modules?.[key] === true;
+  return flags;
 }
 
 const server = createServer(async (req, res) => {
@@ -1207,6 +2604,161 @@ const server = createServer(async (req, res) => {
     }
 
     const actor = await actorFrom(req);
+
+    if (req.method === "GET" && url.pathname === "/v1/account") {
+      if (!requireActor(actor, res)) return;
+      const found = actor.org_id
+        ? await pool.query(
+            `SELECT o.id, o.name, o.slug, o.created_at,
+                    l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules,
+                    (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
+             FROM orgs o
+             LEFT JOIN licenses l ON l.org_id = o.id
+             WHERE o.id = $1`,
+            [actor.org_id],
+          )
+        : { rows: [] };
+      const row = found.rows[0];
+      const org = row
+        ? { id: Number(row.id), name: row.name, slug: row.slug, createdAt: row.created_at }
+        : null;
+      const license = row?.license_id == null
+        ? null
+        : {
+            id: Number(row.license_id),
+            number: 900000000 + Number(row.license_id),
+            plan: row.plan,
+            seats: row.seats,
+            deviceCap: row.device_cap,
+            deviceCount: row.device_count,
+            expiresAt: row.expires_at,
+            remoteDesktop: row.modules?.remote_desktop === true,
+            ticketing: row.modules?.ticketing === true,
+            monitoring: row.modules?.monitoring === true,
+            patch: row.modules?.patch === true,
+            reporting: row.modules?.reporting === true,
+          };
+      return send(res, 200, {
+        user: {
+          id: Number(actor.id),
+          accountNumber: Number(actor.account_number || 900000000 + Number(actor.id)),
+          name: actor.name,
+          email: actor.email,
+          roles: actor.roles,
+          isPlatformAdmin: actor.is_platform_admin === true,
+        },
+        org,
+        license,
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/notices") {
+      if (!requireActor(actor, res)) return;
+      const devices = await pool.query(
+        `SELECT n.id, n.device_id, n.hostname, n.created_at, o.name AS org_name,
+                (s.read_at IS NOT NULL) AS read
+         FROM device_notices n
+         JOIN orgs o ON o.id = n.org_id
+         LEFT JOIN device_notice_states s ON s.notice_id = n.id AND s.user_id = $1
+         WHERE s.deleted_at IS NULL
+           AND ($2::boolean OR n.org_id = $3)
+         ORDER BY n.id DESC
+         LIMIT 40`,
+        [actor.id, actor.is_platform_admin === true, actor.org_id || 0],
+      );
+      const ribbon = await pool.query(
+        `SELECT n.id, n.body, n.link_label, n.link_url
+         FROM ribbon_notices n
+         LEFT JOIN ribbon_dismissals d ON d.notice_id = n.id AND d.user_id = $1
+         WHERE n.active = true
+           AND d.notice_id IS NULL
+           AND (n.org_id IS NULL OR n.org_id = $2)
+         ORDER BY n.org_id NULLS LAST, n.id DESC
+         LIMIT 1`,
+        [actor.id, actor.org_id || 0],
+      );
+      const row = ribbon.rows[0];
+      return send(res, 200, {
+        devices: devices.rows.map((item) => ({
+          id: Number(item.id),
+          deviceId: item.device_id == null ? null : Number(item.device_id),
+          hostname: item.hostname,
+          orgName: item.org_name,
+          createdAt: item.created_at,
+          read: item.read === true,
+        })),
+        ribbon: row
+          ? { id: Number(row.id), body: row.body, linkLabel: row.link_label || "", linkUrl: row.link_url || "" }
+          : null,
+      });
+    }
+
+    const deviceNoticeMatch = url.pathname.match(/^\/v1\/notices\/devices\/(\d+)(\/read)?$/);
+    if (deviceNoticeMatch && (req.method === "POST" || req.method === "DELETE")) {
+      if (!requireActor(actor, res)) return;
+      const found = await pool.query(
+        `SELECT id FROM device_notices
+         WHERE id = $1 AND ($2::boolean OR org_id = $3)`,
+        [deviceNoticeMatch[1], actor.is_platform_admin === true, actor.org_id || 0],
+      );
+      if (!found.rows[0]) return send(res, 404, { error: "That notice is no longer here." });
+      if (req.method === "DELETE") {
+        await pool.query(
+          `INSERT INTO device_notice_states (notice_id, user_id, deleted_at)
+           VALUES ($1, $2, now())
+           ON CONFLICT (notice_id, user_id)
+           DO UPDATE SET deleted_at = now()`,
+          [deviceNoticeMatch[1], actor.id],
+        );
+        return send(res, 200, { ok: true });
+      }
+      if (deviceNoticeMatch[2] !== "/read") return send(res, 404, { error: "That notice is no longer here." });
+      await pool.query(
+        `INSERT INTO device_notice_states (notice_id, user_id, read_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (notice_id, user_id)
+         DO UPDATE SET read_at = COALESCE(device_notice_states.read_at, now())
+         WHERE device_notice_states.deleted_at IS NULL`,
+        [deviceNoticeMatch[1], actor.id],
+      );
+      return send(res, 200, { ok: true });
+    }
+
+    const ribbonDismissMatch = url.pathname.match(/^\/v1\/notices\/ribbon\/(\d+)\/dismiss$/);
+    if (req.method === "POST" && ribbonDismissMatch) {
+      if (!requireActor(actor, res)) return;
+      const found = await pool.query(
+        `SELECT id FROM ribbon_notices
+         WHERE id = $1 AND active = true AND (org_id IS NULL OR org_id = $2)`,
+        [ribbonDismissMatch[1], actor.org_id || 0],
+      );
+      if (!found.rows[0]) return send(res, 404, { error: "That notice is no longer here." });
+      await pool.query(
+        `INSERT INTO ribbon_dismissals (notice_id, user_id)
+         VALUES ($1, $2)
+         ON CONFLICT (notice_id, user_id) DO NOTHING`,
+        [ribbonDismissMatch[1], actor.id],
+      );
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/account/password") {
+      if (!requireActor(actor, res)) return;
+      const body = await readJson(req);
+      const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+      const password = typeof body.password === "string" ? body.password : "";
+      if (password.length < 8 || password.length > 200) {
+        return send(res, 400, { error: "Use at least 8 characters." });
+      }
+      const found = await pool.query("SELECT password_hash FROM users WHERE id = $1", [actor.id]);
+      if (!found.rows[0] || !(await verifyPassword(currentPassword, found.rows[0].password_hash))) {
+        return send(res, 400, { error: "current" });
+      }
+      const passwordHash = await hashPassword(password);
+      await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, actor.id]);
+      await writeAudit(actor.org_id, actor.id, "user.password", "user", String(actor.id), {});
+      return send(res, 200, { ok: true });
+    }
 
     if (req.method === "POST" && url.pathname === "/v1/orgs") {
       if (!requireActor(actor, res)) return;
@@ -1276,6 +2828,227 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/platform/tenants") {
+      if (!requirePlatform(actor, res)) return;
+      const orgs = await pool.query(
+        `SELECT o.id, o.name, o.slug, o.created_at,
+                l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules,
+                (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
+         FROM orgs o
+         JOIN licenses l ON l.org_id = o.id
+         ORDER BY o.id`,
+      );
+      const people = await pool.query(
+        `SELECT u.id, u.org_id, u.email, u.name, u.account_number,
+                COALESCE(array_agg(r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
+         FROM users u
+         LEFT JOIN user_roles ur ON ur.user_id = u.id
+         LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.org_id IS NOT NULL AND u.is_platform_admin = false
+         GROUP BY u.id
+         ORDER BY u.id`,
+      );
+      const ribbons = await pool.query(
+        `SELECT n.id, n.org_id, n.body, n.link_label, n.link_url, n.created_at, o.name AS org_name
+         FROM ribbon_notices n
+         LEFT JOIN orgs o ON o.id = n.org_id
+         WHERE n.active = true
+         ORDER BY n.id DESC`,
+      );
+      return send(res, 200, {
+        ribbons: ribbons.rows.map((row) => ({
+          id: Number(row.id),
+          orgId: row.org_id == null ? null : Number(row.org_id),
+          orgName: row.org_name || "All tenants",
+          body: row.body,
+          linkLabel: row.link_label || "",
+          linkUrl: row.link_url || "",
+          createdAt: row.created_at,
+        })),
+        tenants: orgs.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          slug: row.slug,
+          createdAt: row.created_at,
+          license: {
+            id: Number(row.license_id),
+            number: 900000000 + Number(row.license_id),
+            plan: row.plan,
+            seats: row.seats,
+            deviceCap: row.device_cap,
+            deviceCount: row.device_count,
+            expiresAt: row.expires_at,
+            modules: moduleFlags(row.modules),
+          },
+          users: people.rows
+            .filter((person) => Number(person.org_id) === Number(row.id))
+            .map((person) => ({
+              id: Number(person.id),
+              accountNumber: Number(person.account_number || 900000000 + Number(person.id)),
+              name: person.name,
+              email: person.email,
+              roles: person.roles,
+            })),
+        })),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/platform/ribbons") {
+      if (!requirePlatform(actor, res)) return;
+      const body = await readJson(req);
+      const message = String(body.body || "").replace(/[\r\n\t]+/g, " ").trim();
+      if (!message || message.length > 180) return send(res, 400, { error: "message" });
+      const linkLabel = String(body.linkLabel || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 40);
+      const linkUrl = String(body.linkUrl || "").trim();
+      let href = "";
+      if (linkUrl) {
+        try {
+          const parsed = new URL(linkUrl);
+          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return send(res, 400, { error: "link" });
+          href = parsed.toString().slice(0, 300);
+        } catch {
+          return send(res, 400, { error: "link" });
+        }
+      }
+      const orgId = body.orgId == null || body.orgId === "" ? null : Number(body.orgId);
+      if (orgId != null && (!Number.isInteger(orgId) || orgId < 1)) return send(res, 400, { error: "tenant" });
+      if (orgId != null) {
+        const org = await pool.query("SELECT id FROM orgs WHERE id = $1", [orgId]);
+        if (!org.rows[0]) return send(res, 400, { error: "tenant" });
+      }
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "UPDATE ribbon_notices SET active = false WHERE active = true AND org_id IS NOT DISTINCT FROM $1",
+          [orgId],
+        );
+        const created = await client.query(
+          `INSERT INTO ribbon_notices (org_id, body, link_label, link_url, created_by)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id`,
+          [orgId, message, href ? (linkLabel || "Know more") : null, href || null, actor.id],
+        );
+        await client.query(
+          `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+           VALUES ($1, $2, 'ribbon.publish', 'ribbon', $3, $4::jsonb)`,
+          [orgId, actor.id, String(created.rows[0].id), JSON.stringify({ audience: orgId ? "tenant" : "all" })],
+        );
+        await client.query("COMMIT");
+        return send(res, 201, { id: Number(created.rows[0].id) });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    const ribbonRemoveMatch = url.pathname.match(/^\/v1\/platform\/ribbons\/(\d+)$/);
+    if (req.method === "DELETE" && ribbonRemoveMatch) {
+      if (!requirePlatform(actor, res)) return;
+      const removed = await pool.query(
+        "UPDATE ribbon_notices SET active = false WHERE id = $1 AND active = true RETURNING id, org_id",
+        [ribbonRemoveMatch[1]],
+      );
+      if (!removed.rows[0]) return send(res, 404, { error: "That notice is no longer here." });
+      await writeAudit(removed.rows[0].org_id, actor.id, "ribbon.remove", "ribbon", String(removed.rows[0].id), {});
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/platform/tenants") {
+      if (!requirePlatform(actor, res)) return;
+      const body = await readJson(req);
+      const parsed = parseOrgInput(body);
+      if (parsed.error) return send(res, 400, { error: parsed.error });
+      const admin = parseTenantAdmin(body);
+      if (admin.error) return send(res, 400, { error: admin.error });
+      const passwordHash = await hashPassword(admin.value.password);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const created = await createOrg(client, parsed.value, actor);
+        const user = await client.query(
+          `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin)
+           VALUES ($1, $2, $3, $4, false)
+           RETURNING id`,
+          [created.org.id, admin.value.email, admin.value.name, passwordHash],
+        );
+        const role = await client.query(
+          "SELECT id FROM roles WHERE org_id = $1 AND name = 'admin'",
+          [created.org.id],
+        );
+        await client.query(
+          "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)",
+          [user.rows[0].id, role.rows[0].id],
+        );
+        await client.query(
+          `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+           VALUES ($1, $2, 'user.create', 'user', $3, $4::jsonb)`,
+          [created.org.id, actor.id, String(user.rows[0].id), JSON.stringify({ role: "admin" })],
+        );
+        await client.query("COMMIT");
+        return send(res, 201, { id: Number(created.org.id) });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (error.code === "23505" && String(error.constraint || "").includes("email")) {
+          return send(res, 409, { error: "That email is already a login." });
+        }
+        if (error.code === "23505") return send(res, 409, { error: "An org with that slug already exists." });
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    const platformLicense = url.pathname.match(/^\/v1\/platform\/orgs\/(\d+)\/license$/);
+    if (req.method === "PUT" && platformLicense) {
+      if (!requirePlatform(actor, res)) return;
+      const parsed = parseLicenseInput(await readJson(req));
+      if (parsed.error) return send(res, 400, { error: parsed.error });
+      const updated = await pool.query(
+        `UPDATE licenses
+         SET plan = $2, seats = $3, device_cap = $4, expires_at = $5, modules = $6::jsonb
+         WHERE org_id = $1
+         RETURNING id`,
+        [
+          platformLicense[1],
+          parsed.value.plan,
+          parsed.value.seats,
+          parsed.value.deviceCap,
+          parsed.value.expiresAt,
+          JSON.stringify(parsed.value.modules),
+        ],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "Org not found." });
+      await writeAudit(platformLicense[1], actor.id, "license.update", "license", String(updated.rows[0].id), {
+        plan: parsed.value.plan,
+        seats: parsed.value.seats,
+        deviceCap: parsed.value.deviceCap,
+        expiresAt: parsed.value.expiresAt,
+        modules: parsed.value.modules,
+      });
+      return send(res, 200, { ok: true });
+    }
+
+    const platformPassword = url.pathname.match(/^\/v1\/platform\/users\/(\d+)\/password$/);
+    if (req.method === "POST" && platformPassword) {
+      if (!requirePlatform(actor, res)) return;
+      const body = await readJson(req);
+      const password = typeof body.password === "string" ? body.password : "";
+      if (password.length < 8 || password.length > 200) return send(res, 400, { error: "Use at least 8 characters." });
+      const found = await pool.query(
+        "SELECT id, org_id, is_platform_admin FROM users WHERE id = $1",
+        [platformPassword[1]],
+      );
+      const person = found.rows[0];
+      if (!person || person.is_platform_admin || !person.org_id) return send(res, 404, { error: "Login not found." });
+      const passwordHash = await hashPassword(password);
+      await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, person.id]);
+      await writeAudit(person.org_id, actor.id, "user.password", "user", String(person.id), {});
+      return send(res, 200, { ok: true });
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/enroll-tokens") {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
@@ -1337,8 +3110,8 @@ const server = createServer(async (req, res) => {
         }
         const deviceToken = randomBytes(32).toString("base64url");
         const device = await client.query(
-          `INSERT INTO devices (org_id, hostname, os_name, last_seen_at, agent_token_hash)
-           VALUES ($1, $2, $3, now(), $4)
+          `INSERT INTO devices (org_id, hostname, display_name, os_name, last_seen_at, agent_token_hash)
+           VALUES ($1, $2, $2, $3, now(), $4)
            RETURNING id`,
           [invite.org_id, hostname, osName || null, sha256(deviceToken)],
         );
@@ -1352,6 +3125,10 @@ const server = createServer(async (req, res) => {
             String(device.rows[0].id),
             JSON.stringify({ hostname, osName }),
           ],
+        );
+        await client.query(
+          "INSERT INTO device_notices (org_id, device_id, hostname) VALUES ($1, $2, $3)",
+          [invite.org_id, device.rows[0].id, hostname],
         );
         await client.query("COMMIT");
         return send(res, 201, {
@@ -1380,10 +3157,12 @@ const server = createServer(async (req, res) => {
       const metrics = metricsFrom(body);
       const updates = updatesFrom(body);
       const asset = assetFrom(body);
+      const users = usersFrom(body);
       await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
              hostname = COALESCE(NULLIF($2, ''), hostname),
+             display_name = COALESCE(NULLIF(display_name, ''), NULLIF($2, ''), hostname),
              os_name = COALESCE(NULLIF($3, ''), os_name),
              metrics = COALESCE($4::jsonb, metrics),
              updates = CASE WHEN $5::boolean THEN $6::jsonb ELSE updates END,
@@ -1391,7 +3170,8 @@ const server = createServer(async (req, res) => {
              model = COALESCE(NULLIF($8, ''), model),
              serial = COALESCE(NULLIF($9, ''), serial),
              software = CASE WHEN $10::boolean THEN $11::jsonb ELSE software END,
-             ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END
+             ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END,
+             users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END
          WHERE id = $1`,
         [
           device.id,
@@ -1406,6 +3186,8 @@ const server = createServer(async (req, res) => {
           asset?.software != null,
           asset?.software ? JSON.stringify(asset.software) : "[]",
           ipv4From(req),
+          users != null,
+          users ? JSON.stringify(users) : "[]",
         ],
       );
       if (metrics) {
@@ -1493,51 +3275,16 @@ const server = createServer(async (req, res) => {
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
       const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const result = await pool.query(
-        `SELECT d.id, d.hostname, d.os_name, d.last_seen_at, d.metrics, d.updates,
-                d.make, d.model, d.serial, d.software, d.ipv4, c.name AS customer_name
+        `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.users, c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
          WHERE d.org_id = $1
-           AND ($2 = '' OR d.hostname ILIKE '%' || $2 || '%' ESCAPE '\\')
+           AND ($2 = '' OR d.hostname ILIKE '%' || $2 || '%' ESCAPE '\\'
+                OR COALESCE(d.display_name, '') ILIKE '%' || $2 || '%' ESCAPE '\\')
          ORDER BY d.hostname`,
         [actor.org_id, needle],
       );
-      const jobs = await pool.query(
-        `SELECT DISTINCT ON (device_id)
-           device_id, id, command, status, exit_code, output, finished_at
-         FROM jobs
-         WHERE org_id = $1
-         ORDER BY device_id, id DESC`,
-        [actor.org_id],
-      );
-      const samples = monitoringAllowed(license.rows[0])
-        ? await pool.query(
-          `SELECT device_id, cpu_percent, memory_percent, disk_percent, sampled_at
-           FROM (
-             SELECT device_id, cpu_percent, memory_percent, disk_percent, sampled_at,
-                    row_number() OVER (PARTITION BY device_id ORDER BY id DESC) AS n
-             FROM device_samples
-             WHERE org_id = $1
-           ) ranked
-           WHERE n <= 2
-           ORDER BY device_id, n`,
-          [actor.org_id],
-        )
-        : { rows: [] };
-      const sampleMap = new Map();
-      for (const sample of samples.rows) {
-        const key = String(sample.device_id);
-        const list = sampleMap.get(key) || [];
-        list.push({
-          cpuPercent: sample.cpu_percent,
-          memoryPercent: sample.memory_percent,
-          diskPercent: sample.disk_percent,
-          sampledAt: sample.sampled_at,
-        });
-        sampleMap.set(key, list);
-      }
-      const latest = new Map(jobs.rows.map((row) => [String(row.device_id), row]));
       return send(res, 200, {
         org: org.rows[0] || null,
         canRemote: access.canRemote,
@@ -1548,35 +3295,701 @@ const server = createServer(async (req, res) => {
         canOperate: canOperate(actor),
         remoteReason: access.remoteReason,
         deviceCount: result.rows.length,
-        devices: result.rows.map((row) => {
-          const job = latest.get(String(row.id));
-          return {
-            id: row.id,
-            hostname: row.hostname,
-            customerName: row.customer_name || null,
-            osName: row.os_name,
-            ipv4: row.ipv4 || null,
-            samples: sampleMap.get(String(row.id)) || [],
-            make: row.make,
-            model: row.model,
-            serial: row.serial,
-            software: row.software,
-            lastSeenAt: row.last_seen_at,
-            metrics: monitoringAllowed(license.rows[0]) ? row.metrics : null,
-            updates: patchAllowed(license.rows[0]) ? row.updates : null,
-            latestJob: job
-              ? {
-                  id: job.id,
-                  command: job.command,
-                  status: job.status,
-                  exitCode: job.exit_code,
-                  output: job.output,
-                  finishedAt: job.finished_at,
-                }
-              : null,
-          };
-        }),
+        devices: result.rows.map((row) => ({
+          id: row.id,
+          hostname: row.hostname,
+          displayName: row.display_name || row.hostname,
+          presence: presenceFrom(row.last_seen_at),
+          users: Array.isArray(row.users) ? row.users : [],
+          customerName: row.customer_name || null,
+          osName: row.os_name,
+          ipv4: row.ipv4 || null,
+          lastSeenAt: row.last_seen_at,
+        })),
       });
+    }
+
+    const deviceDetailsMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/details$/);
+    if (req.method === "GET" && deviceDetailsMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const license = await pool.query(
+        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
+        [actor.org_id],
+      );
+      const device = await pool.query(
+        `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
+                d.serial, d.ipv4, d.users, d.mesh_node_id, c.name AS customer_name
+         FROM devices d
+         LEFT JOIN sites s ON s.id = d.site_id
+         LEFT JOIN customers c ON c.id = s.customer_id
+         WHERE d.id = $1 AND d.org_id = $2`,
+        [deviceDetailsMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const row = device.rows[0];
+      let meshInfo = null;
+      let rawInfo = null;
+      let groupName = "";
+      let note = "";
+      let clock = {};
+      try {
+        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+        const match = meshNodeMatch(listed, row.hostname, row.display_name);
+        const nodeId = match?.id || row.mesh_node_id || "";
+        groupName = match?.group || "";
+        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
+          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
+        }
+        if (nodeId) {
+          try {
+            meshInfo = meshJson(await meshControl(["DeviceInfo", "--id", nodeId, "--json"]));
+          } catch {
+            meshInfo = null;
+          }
+          try {
+            rawInfo = meshJson(await meshControl(["DeviceInfo", "--id", nodeId, "--raw"]));
+            clock = osClock(rawInfo);
+          } catch {
+            clock = {};
+          }
+          if (!meshInfo && !clock.timeZone && !clock.lastBoot && !clock.productId) {
+            note = "MeshCentral has not reported this computer yet.";
+          }
+        } else {
+          note = "MeshCentral has not reported this computer yet.";
+        }
+      } catch {
+        note = "MeshCentral did not answer.";
+      }
+      const sections = detailSections(row, meshInfo, groupName, clock);
+      const presence = presenceFrom(row.last_seen_at);
+      return send(res, 200, {
+        hostname: row.hostname,
+        displayName: row.display_name || row.hostname,
+        presence,
+        presenceLabel: presence === "online" ? "Online" : presence === "rebooting" ? "Rebooting" : "Offline",
+        canRemote: remoteAccess(license.rows[0]).canRemote,
+        users: Array.isArray(row.users) ? row.users : [],
+        note,
+        overview: deviceOverview(row, meshInfo, rawInfo),
+        left: sections.left,
+        right: sections.right,
+      });
+    }
+
+    const deviceNameMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/name$/);
+    if (req.method === "POST" && deviceNameMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 80 || /[\u0000-\u001f]/.test(name)) {
+        return send(res, 400, { error: "Enter a device name." });
+      }
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceNameMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const row = device.rows[0];
+      try {
+        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+        const match = meshNodeMatch(listed, row.hostname, row.display_name);
+        const nodeId = match?.id || row.mesh_node_id || "";
+        if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        const parsed = meshJson(await meshRename(nodeId, name));
+        if (!parsed?.ok) return send(res, 502, { error: parsed?.error || "MeshCentral did not rename this computer." });
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+      await pool.query("UPDATE devices SET display_name = $1 WHERE id = $2", [name, row.id]);
+      await writeAudit(actor.org_id, actor.id, "device.rename", "device", String(row.id), { name });
+      return send(res, 200, { name });
+    }
+
+    const deviceSoftwareMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/software$/);
+    if (req.method === "GET" && deviceSoftwareMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceSoftwareMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const row = device.rows[0];
+      let note = "";
+      let apps = [];
+      try {
+        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+        const match = meshNodeMatch(listed, row.hostname, row.display_name);
+        const nodeId = match?.id || row.mesh_node_id || "";
+        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
+          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
+        }
+        if (!nodeId) {
+          note = "MeshCentral has not reported this computer yet.";
+        } else if (match && match.online === false) {
+          note = "The Mesh agent is offline, so installed software cannot be read.";
+        } else {
+          const parsed = meshJson(await meshSoftware(nodeId));
+          if (Array.isArray(parsed)) apps = softwareRows(parsed);
+          else note = softwareNote(parsed?.error);
+        }
+      } catch {
+        note = "MeshCentral did not answer.";
+      }
+      return send(res, 200, {
+        hostname: row.hostname,
+        note,
+        total: apps.length,
+        apps,
+      });
+    }
+
+    const deviceDiagnosticMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/diagnostics$/);
+    if (req.method === "GET" && deviceDiagnosticMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const tool = url.searchParams.get("tool") || "";
+      const kind = DIAGNOSTIC_KINDS[tool];
+      if (!kind) return send(res, 400, { error: "Choose a diagnostic tool." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceDiagnosticMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const row = device.rows[0];
+      let note = "";
+      let table = { columns: [], rows: [] };
+      try {
+        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+        const match = meshNodeMatch(listed, row.hostname, row.display_name);
+        const nodeId = match?.id || row.mesh_node_id || "";
+        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
+          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
+        }
+        if (!nodeId) {
+          note = "MeshCentral has not reported this computer yet.";
+        } else if (match && match.online === false) {
+          note = "The Mesh agent is offline, so this list cannot be read.";
+        } else {
+          const parsed = meshJson(await meshQuery(nodeId, kind));
+          if (!parsed) note = diagnosticNote("");
+          else if (!Array.isArray(parsed) && parsed.error && !parsed.items) note = diagnosticNote(parsed.error);
+          else table = diagnosticTable(tool, parsed);
+        }
+      } catch {
+        note = "MeshCentral did not answer.";
+      }
+      return send(res, 200, {
+        hostname: row.hostname,
+        tool,
+        note,
+        columns: table.columns,
+        rows: table.rows,
+        total: table.rows.length,
+        warning: table.warning || "",
+      });
+    }
+
+    const deviceStartupMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/startup$/);
+    if (req.method === "POST" && deviceStartupMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const access = remoteAccess(license.rows[0]);
+      if (!access.canRemote) {
+        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
+        return send(res, 403, { error: message });
+      }
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const location = typeof body.location === "string" ? body.location.trim() : "";
+      const enabled = body.enabled === true;
+      if (!name || name.length > 180 || !location || location.length > 400) {
+        return send(res, 400, { error: "That startup item is not available." });
+      }
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceStartupMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      try {
+        const node = await resolveMeshNode(device.rows[0]);
+        if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this startup item cannot be changed." });
+        const listed = meshJson(await meshQuery(node.nodeId, "startup"));
+        const source = listed && listed.items ? listed.items : listed;
+        const users = listed && listed.users ? listed.users : {};
+        const items = Array.isArray(source) ? source : [];
+        const item = items.find((entry) => String(recordField(entry, "Name") || "").trim() === name && String(recordField(entry, "Location") || "").trim() === location);
+        const target = item ? startupSwitch(item, users) : null;
+        if (!target || !STARTUP_SWITCH.test(target.path)) {
+          return send(res, 409, { error: "That startup item cannot be changed." });
+        }
+        const changed = meshJson(await meshStartupSet(node.nodeId, target.hive, target.path, target.value, enabled));
+        if (!changed || changed.error) return send(res, 502, { error: changed?.error || "MeshCentral did not change this startup item." });
+        await writeAudit(actor.org_id, actor.id, "startup.set", "device", String(device.rows[0].id), { name, enabled });
+        return send(res, 200, { ok: true, enabled });
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+    }
+
+    const deviceServiceMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/services$/);
+    if (req.method === "POST" && deviceServiceMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const access = remoteAccess(license.rows[0]);
+      if (!access.canRemote) {
+        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
+        return send(res, 403, { error: message });
+      }
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const action = typeof body.action === "string" ? body.action.trim() : "";
+      if (!SERVICE_ACTIONS.has(action) || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,199}$/.test(name)) {
+        return send(res, 400, { error: "That service cannot be changed." });
+      }
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceServiceMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      try {
+        const node = await resolveMeshNode(device.rows[0]);
+        if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this service cannot be changed." });
+        const listed = meshJson(await meshQuery(node.nodeId, "services"));
+        const rows = serviceRows(listed);
+        const row = rows.find((entry) => entry.service === name);
+        if (!row) return send(res, 404, { error: "That service is not on this computer." });
+        if (serviceProtected(row.service, row.name)) return send(res, 409, { error: "That service is part of the system and cannot be changed from here." });
+        const allowed = {
+          stop: row.canStop,
+          start: row.canStart,
+          pause: row.canPause,
+          resume: row.canResume,
+          restart: row.canRestart,
+          manual: row.canConfigure,
+          auto: row.canConfigure,
+          disabled: row.canConfigure,
+        }[action];
+        if (!allowed) return send(res, 409, { error: "That action is not available for this service." });
+        const changed = meshJson(await meshServiceSet(node.nodeId, action, row.service));
+        if (!changed || changed.error) return send(res, 502, { error: changed?.error || "MeshCentral did not change this service." });
+        await writeAudit(actor.org_id, actor.id, "service.set", "device", String(device.rows[0].id), { name: row.service, action });
+        return send(res, 200, { ok: true });
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+    }
+
+    const deviceProcessMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/processes\/(\d+)$/);
+    if (req.method === "DELETE" && deviceProcessMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const pid = deviceProcessMatch[2];
+      if (!/^[1-9]\d{0,9}$/.test(pid) || Number(pid) > 2147483647) {
+        return send(res, 400, { error: "That process is not available." });
+      }
+      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const access = remoteAccess(license.rows[0]);
+      if (!access.canRemote) {
+        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
+        return send(res, 403, { error: message });
+      }
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceProcessMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      try {
+        const node = await resolveMeshNode(device.rows[0]);
+        if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this process cannot be ended." });
+        const listed = meshJson(await meshQuery(node.nodeId, "processes", "list"));
+        if (!listed || listed.error) return send(res, 502, { error: "MeshCentral did not return this list." });
+        const match = processEntries(listed).find(([key, item]) => item && String(recordField(item, "pid") || key) === pid);
+        const name = match ? processLabel(match[1]) : "";
+        if (!name) return send(res, 404, { error: "That process is no longer running." });
+        if (protectedProcess(name)) return send(res, 409, { error: "That process is part of the system and cannot be ended from here." });
+        const ended = meshJson(await meshQuery(node.nodeId, "kill", pid));
+        if (!ended || ended.error) return send(res, 502, { error: "MeshCentral did not end the process." });
+        await writeAudit(actor.org_id, actor.id, "process.end", "device", String(device.rows[0].id), { pid: Number(pid), name });
+        return send(res, 200, { ok: true });
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+    }
+
+    const deviceFilesMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/files$/);
+    if (req.method === "GET" && deviceFilesMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const folder = filePathValue(url.searchParams.get("path") || "");
+      if (folder == null) return send(res, 400, { error: "That folder is not available." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id, os_name FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceFilesMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      try {
+        const node = await resolveMeshNode(device.rows[0]);
+        if (!node.nodeId) return send(res, 200, { path: folder, entries: [], note: "MeshCentral has not reported this computer yet." });
+        if (node.online === false) return send(res, 200, { path: folder, entries: [], note: "The Mesh agent is offline, so files cannot be read." });
+        const parsed = meshJson(await meshFiles(node.nodeId, "ls", folder));
+        if (parsed?.error) return send(res, 200, { path: folder, entries: [], note: parsed.error });
+        return send(res, 200, { path: parsed.path || folder, entries: parsed.entries || [], windows: /windows/i.test(device.rows[0].os_name || "") });
+      } catch {
+        return send(res, 200, { path: folder, entries: [], note: "MeshCentral did not answer." });
+      }
+    }
+
+    const deviceFolderMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/folders$/);
+    if (req.method === "POST" && deviceFolderMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const folder = filePathValue(body.path || "");
+      const name = fileNameValue(body.name);
+      if (folder == null || !folder) return send(res, 400, { error: "Open a folder before creating one." });
+      if (!name) return send(res, 400, { error: "Enter a folder name." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceFolderMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      try {
+        const node = await resolveMeshNode(device.rows[0]);
+        if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        const parsed = meshJson(await meshFiles(node.nodeId, "mkdir", folder, name));
+        if (parsed?.error) return send(res, 502, { error: parsed.error });
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+      await writeAudit(actor.org_id, actor.id, "file.mkdir", "device", String(device.rows[0].id), { path: folder, name });
+      return send(res, 200, { name });
+    }
+
+    const deviceTerminalMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/terminal$/);
+    const deviceTerminalSessionMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/terminal\/([a-f0-9]{36})(\/input|\/size)?$/);
+    if (deviceTerminalMatch || deviceTerminalSessionMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const deviceId = (deviceTerminalMatch || deviceTerminalSessionMatch)[1];
+      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const access = remoteAccess(license.rows[0]);
+      if (!access.canRemote) {
+        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
+        return send(res, 403, { error: message });
+      }
+      if (req.method === "POST" && deviceTerminalMatch) {
+        const body = await readJson(req);
+        const shell = body.shell === "powershell" ? "powershell" : body.shell === "cmd" ? "cmd" : "";
+        const device = await pool.query(
+          "SELECT id, hostname, display_name, os_name, users, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+          [deviceId, actor.org_id],
+        );
+        if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+        const accounts = Array.isArray(device.rows[0].users) ? device.rows[0].users.map((user) => String(user || "").trim()).filter(Boolean) : [];
+        const runAs = body.runAs === "system" || accounts.includes(body.runAs) ? String(body.runAs) : "";
+        if (!shell || !runAs) return send(res, 400, { error: "Choose a shell." });
+        const protocol = shellProtocol(device.rows[0].os_name, shell, runAs);
+        if (!protocol) return send(res, 400, { error: "PowerShell is only available on Windows." });
+        const cols = Math.min(220, Math.max(40, Number(body.cols) || 100));
+        const rows = Math.min(80, Math.max(10, Number(body.rows) || 30));
+        let nodeId = device.rows[0].mesh_node_id || "";
+        if (!nodeId) {
+          const node = await resolveMeshNode(device.rows[0]);
+          nodeId = node.nodeId || "";
+        }
+        if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        let dropped = false;
+        const onDrop = () => { dropped = true; };
+        res.on("close", onDrop);
+        try {
+          const session = await openMeshTerminal(nodeId, protocol, cols, rows);
+          res.removeListener("close", onDrop);
+          if (dropped || res.writableEnded) {
+            try { session.child.kill("SIGKILL"); } catch { /* already gone */ }
+            return;
+          }
+          const ticket = randomBytes(18).toString("hex");
+          session.orgId = String(actor.org_id);
+          session.deviceId = String(device.rows[0].id);
+          session.timer = setTimeout(() => closeTerminal(ticket), 30 * 60 * 1000);
+          terminalSessions.set(ticket, session);
+          await writeAudit(actor.org_id, actor.id, "terminal.open", "device", String(device.rows[0].id), { shell, runAs });
+          return send(res, 200, { ticket });
+        } catch (error) {
+          const allowed = ["MeshCentral did not answer.", "The shell stopped.", "Remote service is not configured.", "Choose a shell.", "MeshCentral did not allow the shell."];
+          return send(res, error.status || 502, { error: allowed.includes(error.message) ? error.message : "MeshCentral did not answer." });
+        }
+      }
+      const ticket = deviceTerminalSessionMatch?.[2] || "";
+      const session = terminalSessions.get(ticket);
+      if (!session || session.orgId !== String(actor.org_id) || session.deviceId !== deviceId) {
+        return send(res, 404, { error: "That shell is no longer open." });
+      }
+      if (req.method === "GET" && deviceTerminalSessionMatch && !deviceTerminalSessionMatch[3]) {
+        if (session.res) return send(res, 409, { error: "That shell is already open." });
+        if (res.socket) res.socket.setNoDelay(true);
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "cache-control": "no-store",
+          "x-accel-buffering": "no",
+        });
+        for (const chunk of session.buffer) res.write(chunk);
+        session.buffer = [];
+        if (session.closed) {
+          res.end();
+          return;
+        }
+        session.res = res;
+        res.on("close", () => {
+          if (session.res === res) closeTerminal(ticket);
+        });
+        return;
+      }
+      if (req.method === "DELETE" && deviceTerminalSessionMatch && !deviceTerminalSessionMatch[3]) {
+        closeTerminal(ticket);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === "POST" && deviceTerminalSessionMatch?.[3] === "/input") {
+        const bytes = await readBytes(req, 65536);
+        session.child.stdin.write(bytes);
+        clearTimeout(session.timer);
+        session.timer = setTimeout(() => closeTerminal(ticket), 30 * 60 * 1000);
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === "POST" && deviceTerminalSessionMatch?.[3] === "/size") {
+        const body = await readJson(req);
+        const cols = Math.min(220, Math.max(40, Number(body.cols) || 100));
+        const rows = Math.min(80, Math.max(10, Number(body.rows) || 30));
+        session.child.stdio[3].write(`${JSON.stringify({ cols, rows })}\n`);
+        return send(res, 200, { ok: true });
+      }
+      return send(res, 404, { error: "That shell is no longer open." });
+    }
+
+    const deviceDownloadFileMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/download\/([a-f0-9]{36})$/);
+    if (req.method === "GET" && deviceDownloadFileMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const item = downloadTickets.get(deviceDownloadFileMatch[2]);
+      if (!item || item.orgId !== String(actor.org_id) || item.deviceId !== deviceDownloadFileMatch[1]) {
+        return send(res, 404, { error: "That download is no longer available." });
+      }
+      clearTimeout(item.timer);
+      downloadTickets.delete(deviceDownloadFileMatch[2]);
+      let info;
+      try {
+        info = await stat(item.filePath);
+      } catch {
+        await rm(item.dir, { recursive: true, force: true });
+        return send(res, 404, { error: "That download is no longer available." });
+      }
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": info.size,
+        "content-disposition": downloadDisposition(item.downloadName),
+        "cache-control": "no-store",
+      });
+      const stream = createReadStream(item.filePath);
+      stream.on("close", () => {
+        rm(item.dir, { recursive: true, force: true }).catch(() => {});
+      });
+      stream.on("error", () => {
+        res.destroy();
+        rm(item.dir, { recursive: true, force: true }).catch(() => {});
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    const deviceDownloadMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/download$/);
+    if (req.method === "POST" && deviceDownloadMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const folder = filePathValue(body.path || "");
+      const name = fileNameValue(body.name);
+      const kind = body.kind === "folder" ? "folder" : body.kind === "file" ? "file" : "";
+      const size = Number(body.size) || 0;
+      if (folder == null || !folder) return send(res, 400, { error: "Open a folder before downloading." });
+      if (!name || !kind) return send(res, 400, { error: "Choose a file." });
+      if (kind === "file" && size > DOWNLOAD_LIMIT) return send(res, 413, { error: "That file is larger than 256 MB." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceDownloadMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const scratch = await mkdtemp(join(tmpdir(), "df-download-"));
+      const stored = join(scratch, "download.bin");
+      let started = false;
+      try {
+        let nodeId = device.rows[0].mesh_node_id || "";
+        if (!nodeId) {
+          const node = await resolveMeshNode(device.rows[0]);
+          nodeId = node.nodeId || "";
+        }
+        if (!nodeId) {
+          await rm(scratch, { recursive: true, force: true });
+          return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        }
+        started = true;
+        if (res.socket) res.socket.setNoDelay(true);
+        res.writeHead(200, {
+          "content-type": "application/x-ndjson; charset=utf-8",
+          "cache-control": "no-store",
+          "x-accel-buffering": "no",
+        });
+        res.write(`${JSON.stringify({ status: "Queued" })}\n`);
+        let shown = "Queued";
+        const note = (status) => {
+          if (!status || status === shown) return;
+          shown = status;
+          res.write(`${JSON.stringify({ status })}\n`);
+        };
+        const report = (event) => {
+          if (event.status === "Downloading") {
+            const progress = event.size > 0 ? Math.min(99, Math.floor((event.acked / event.size) * 100)) : null;
+            note(progress == null ? "Downloading" : `Downloading ${progress}%`);
+            return;
+          }
+          if (event.status === "Zipping" && typeof event.progress === "number") {
+            note(`Zipping ${event.progress}%`);
+            return;
+          }
+          note(event.status);
+        };
+        const parsed = kind === "folder"
+          ? await downloadFolderArchive(nodeId, folder, name, stored, report)
+          : meshJson(await meshFilesDownload(nodeId, folder, name, kind, stored, size, report));
+        if (!parsed?.ok) {
+          await rm(scratch, { recursive: true, force: true });
+          res.write(`${JSON.stringify({ error: parsed?.error || "The file was not downloaded." })}\n`);
+          res.end();
+          return;
+        }
+        const downloadName = kind === "folder" ? `${name}.zip` : name;
+        const ticket = rememberDownload(actor.org_id, device.rows[0].id, scratch, stored, downloadName);
+        await writeAudit(actor.org_id, actor.id, "file.download", "device", String(device.rows[0].id), { path: folder, name, kind, bytes: parsed.bytes || size });
+        res.write(`${JSON.stringify({ ok: true, ticket, name: downloadName, progress: 100 })}\n`);
+        res.end();
+      } catch (error) {
+        await rm(scratch, { recursive: true, force: true });
+        const message = error.status === 413
+          ? (error.message || "That file is larger than 256 MB.")
+          : error.message && error.message !== "Remote service did not answer."
+            ? error.message
+            : "MeshCentral did not answer.";
+        if (!started) return send(res, error.status || 502, { error: message });
+        res.write(`${JSON.stringify({ error: message })}\n`);
+        res.end();
+      }
+      return;
+    }
+
+    const deviceUploadMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/upload$/);
+    if (req.method === "POST" && deviceUploadMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      let folderHeader = "";
+      let nameHeader = "";
+      try {
+        folderHeader = decodeURIComponent(String(req.headers["x-df-path"] || ""));
+        nameHeader = decodeURIComponent(String(req.headers["x-df-name"] || ""));
+      } catch {
+        return send(res, 400, { error: "Choose a file." });
+      }
+      const folder = filePathValue(folderHeader);
+      const name = fileNameValue(nameHeader);
+      if (folder == null || !folder) return send(res, 400, { error: "Open a folder before uploading." });
+      if (!name) return send(res, 400, { error: "Choose a file." });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceUploadMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const bytes = await readBytes(req, 32 * 1024 * 1024);
+      const scratch = await mkdtemp(join(tmpdir(), "df-upload-"));
+      const stored = join(scratch, "upload.bin");
+      let started = false;
+      try {
+        await writeFile(stored, bytes, { mode: 0o600 });
+        let nodeId = device.rows[0].mesh_node_id || "";
+        if (!nodeId) {
+          const node = await resolveMeshNode(device.rows[0]);
+          nodeId = node.nodeId || "";
+        }
+        if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        started = true;
+        if (res.socket) res.socket.setNoDelay(true);
+        res.writeHead(200, {
+          "content-type": "application/x-ndjson; charset=utf-8",
+          "cache-control": "no-store",
+          "x-accel-buffering": "no",
+        });
+        res.write(`${JSON.stringify({ progress: 0 })}\n`);
+        let shown = 0;
+        const parsed = meshJson(await meshFilesUpload(nodeId, folder, name, stored, (acked, size) => {
+          const progress = size > 0 ? Math.min(99, Math.floor((acked / size) * 100)) : 0;
+          if (progress === shown) return;
+          shown = progress;
+          res.write(`${JSON.stringify({ progress })}\n`);
+        }));
+        if (!parsed?.ok) {
+          res.write(`${JSON.stringify({ error: parsed?.error || "The file was not uploaded." })}\n`);
+          res.end();
+          return;
+        }
+        await writeAudit(actor.org_id, actor.id, "file.upload", "device", String(device.rows[0].id), { path: folder, name, bytes: bytes.length });
+        res.write(`${JSON.stringify({ ok: true, name, progress: 100 })}\n`);
+        res.end();
+      } catch (error) {
+        const message = error.status === 413 ? "That file is larger than 32 MB." : "MeshCentral did not answer.";
+        if (!started) return send(res, error.status || 502, { error: message });
+        res.write(`${JSON.stringify({ error: message })}\n`);
+        res.end();
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+      return;
+    }
+
+    const devicePowerMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/power$/);
+    if (req.method === "POST" && devicePowerMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "power.deny", "device", devicePowerMatch[1], { reason: "role" });
+        return send(res, 403, { error: "A technician cannot change power." });
+      }
+      const body = await readJson(req);
+      const action = typeof body.action === "string" ? body.action : "";
+      const device = await pool.query(
+        "SELECT id, os_name, hostname FROM devices WHERE id = $1 AND org_id = $2",
+        [devicePowerMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const command = powerCommand(action, device.rows[0].os_name, device.rows[0].hostname);
+      if (!command) return send(res, 400, { error: "Choose a power action." });
+      const job = await pool.query(
+        `INSERT INTO jobs (org_id, device_id, command, created_by)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [actor.org_id, device.rows[0].id, command, actor.id],
+      );
+      await pool.query(
+        `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+         VALUES ($1, $2, 'power.request', 'device', $3, $4::jsonb)`,
+        [actor.org_id, actor.id, String(device.rows[0].id), JSON.stringify({ action, jobId: Number(job.rows[0].id) })],
+      );
+      return send(res, 201, { id: Number(job.rows[0].id), status: "queued" });
     }
 
     const deviceJobMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/jobs$/);
@@ -1639,14 +4052,27 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: message });
       }
       const device = await pool.query(
-        "SELECT id, mesh_node_id, os_name FROM devices WHERE id = $1 AND org_id = $2",
+        "SELECT id, hostname, mesh_node_id, os_name, users FROM devices WHERE id = $1 AND org_id = $2",
         [deviceRemoteMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      let liveNode = "";
+      try {
+        liveNode = await connectedMeshNode(device.rows[0].hostname);
+      } catch {
+        liveNode = "";
+      }
+      if (liveNode && liveNode !== device.rows[0].mesh_node_id) {
+        await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [liveNode, device.rows[0].id]);
+        device.rows[0].mesh_node_id = liveNode;
+      }
       if (!device.rows[0].mesh_node_id) {
         return send(res, 409, { error: "This device has no remote agent yet." });
       }
       const body = await readJson(req);
+      const requestedUser = typeof body.user === "string" ? body.user.trim().slice(0, 80) : "";
+      const knownUsers = Array.isArray(device.rows[0].users) ? device.rows[0].users : [];
+      const sessionUser = knownUsers.includes(requestedUser) ? requestedUser : "";
       const ticketId = body.ticketId == null || body.ticketId === "" ? null : Number(body.ticketId);
       if (ticketId != null) {
         if (!Number.isInteger(ticketId)) return send(res, 404, { error: "Ticket not found." });
@@ -1668,7 +4094,10 @@ const server = createServer(async (req, res) => {
           actor.org_id,
           actor.id,
           String(device.rows[0].id),
-          JSON.stringify(ticketId == null ? {} : { ticketId }),
+          JSON.stringify({
+            ...(ticketId == null ? {} : { ticketId }),
+            ...(sessionUser ? { user: sessionUser } : {}),
+          }),
         ],
       );
       return send(res, 200, { url });

@@ -89,6 +89,9 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS model text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS serial text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS software jsonb;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS ipv4 text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS display_name text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS users jsonb;
+UPDATE devices SET display_name = hostname WHERE display_name IS NULL OR btrim(display_name) = '';
 
 CREATE TABLE IF NOT EXISTS device_samples (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -274,3 +277,58 @@ CREATE TABLE IF NOT EXISTS report_runs (
 );
 
 CREATE INDEX IF NOT EXISTS report_runs_org_id_idx ON report_runs (org_id, id DESC);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_number bigint;
+UPDATE users SET account_number = 900000000 + id WHERE account_number IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS users_account_number_idx ON users (account_number);
+
+CREATE OR REPLACE FUNCTION users_set_account_number() RETURNS trigger AS $$
+BEGIN
+  UPDATE users SET account_number = 900000000 + NEW.id WHERE id = NEW.id AND account_number IS NULL;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS users_account_number ON users;
+CREATE TRIGGER users_account_number
+  AFTER INSERT ON users
+  FOR EACH ROW
+  EXECUTE FUNCTION users_set_account_number();
+
+CREATE TABLE IF NOT EXISTS device_notices (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  device_id bigint REFERENCES devices (id) ON DELETE SET NULL,
+  hostname text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS device_notices_org_idx ON device_notices (org_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS device_notice_states (
+  notice_id bigint NOT NULL REFERENCES device_notices (id) ON DELETE CASCADE,
+  user_id bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  read_at timestamptz,
+  deleted_at timestamptz,
+  PRIMARY KEY (notice_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ribbon_notices (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint REFERENCES orgs (id),
+  body text NOT NULL,
+  link_label text,
+  link_url text,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  active boolean NOT NULL DEFAULT true
+);
+
+CREATE INDEX IF NOT EXISTS ribbon_notices_active_idx ON ribbon_notices (active, id DESC);
+
+CREATE TABLE IF NOT EXISTS ribbon_dismissals (
+  notice_id bigint NOT NULL REFERENCES ribbon_notices (id) ON DELETE CASCADE,
+  user_id bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  dismissed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (notice_id, user_id)
+);

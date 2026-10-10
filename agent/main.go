@@ -119,6 +119,7 @@ func heartbeat(api string, state savedState) error {
 	payload := map[string]any{
 		"hostname": hostname,
 		"osName":   prettyOS(),
+		"users":    collectUsers(),
 	}
 	if sample, err := collectMetrics(); err != nil {
 		fmt.Fprintln(os.Stderr, "metrics:", err)

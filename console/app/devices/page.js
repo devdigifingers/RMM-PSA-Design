@@ -1,7 +1,9 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { runJob } from "../actions";
 import { ConsoleBar } from "../bar";
+import { DeviceDetails } from "./details-window";
+import { OsMark } from "./os-mark";
+import { RemoteActions } from "./remote-actions";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -17,6 +19,7 @@ export default async function DevicesPage({ searchParams }) {
     cache: "no-store",
   });
   if (response.status === 401) redirect("/");
+  if (response.status === 403) redirect("/control");
   const body = await response.json();
   const devices = body.devices || [];
 
@@ -25,12 +28,14 @@ export default async function DevicesPage({ searchParams }) {
       <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
       <main className="main">
         <h1>Devices</h1>
-        <form method="get">
-          <label>
-            Find
-            <input name="q" defaultValue={q} />
+        <form className="find" method="get">
+          <label className="search">
+            <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+              <path d="M16.2 16.2L21 21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+            <input name="q" placeholder="Search" defaultValue={q} aria-label="Search" />
           </label>
-          <button type="submit">Find</button>
         </form>
         <p className="org-name">
           {body.org?.name || "Your organisation"} · {body.deviceCount || 0} enrolled
@@ -51,13 +56,17 @@ export default async function DevicesPage({ searchParams }) {
         {params?.error === "remote" && !body.remoteReason ? (
           <p className="error">Remote desktop is not available on this license.</p>
         ) : null}
+        <div className="systems">
         <table>
           <thead>
             <tr>
+              <th className="status-col">Status</th>
+              <th>Display name</th>
               <th>Hostname</th>
               <th>Address</th>
               <th>Customer</th>
               <th>Operating system</th>
+              <th>Active Users</th>
               <th>Last seen</th>
               <th>Remote</th>
             </tr>
@@ -65,19 +74,34 @@ export default async function DevicesPage({ searchParams }) {
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td className="empty" colSpan={6}>No devices enrolled yet.</td>
+                <td className="empty" colSpan={9}>No devices enrolled yet.</td>
               </tr>
             ) : (
               devices.map((device) => (
                 <tr key={device.id}>
-                  <td>{device.hostname}</td>
+                  <td className="status-col"><Presence presence={device.presence} /></td>
+                  <td>{device.displayName || device.hostname}</td>
+                  <td>
+                    <DeviceDetails
+                      deviceId={device.id}
+                      hostname={device.hostname}
+                      canRemote={Boolean(body.canRemote)}
+                      users={device.users || []}
+                    />
+                  </td>
                   <td>{device.ipv4 || "—"}</td>
                   <td>{device.customerName || "No customer"}</td>
-                  <td>{device.osName || "—"}</td>
+                  <td>
+                    <span className="os-name">
+                      {device.osName ? <OsMark osName={device.osName} /> : null}
+                      {device.osName || "—"}
+                    </span>
+                  </td>
+                  <td>{device.users?.length ? device.users.join(", ") : "—"}</td>
                   <td>{formatSeen(device.lastSeenAt)}</td>
                   <td>
                     {body.canRemote ? (
-                      <a className="remote" href={`/devices/${device.id}/remote`}>Open</a>
+                      <RemoteActions deviceId={device.id} hostname={device.hostname} label={device.displayName || ""} users={device.users || []} />
                     ) : (
                       "—"
                     )}
@@ -87,44 +111,16 @@ export default async function DevicesPage({ searchParams }) {
             )}
           </tbody>
         </table>
-        {devices.map((device) => (
-          <section className="job" key={`job-${device.id}`}>
-            <h2>{device.hostname}</h2>
-            <p className="org-name">{assetLine(device)}</p>
-            {device.samples?.length ? (
-              <ul className="updates">
-                {device.samples.map((sample) => (
-                  <li key={sample.sampledAt}>
-                    {`CPU ${sample.cpuPercent}%. Memory ${sample.memoryPercent}%. Disk ${sample.diskPercent}%.`}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            <SoftwareList software={device.software} />
-            {body.canMonitor && device.metrics ? <p className="org-name">{formatMetrics(device.metrics)}</p> : null}
-            {body.canPatch ? <UpdateList updates={device.updates} /> : null}
-            {body.canOperate ? (
-              <form action={runJob}>
-                <input type="hidden" name="deviceId" value={device.id} />
-                <label>
-                  Command
-                  <input name="command" defaultValue={defaultCommand(device.osName)} required />
-                </label>
-                <button type="submit">Run</button>
-              </form>
-            ) : null}
-            {device.latestJob ? (
-              <pre className="output">{device.latestJob.status === "finished" ? device.latestJob.output : device.latestJob.status}</pre>
-            ) : null}
-          </section>
-        ))}
+        </div>
       </main>
     </div>
   );
 }
 
-function defaultCommand(osName) {
-  return /windows/i.test(osName || "") ? "ver" : "uname -srm";
+function Presence({ presence }) {
+  const label = presence === "online" ? "Online" : presence === "rebooting" ? "Rebooting" : "Offline";
+  const tone = presence === "online" || presence === "rebooting" ? presence : "offline";
+  return <span className={`presence presence-${tone}`} title={label} aria-label={label} />;
 }
 
 function remoteNote(reason) {
@@ -142,62 +138,3 @@ function formatSeen(value) {
   }).format(new Date(value));
 }
 
-function assetLine(device) {
-  if (!device.make && !device.model && !device.serial) return "Asset details have not been collected yet.";
-  return `Make ${device.make || "—"}. Model ${device.model || "—"}. Serial ${device.serial || "—"}.`;
-}
-
-function SoftwareList({ software }) {
-  if (!Array.isArray(software)) return <p className="org-name">Installed software has not been collected yet.</p>;
-  if (software.length === 0) return <p className="org-name">No installed software reported.</p>;
-  return (
-    <ul className="updates">
-      {software.map((item) => (
-        <li key={`${item.name} ${item.version}`}>{item.version ? `${item.name} ${item.version}` : item.name}</li>
-      ))}
-    </ul>
-  );
-}
-
-function UpdateList({ updates }) {
-  if (!Array.isArray(updates)) return <p className="org-name">Updates have not been collected yet.</p>;
-  if (updates.length === 0) return <p className="org-name">No updates waiting.</p>;
-  return (
-    <ul className="updates">
-      {updates.map((item) => (
-        <li key={`${item.name} ${item.availableVersion}`}>{formatUpdate(item)}</li>
-      ))}
-    </ul>
-  );
-}
-
-function formatUpdate(item) {
-  if (item.currentVersion && item.availableVersion) {
-    return `${item.name} ${item.currentVersion} → ${item.availableVersion}`;
-  }
-  if (item.availableVersion && !String(item.name).includes(item.availableVersion)) {
-    return `${item.name} (${item.availableVersion})`;
-  }
-  return item.name;
-}
-
-function formatMetrics(metrics) {
-  return `CPU ${metrics.cpuPercent}%. Memory ${metrics.memoryPercent}% (${formatBytes(metrics.memoryUsedBytes)} of ${formatBytes(metrics.memoryTotalBytes)}). Disk ${metrics.diskPercent}% (${formatBytes(metrics.diskUsedBytes)} of ${formatBytes(metrics.diskTotalBytes)}). Uptime ${formatUptime(metrics.uptimeSeconds)}.`;
-}
-
-function formatBytes(value) {
-  const bytes = Number(value) || 0;
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  return `${Math.round(bytes / 1024 ** 2)} MB`;
-}
-
-function formatUptime(value) {
-  const seconds = Number(value) || 0;
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const minuteLabel = minutes === 1 ? "minute" : "minutes";
-  if (days > 0) return `${days} ${days === 1 ? "day" : "days"} ${hours} ${hours === 1 ? "hour" : "hours"}`;
-  if (hours > 0) return `${hours} ${hours === 1 ? "hour" : "hours"} ${minutes} ${minuteLabel}`;
-  return `${minutes} ${minuteLabel}`;
-}

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote session</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #fff; color: #222; font-family: "Segoe UI", sans-serif; }
+    .wait, .fail {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 8px; background: #fff;
+    }
+    .wait p, .fail p { margin: 0; font-size: 14px; }
+    .wait strong, .fail strong { font-size: 16px; }
+    .spin {
+      width: 28px; height: 28px; margin-top: 10px; border-radius: 50%;
+      background: conic-gradient(#4285f4, #34a853, #fbbc05, #ea4335, transparent 72%, #4285f4);
+      mask: radial-gradient(farthest-side, transparent 62%, #000 64%);
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(1turn); } }
+    .app { display: none; height: 100%; background: #000; }
+    .app.on { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: 1fr 28px; }
+    .rail {
+      grid-row: 1 / span 2; background: #1c3d5a; color: #fff;
+      display: flex; flex-direction: column; align-items: center; padding-top: 8px; z-index: 3;
+    }
+    .rail button {
+      width: 64px; margin: 2px 0; padding: 8px 0 6px; border: 0; border-radius: 6px;
+      background: transparent; color: #fff; cursor: pointer; font: inherit; font-size: 11px;
+    }
+    .rail button.on, .rail button:hover { background: rgba(255,255,255,0.14); }
+    .rail svg { display: block; width: 22px; height: 22px; margin: 0 auto 4px; }
+    .stage { position: relative; min-width: 0; min-height: 0; background: #000; }
+    .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+    footer {
+      display: flex; align-items: center; justify-content: flex-end; gap: 16px;
+      padding: 0 14px; color: #c5c5c5; background: #000; font-size: 12px;
+    }
+    .fly {
+      display: none; position: absolute; left: 76px; top: 8px; z-index: 4;
+      min-width: 210px; padding: 8px; border-radius: 6px;
+      background: #fff; color: #1c2430; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+    .fly.on { display: block; }
+    .fly p { margin: 0 0 8px; font-size: 13px; }
+    .fly button {
+      display: block; width: 100%; margin: 0; padding: 8px 10px; border: 0; border-radius: 4px;
+      background: transparent; color: #1c2430; text-align: left; font: inherit; font-size: 14px; cursor: pointer;
+    }
+    .fly button:hover { background: #eef3f8; }
+    .fly .end { color: #9d1c1c; }
+  </style>
+</head>
+<body>
+  <main class="wait" id="wait">
+    <p>Please wait</p>
+    <strong>Starting Support Session</strong>
+    <span class="spin" aria-hidden="true"></span>
+  </main>
+  <main class="fail" id="fail" hidden>
+    <p>The remote session did not start</p>
+    <strong id="fail-text"></strong>
+  </main>
+  <div class="app" id="app">
+    <nav class="rail" aria-label="Remote session">
+      <button type="button" id="nav-view" class="on">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        View
+      </button>
+      <button type="button" id="nav-session">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5 19c1.4-3 3.8-4.5 7-4.5S17.6 16 19 19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        Session
+      </button>
+      <button type="button" id="nav-tools">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6.5l3 3M4 20l6.2-6.2a4.2 4.2 0 0 1 5.6-5.6l-2.2 2.2 1.6 1.6 2.2-2.2a4.2 4.2 0 0 1-5.6 5.6L4 20z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        Tools
+      </button>
+      <button type="button" id="nav-files">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h6l4 4V20a1.5 1.5 0 0 1-1.5 1.5h-8.5A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 3.5V8h4.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+        Files
+      </button>
+      <button type="button" id="nav-chat">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H8l-3 3v-12z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+        Chat
+      </button>
+    </nav>
+    <div class="stage">
+      <iframe id="desk" title="Remote desktop"></iframe>
+      <div class="fly" id="fly-session">
+        <p id="who"></p>
+        <button type="button" id="cad">Send Ctrl+Alt+Del</button>
+        <button type="button" class="end" id="end">End session</button>
+      </div>
+      <div class="fly" id="fly-tools">
+        <button type="button" id="tool-terminal">Terminal</button>
+      </div>
+    </div>
+    <footer id="foot"></footer>
+  </div>
+  <script>
+    window.active = true;
+    var frame = document.getElementById("desk");
+    var base = "";
+    var person = "";
+    var title = "";
+    var mode = "view";
+    var asked = { view: false, terminal: false, person: false };
+    var shown = false;
+    var prepared = false;
+
+    function fail(text) {
+      document.getElementById("wait").hidden = true;
+      document.getElementById("fail").hidden = false;
+      document.getElementById("fail-text").textContent = text;
+    }
+
+    function withView(url, view) {
+      return url
+        .replace(/([?&])viewmode=[^&]*/, "$1viewmode=" + view)
+        .replace(/([?&])hide=[^&]*/, "$1hide=63");
+    }
+
+    function doc() {
+      try { return frame.contentDocument; } catch (e) { return null; }
+    }
+
+    function mark(name) {
+      ["view", "session", "tools", "files", "chat"].forEach(function (id) {
+        document.getElementById("nav-" + id).classList.toggle("on", id === name);
+      });
+    }
+
+    function closeFly() {
+      document.querySelectorAll(".fly").forEach(function (node) { node.classList.remove("on"); });
+    }
+
+    function toggleFly(id, top) {
+      var node = document.getElementById(id);
+      var open = node.classList.contains("on");
+      closeFly();
+      if (!open) {
+        node.style.top = top + "px";
+        node.classList.add("on");
+      }
+    }
+
+    function go(view) {
+      var page = doc();
+      if (page && page.defaultView && typeof page.defaultView.go === "function") {
+        page.defaultView.go(view);
+        return;
+      }
+      frame.src = withView(base, view);
+    }
+
+    function statusText() {
+      var page = doc();
+      var node = page && page.getElementById("deskstatus");
+      return node ? node.textContent.trim() : "";
+    }
+
+    function paintFoot() {
+      var state = statusText();
+      var extra = "";
+      if (state && !/^connected\b/i.test(state)) extra = " (" + state + ")";
+      document.getElementById("foot").textContent = title + extra;
+    }
+
+    function focusDesk() {
+      var page = doc();
+      var canvas = page && page.getElementById("Desk");
+      if (!canvas) return;
+      canvas.tabIndex = 0;
+      try { frame.contentWindow.focus(); } catch (e) {}
+      canvas.focus();
+    }
+
+    function armDesk() {
+      var page = doc();
+      if (!page || prepared) return;
+      var canvas = page.getElementById("Desk");
+      if (!canvas) return;
+      prepared = true;
+      ["deskarea1", "deskarea4"].forEach(function (id) {
+        var node = page.getElementById(id);
+        if (node) node.style.display = "none";
+      });
+      var control = page.getElementById("DeskControl");
+      if (control) control.checked = true;
+      if (page.defaultView && typeof page.defaultView.toggleKvmControl === "function") page.defaultView.toggleKvmControl();
+      if (page.defaultView && typeof page.defaultView.deskAdjust === "function") page.defaultView.deskAdjust();
+      canvas.addEventListener("pointerdown", function () { canvas.focus(); });
+      focusDesk();
+    }
+
+    function tidy() {
+      if (/^connected\b/i.test(statusText())) armDesk();
+      paintFoot();
+    }
+
+    function sendKey(kind, event) {
+      if (document.activeElement === frame) return;
+      var tag = event.target && event.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (document.querySelector(".fly.on")) return;
+      var page = doc();
+      var win = page && page.defaultView;
+      if (!win || !win.desktop || !win.desktop.m || win.desktop.State != 3) return;
+      var control = page.getElementById("DeskControl");
+      if (control && !control.checked) {
+        control.checked = true;
+        if (typeof win.toggleKvmControl === "function") win.toggleKvmControl();
+      }
+      var name = kind === "down" ? "handleKeyDown" : kind === "up" ? "handleKeyUp" : "handleKeys";
+      if (typeof win.desktop.m[name] === "function") win.desktop.m[name](event);
+    }
+
+    window.addEventListener("keydown", function (event) { sendKey("down", event); });
+    window.addEventListener("keyup", function (event) { sendKey("up", event); });
+    window.addEventListener("keypress", function (event) { sendKey("press", event); });
+
+    function pickPerson() {
+      if (!person || asked.person) return;
+      var page = doc();
+      var box = page && page.getElementById("p11DeskSessionSelector");
+      if (!box || box.style.display === "none") return;
+      var rows = box.querySelectorAll("div");
+      var needle = person.toLowerCase();
+      for (var i = 0; i < rows.length; i++) {
+        if ((rows[i].textContent || "").toLowerCase().indexOf(needle) !== -1) {
+          asked.person = true;
+          rows[i].click();
+          return;
+        }
+      }
+    }
+
+    function poke() {
+      var page = doc();
+      if (!page) return;
+      if (mode === "view" && !asked.view) {
+        var button = page.getElementById("connectbutton1");
+        if (button && !button.disabled) {
+          asked.view = true;
+          button.click();
+        }
+      }
+      if (mode === "terminal" && !asked.terminal) {
+        var term = page.getElementById("connectbutton2");
+        if (term && !term.disabled) {
+          asked.terminal = true;
+          term.click();
+        }
+      }
+      pickPerson();
+      tidy();
+      if (!shown && page.getElementById("connectbutton1")) {
+        shown = true;
+        document.getElementById("wait").hidden = true;
+        document.getElementById("app").classList.add("on");
+      }
+    }
+
+    function show(name) {
+      mode = name;
+      mark(name === "terminal" ? "tools" : name);
+      closeFly();
+      if (name === "view") go(11);
+      if (name === "files") go(13);
+      if (name === "terminal") go(12);
+    }
+
+    document.getElementById("nav-view").onclick = function () { show("view"); focusDesk(); };
+    document.getElementById("nav-session").onclick = function (event) {
+      mark("session");
+      toggleFly("fly-session", event.currentTarget.offsetTop);
+    };
+    document.getElementById("nav-tools").onclick = function (event) {
+      mark("tools");
+      toggleFly("fly-tools", event.currentTarget.offsetTop);
+    };
+    document.getElementById("nav-files").onclick = function () { show("files"); };
+    document.getElementById("nav-chat").onclick = function () {
+      mark("chat");
+      closeFly();
+      var page = doc();
+      var win = page && page.defaultView;
+      if (win && typeof win.deviceChat === "function") win.deviceChat();
+    };
+    document.getElementById("tool-terminal").onclick = function () { show("terminal"); };
+    document.getElementById("cad").onclick = function () {
+      var page = doc();
+      var win = page && page.defaultView;
+      if (win && win.desktop && win.desktop.m && typeof win.desktop.m.sendcad === "function") win.desktop.m.sendcad();
+      closeFly();
+    };
+    document.getElementById("end").onclick = function () { window.close(); };
+
+    var raw = "";
+    try { raw = decodeURIComponent(location.hash.slice(1)); } catch (e) { raw = ""; }
+    var data = null;
+    try { data = JSON.parse(raw); } catch (e) { data = null; }
+    if (!data || typeof data.url !== "string" || data.url.indexOf("https://") !== 0) {
+      fail("Start the session again from Connect.");
+    } else {
+      base = data.url;
+      person = typeof data.user === "string" ? data.user : "";
+      var host = typeof data.host === "string" ? data.host : "";
+      var label = typeof data.label === "string" ? data.label : "";
+      title = label && host && label !== host ? (label + "  " + host) : (label || host || "Remote session");
+      document.title = title;
+      document.getElementById("who").textContent = person ? ("Session for " + person) : "Session for the logged-in user";
+      document.getElementById("foot").textContent = title;
+      history.replaceState({}, "", "/df-session");
+      frame.src = withView(base, 11);
+      setInterval(poke, 400);
+    }
+  </script>
+</body>
+</html>

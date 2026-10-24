@@ -3,6 +3,7 @@ import { AccountMenu } from "./account-menu";
 import { accountFromSession } from "./account-data";
 import { logout } from "./actions";
 import { Wordmark } from "./mark";
+import { NavLinks } from "./nav-links";
 import { Ribbon, SystemNotices } from "./notices";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -15,17 +16,19 @@ export async function ConsoleBar({ showTickets, showAlerts, showPatches, showDas
       <header className="topbar">
         <div className="brand-nav">
           <a className="brand-plate" href={platform ? "/control" : "/devices"} aria-label="Digital Fingers">
-            <Wordmark id="bar" />
+            <Wordmark />
           </a>
-          <nav className="nav">
-            {platform ? <a href="/control">Tenants</a> : <a href="/devices">Devices</a>}
-            {showDashboard ? <a href="/dashboard">Dashboard</a> : null}
-            {showLicenses ? <a href="/licenses">Licenses</a> : null}
-            {showAlerts ? <a href="/alerts">Alerts</a> : null}
-            {showPatches ? <a href="/patches">Patches</a> : null}
-            {showTickets ? <a href="/tickets">Tickets</a> : null}
-            <a href="/audit">Audit</a>
-          </nav>
+          <NavLinks
+            links={[
+              platform ? ["/control", "Tenants"] : ["/devices", "Devices"],
+              showDashboard ? ["/dashboard", "Dashboard"] : null,
+              showLicenses ? ["/licenses", "Licenses"] : null,
+              showAlerts ? ["/alerts", "Alerts"] : null,
+              showPatches ? ["/patches", "Patches"] : null,
+              showTickets ? ["/tickets", "Tickets"] : null,
+              ["/audit", "Audit"],
+            ].filter(Boolean)}
+          />
         </div>
         {account?.user ? (
           <div className="top-tools">

@@ -26,7 +26,7 @@ export default async function LoginPage({ searchParams }) {
       <section className="login-card">
         <div className="login-brand">
           <div className="brand-plate">
-            <Wordmark id="login" />
+            <Wordmark tagline />
           </div>
         </div>
         <p className="lede">Remote Monitoring and Management</p>

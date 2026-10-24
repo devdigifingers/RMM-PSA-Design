@@ -27,6 +27,10 @@ export default async function TicketPage({ params, searchParams }) {
       <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
       <main className="main">
         <h1>{ticket.subject}</h1>
+        <p className="ticket-tags">
+          <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
+          <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
+        </p>
         <p className="org-name">
           {ticket.customer.name} · {ticket.device.hostname}
         </p>
@@ -34,7 +38,10 @@ export default async function TicketPage({ params, searchParams }) {
           <p className="org-name">{ticket.customer.contactName} · {ticket.customer.contactEmail}</p>
         ) : null}
         {body.clock ? (
-          <p className="org-name">{clockLine(body.clock)}</p>
+          <p className="ticket-tags">
+            <Clock label="Response" used={body.clock.responseElapsed} target={body.clock.responseMinutes} />
+            <Clock label="Resolve" used={body.clock.resolveElapsed} target={body.clock.resolveMinutes} />
+          </p>
         ) : null}
         {body.canRemote && ticket.device.hasRemote ? (
           <p><a className="remote" href={`/tickets/${ticket.id}/remote`}>Open remote</a></p>
@@ -96,8 +103,9 @@ export default async function TicketPage({ params, searchParams }) {
           <h2>Comments</h2>
           {ticket.comments.length === 0 ? <p className="org-name">No comments yet.</p> : null}
           {ticket.comments.map((comment) => (
-            <article className="output" key={comment.id}>
-              {comment.authorName}: {comment.body}
+            <article className="comment" key={comment.id}>
+              <strong>{comment.authorName}</strong>
+              <p>{comment.body}</p>
             </article>
           ))}
           <form className="stack" action={addComment}>
@@ -118,6 +126,15 @@ function defaultCommand(osName) {
   return /windows/i.test(osName || "") ? "ver" : "uname -srm";
 }
 
-function clockLine(clock) {
-  return `Response ${clock.responseElapsed} of ${clock.responseMinutes} minutes. Resolve ${clock.resolveElapsed} of ${clock.resolveMinutes} minutes.`;
+function Clock({ label, used, target }) {
+  const over = Number(used) > Number(target);
+  return <span className={over ? "dash-chip bad" : "dash-chip"}>{`${label} ${duration(used)} / ${duration(target)}`}</span>;
+}
+
+function duration(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0));
+  if (total < 60) return `${total}m`;
+  const hours = Math.floor(total / 60);
+  if (hours < 24) return `${hours}h ${total % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }

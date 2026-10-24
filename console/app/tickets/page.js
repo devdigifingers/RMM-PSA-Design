@@ -31,6 +31,37 @@ export default async function TicketsPage({ searchParams }) {
         {params?.error === "sla" ? <p className="error">Those SLA targets could not be saved.</p> : null}
         {params?.error === "contact" ? <p className="error">That contact could not be saved.</p> : null}
         {params?.error && params.error !== "sla" && params.error !== "contact" ? <p className="error">That ticket could not be saved.</p> : null}
+        <table className="ticket-list">
+          <thead>
+            <tr>
+              <th>Subject</th>
+              <th>Customer</th>
+              <th>Device</th>
+              <th>Status</th>
+              <th>Priority</th>
+              <th>Assignee</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tickets.length === 0 ? (
+              <tr>
+                <td className="empty" colSpan={6}>No tickets yet.</td>
+              </tr>
+            ) : (
+              tickets.map((ticket) => (
+                <tr key={ticket.id}>
+                  <td><a href={`/tickets/${ticket.id}`}>{ticket.subject}</a></td>
+                  <td>{ticket.customer.name}</td>
+                  <td>{ticket.device.hostname}</td>
+                  <td><span className={`chip status-${ticket.status}`}>{ticket.status}</span></td>
+                  <td><span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span></td>
+                  <td>{ticket.assignee?.name || "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+        <div className="ticket-forms">
         <section className="job">
           <h2>SLA</h2>
           <form action={saveSla}>
@@ -140,36 +171,7 @@ export default async function TicketsPage({ searchParams }) {
             </form>
           </section>
         ) : null}
-        <table>
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Customer</th>
-              <th>Device</th>
-              <th>Status</th>
-              <th>Priority</th>
-              <th>Assignee</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tickets.length === 0 ? (
-              <tr>
-                <td className="empty" colSpan={6}>No tickets yet.</td>
-              </tr>
-            ) : (
-              tickets.map((ticket) => (
-                <tr key={ticket.id}>
-                  <td><a href={`/tickets/${ticket.id}`}>{ticket.subject}</a></td>
-                  <td>{ticket.customer.name}</td>
-                  <td>{ticket.device.hostname}</td>
-                  <td>{ticket.status}</td>
-                  <td>{ticket.priority}</td>
-                  <td>{ticket.assignee?.name || "—"}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+        </div>
       </main>
     </div>
   );

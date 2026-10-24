@@ -3541,6 +3541,34 @@ a.remote {
   50% { opacity: 0.35; }
 }
 
+.find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
+.find-row form.find { flex: 1 1 260px; margin-top: 0; }
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.filter-chip .live-dot { color: var(--red); }
+.filter-chip .live-dot.idle { color: var(--muted); animation: none; }
+.filter-chip:hover { border-color: var(--blue); }
+.filter-chip.on { border-color: var(--blue); background: var(--blue); color: #fff; }
+.filter-chip.on .live-dot { color: #fff; }
+
+.systems .no-live { display: none; }
+
 .remote-menu button.menu-danger { color: var(--red); }
 .remote-menu button.menu-danger:hover { background: #fdecec; color: var(--red); }
 

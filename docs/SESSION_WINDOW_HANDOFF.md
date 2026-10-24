@@ -110,7 +110,8 @@ How the pieces talk:
 
 ### Ending sessions from the console
 - Devices list: a red pulsing **End session** pill appears in the Remote cell (left of the wrench) while the device has any open Mesh session (desktop, terminal, files, TCP/UDP). The tooltip says what is open. The wrench menu has **End All Sessions (n)** too. Both ask for confirmation, then report "Ended n sessions."
-- `console/app/devices/session-status.js` polls `GET /v1/remote-sessions` once for the whole page every 15 s (and on window focus, skipped when hidden); all rows share it.
+- `console/app/devices/session-status.js` polls `GET /v1/remote-sessions` once for the whole page every 15 s (and on window focus, skipped when hidden); all rows share it (`useDeviceSessions(id)` for one row, `useAllSessions()` for the page).
+- **In session (n)** chip next to the search box (`session-filter.js`): toggles a filter that shows only devices with an open session. Rows carry `data-device`; the chip writes a `<style>` rule that hides the rest, and shows "No remote sessions are open right now." when there are none. It updates with the poller, so a row disappears once its session ends.
 - API: `GET /v1/remote-sessions` maps Mesh node sessions to org device ids (node ids never reach the browser). `POST /v1/devices/:id/sessions/end` ends everything and audits `remote.end` with `ended`/`remaining`.
 - `api/mesh-sessions.cjs` reads `node.sessions` from Mesh `nodes`, then for every viewer sends `endDesktopMultiplex` (desktop) and `msg`/`endtunnel` per protocol (what Mesh's own Sessions dialog does), waits 4 s and re-reads. All technicians share one Mesh account, so this ends every session on that device.
 - Login tokens are deliberately **not** touched: Mesh's `loginTokens` call purges every expired token, which would drop other technicians' older session windows on other devices.

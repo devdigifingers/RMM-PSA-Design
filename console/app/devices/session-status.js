@@ -29,6 +29,10 @@ export function refreshSessions() {
 }
 
 export function useDeviceSessions(deviceId) {
+  return useAllSessions()[String(deviceId)] || null;
+}
+
+export function useAllSessions() {
   const [all, setAll] = useState(latest);
   useEffect(() => {
     listeners.add(setAll);
@@ -46,5 +50,5 @@ export function useDeviceSessions(deviceId) {
       }
     };
   }, []);
-  return all[String(deviceId)] || null;
+  return all;
 }

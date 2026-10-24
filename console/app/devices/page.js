@@ -4,6 +4,7 @@ import { ConsoleBar } from "../bar";
 import { DeviceDetails } from "./details-window";
 import { OsMark } from "./os-mark";
 import { RemoteActions } from "./remote-actions";
+import { SessionFilter } from "./session-filter";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -28,15 +29,18 @@ export default async function DevicesPage({ searchParams }) {
       <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
       <main className="main">
         <h1>Devices</h1>
-        <form className="find" method="get">
-          <label className="search">
-            <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
-              <path d="M16.2 16.2L21 21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            <input name="q" placeholder="Search" defaultValue={q} aria-label="Search" />
-          </label>
-        </form>
+        <div className="find-row">
+          <form className="find" method="get">
+            <label className="search">
+              <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                <path d="M16.2 16.2L21 21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              <input name="q" placeholder="Search" defaultValue={q} aria-label="Search" />
+            </label>
+          </form>
+          {body.canRemote ? <SessionFilter /> : null}
+        </div>
         <p className="org-name">
           {body.org?.name || "Your organisation"} · {body.deviceCount || 0} enrolled
         </p>
@@ -78,7 +82,7 @@ export default async function DevicesPage({ searchParams }) {
               </tr>
             ) : (
               devices.map((device) => (
-                <tr key={device.id}>
+                <tr key={device.id} data-device={device.id}>
                   <td className="status-col"><Presence presence={device.presence} /></td>
                   <td>{device.displayName || device.hostname}</td>
                   <td>
@@ -109,6 +113,11 @@ export default async function DevicesPage({ searchParams }) {
                 </tr>
               ))
             )}
+            {devices.length ? (
+              <tr className="no-live">
+                <td className="empty" colSpan={9}>No remote sessions are open right now.</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
         </div>

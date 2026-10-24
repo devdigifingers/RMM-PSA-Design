@@ -2,13 +2,17 @@ import localFont from "next/font/local";
 import Script from "next/script";
 import "./globals.css";
 
-const noto = localFont({
-  src: [
-    { path: "./fonts/NotoSans-Regular.ttf", weight: "400" },
-    { path: "./fonts/NotoSans-Medium.ttf", weight: "500" },
-    { path: "./fonts/NotoSans-SemiBold.ttf", weight: "600" },
-  ],
+const inter = localFont({
+  src: "./fonts/Inter-Variable.woff2",
+  weight: "100 900",
   display: "swap",
+});
+
+const sora = localFont({
+  src: "./fonts/Sora-Variable.woff2",
+  weight: "100 800",
+  display: "swap",
+  variable: "--font-sora",
 });
 
 export const metadata = {
@@ -20,7 +24,7 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={noto.className}>
+      <body className={`${inter.className} ${sora.variable}`}>
         <Script id="df-theme" strategy="beforeInteractive">
           {"try{if(localStorage.getItem('df-theme')==='dark')document.documentElement.dataset.theme='dark'}catch(e){}"}
         </Script>

@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { powerDevice } from "../actions";
+import { endRemoteSessions, powerDevice } from "../actions";
 import { openRemoteSession } from "./remote-window";
 import { DIAGNOSTIC_TOOLS } from "./diagnostic-tools";
+import { refreshSessions, useDeviceSessions } from "./session-status";
 
 const POWER = [
   ["shutdown", "Shutdown"],
@@ -21,7 +22,10 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
   const [pending, setPending] = useState(null);
   const [note, setNote] = useState("");
   const [fly, setFly] = useState(null);
+  const [ending, setEnding] = useState(false);
   const root = useRef(null);
+  const sessions = useDeviceSessions(deviceId);
+  const open = sessions?.total || 0;
 
   useEffect(() => {
     function close(event) {
@@ -35,9 +39,10 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
     const rect = event.currentTarget.getBoundingClientRect();
     const below = window.innerHeight - rect.bottom;
     const openUp = below < 560 && rect.top > below;
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - (name === "users" ? 210 : 320)));
     setSpot(openUp
-      ? { bottom: window.innerHeight - rect.top + 6, left: rect.left, maxHeight: Math.max(180, rect.top - 16) }
-      : { top: rect.bottom + 6, left: rect.left, maxHeight: Math.max(180, window.innerHeight - rect.bottom - 16) });
+      ? { bottom: window.innerHeight - rect.top + 6, left, maxHeight: Math.max(180, rect.top - 16) }
+      : { top: rect.bottom + 6, left, maxHeight: Math.max(180, window.innerHeight - rect.bottom - 16) });
     setMenu((current) => (current === name ? null : name));
   }
 
@@ -75,8 +80,33 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
     setNote(result.ok ? `${label} sent. It runs on the next check-in.` : result.error);
   }
 
+  async function endSessions() {
+    setMenu(null);
+    setEnding(true);
+    setNote("Ending sessions…");
+    const result = await endRemoteSessions(String(deviceId));
+    setEnding(false);
+    if (!result.ok) setNote(result.error);
+    else if (result.remaining) setNote(`${plural(result.remaining, "session")} could not be ended.`);
+    else setNote(result.ended ? `Ended ${plural(result.ended, "session")}.` : "No sessions were open.");
+    refreshSessions();
+  }
+
   return (
     <div className="remote-actions" ref={root}>
+      {open ? (
+        <button
+          type="button"
+          className="end-session"
+          title={`Open on ${hostname}: ${describe(sessions)}`}
+          aria-expanded={menu === "end"}
+          disabled={ending}
+          onClick={(event) => toggle("end", event)}
+        >
+          <span className="live-dot" aria-hidden="true" />
+          End session{open > 1 ? `s (${open})` : ""}
+        </button>
+      ) : null}
       {connectOnly ? null : (
         <button type="button" className="tool-btn" aria-label="Tools" aria-expanded={menu === "tools" || menu === "power" || menu === "toolmenu"} onClick={(event) => toggle("tools", event)}>
           <Wrench />
@@ -111,6 +141,24 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
               <Caret />
             </button>
           </li>
+          <li>
+            <button type="button" className="menu-danger" disabled={ending} onClick={() => setMenu("end")}>
+              End All Sessions{open ? ` (${open})` : ""}
+            </button>
+          </li>
+        </ul>
+      ) : null}
+      {menu === "end" && spot ? (
+        <ul className="remote-menu" style={{ top: spot.top, bottom: spot.bottom, left: spot.left, maxHeight: spot.maxHeight }}>
+          <li className="power-confirm">
+            <p>
+              {open
+                ? `End ${plural(open, "session")} on ${hostname}? Anyone connected (${describe(sessions)}) is disconnected.`
+                : `End every remote session on ${hostname}? None are showing as open right now.`}
+            </p>
+            <button type="button" onClick={() => setMenu(null)}>Cancel</button>
+            <button type="button" onClick={endSessions}>End sessions</button>
+          </li>
         </ul>
       ) : null}
       {menu === "power" && fly ? (
@@ -136,6 +184,20 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
       {note ? <span className="power-note">{note}</span> : null}
     </div>
   );
+}
+
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+function describe(sessions) {
+  if (!sessions) return "";
+  return [
+    [sessions.desktop, "desktop"],
+    [sessions.terminal, "terminal"],
+    [sessions.files, "files"],
+    [sessions.other, "other"],
+  ].filter(([count]) => count).map(([count, word]) => `${count} ${word}`).join(", ");
 }
 
 function Wrench() {

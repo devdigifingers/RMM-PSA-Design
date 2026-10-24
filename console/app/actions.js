@@ -500,6 +500,33 @@ export async function powerDevice(deviceId, action) {
   return { ok: true, error: "" };
 }
 
+export async function remoteSessions() {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, sessions: {} };
+  const response = await fetch(`${apiUrl}/v1/remote-sessions`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, sessions: {} };
+  return { ok: true, sessions: body.sessions || {} };
+}
+
+export async function endRemoteSessions(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/sessions/end`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The sessions were not ended." };
+  return { ok: true, ended: Number(body.ended) || 0, remaining: Number(body.remaining?.total) || 0, error: "" };
+}
+
 export async function startRemoteSession(deviceId, user) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

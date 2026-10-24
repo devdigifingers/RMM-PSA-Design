@@ -3498,6 +3498,67 @@ a.remote {
 
 .power-note { color: var(--muted); }
 
+.remote-actions .end-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px 0 12px;
+  border: 1px solid rgba(217, 58, 58, 0.35);
+  border-radius: 999px;
+  background: #fdecec;
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.remote-actions .end-session:hover,
+.remote-actions .end-session[aria-expanded="true"] {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.remote-actions .end-session:disabled { opacity: 0.6; cursor: progress; }
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: df-live 1.6s ease-in-out infinite;
+}
+
+@keyframes df-live {
+  50% { opacity: 0.35; }
+}
+
+.remote-menu button.menu-danger { color: var(--red); }
+.remote-menu button.menu-danger:hover { background: #fdecec; color: var(--red); }
+
+.remote-menu .power-confirm { width: 300px; max-width: calc(100vw - 32px); white-space: normal; }
+
+.remote-menu .power-confirm p { font-weight: 500; line-height: 1.45; white-space: normal; }
+
+.remote-menu .power-confirm button {
+  width: auto;
+  height: 32px;
+  margin-right: 8px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.remote-menu .power-confirm button:last-child {
+  background: var(--red);
+  color: #fff;
+}
+
+html[data-theme="dark"] .remote-actions .end-session { background: rgba(217, 58, 58, 0.16); }
+html[data-theme="dark"] .remote-menu button.menu-danger:hover { background: rgba(217, 58, 58, 0.16); }
+
 /* Device details window */
 
 .details-backdrop {

@@ -302,6 +302,22 @@ function meshRename(nodeId, name) {
   return meshScript("mesh-query.cjs", [nodeId, "rename", name]);
 }
 
+async function meshSessionList() {
+  const result = meshJson(await meshScript("mesh-sessions.cjs", ["list"], 35000));
+  if (!result || result.error) {
+    throw Object.assign(new Error(result?.error || "Remote service did not answer."), { status: 502 });
+  }
+  return result.sessions || {};
+}
+
+async function meshSessionsEnd(nodeId) {
+  const result = meshJson(await meshScript("mesh-sessions.cjs", ["end", nodeId], 35000));
+  if (!result || result.error) {
+    throw Object.assign(new Error(result?.error || "Remote service did not answer."), { status: 502 });
+  }
+  return result;
+}
+
 function meshFiles(nodeId, action, filePath, name, localFile) {
   const args = [nodeId, action, filePath];
   if (name) args.push(name);
@@ -4159,6 +4175,51 @@ const server = createServer(async (req, res) => {
         [actor.org_id, actor.id, String(job.rows[0].id), JSON.stringify({ deviceId: device.rows[0].id })],
       );
       return send(res, 201, { id: Number(job.rows[0].id), status: "queued" });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/remote-sessions") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const devices = await pool.query(
+        "SELECT id, mesh_node_id FROM devices WHERE org_id = $1 AND mesh_node_id IS NOT NULL AND mesh_node_id <> ''",
+        [actor.org_id],
+      );
+      let live = {};
+      try {
+        live = await meshSessionList();
+      } catch (error) {
+        return send(res, error.status || 502, { error: error.message });
+      }
+      const sessions = {};
+      for (const row of devices.rows) {
+        if (live[row.mesh_node_id]) sessions[String(row.id)] = live[row.mesh_node_id];
+      }
+      return send(res, 200, { sessions });
+    }
+
+    const deviceSessionsEndMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/sessions\/end$/);
+    if (req.method === "POST" && deviceSessionsEndMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const device = await pool.query(
+        "SELECT id, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceSessionsEndMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      if (!device.rows[0].mesh_node_id) return send(res, 409, { error: "This device has no remote agent yet." });
+      let result;
+      try {
+        result = await meshSessionsEnd(device.rows[0].mesh_node_id);
+      } catch (error) {
+        return send(res, error.status || 502, { error: error.message });
+      }
+      const ended = Number(result.ended) || 0;
+      const remaining = result.remaining || { total: 0 };
+      await writeAudit(actor.org_id, actor.id, "remote.end", "device", String(device.rows[0].id), {
+        ended,
+        remaining: Number(remaining.total) || 0,
+      });
+      return send(res, 200, { ended, remaining });
     }
 
     const deviceRemoteMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/remote$/);

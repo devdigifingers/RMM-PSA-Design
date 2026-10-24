@@ -3,17 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 240 240%22%3E%3Cdefs%3E%3ClinearGradient id=%22g%22 x1=%220%22 y1=%22200%22 x2=%22200%22 y2=%220%22 gradientUnits=%22userSpaceOnUse%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3ClinearGradient id=%22gt%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%220%22 gradientUnits=%22objectBoundingBox%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width=%22240%22 height=%22240%22 rx=%2252%22 fill=%22url%28%23g%29%22/%3E%3Cg transform=%22translate%2840,40%29 scale%280.8%29%22%3E%3Cg fill=%22%23FFF%22%3E%3Cpath d=%22M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z%22 fill-rule=%22evenodd%22/%3E%3Crect x=%2234%22 y=%2272%22 width=%2220%22 height=%22108%22 rx=%2210%22/%3E%3Crect x=%226%22 y=%22118%22 width=%2220%22 height=%2262%22 rx=%2210%22/%3E%3Ccircle cx=%2216%22 cy=%2292%22 r=%2210%22/%3E%3C/g%3E%3Cpath d=%22M3,78A19,19 0 0 1 29,78%22 fill=%22none%22 stroke=%22%23FFF%22 stroke-width=%225%22 stroke-linecap=%22round%22/%3E%3C/g%3E%3C/svg%3E">
   <title>Remote session</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #fff; color: #222; font-family: "Segoe UI", sans-serif; }
+    :root {
+      --blue: #2577e8; --blue-d: #1b63c9; --grad: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%);
+      --ink: #1c2430; --muted: #5c6d80; --line: #e3e9f1; --soft: #f3f6fa; --hover: #eef4fd; --field: #d6dee8;
+      --red: #d93a3a; --green: #3ddc84;
+      --card-shadow: 0 24px 60px rgba(4,20,40,0.45), 0 0 0 1px rgba(255,255,255,0.08);
+      --menu-shadow: 0 18px 44px rgba(4,20,40,0.32), 0 0 0 1px rgba(16,40,70,0.06);
+    }
+    html, body { margin: 0; height: 100%; background: #fff; color: var(--ink); font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+    button, input, select, textarea { font-family: inherit; }
     .soon {
       position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 22px; background: #fff;
+      align-items: center; justify-content: center; gap: 18px;
+      background: radial-gradient(circle at 50% 38%, #ffffff 0%, #eef4fc 55%, #e2ecf8 100%);
     }
     .soon[hidden] { display: none; }
-    .soon p { margin: 0; color: #1f6fe0; font-size: 16px; }
-    .monitor { width: 92px; height: 78px; }
-    .eye { fill: #1f6fe0; transform-box: fill-box; transform-origin: center; animation: count 1.4s infinite; }
+    .soon .halo {
+      display: grid; place-items: center; width: 150px; height: 150px; border-radius: 50%;
+      background: #fff; box-shadow: 0 18px 50px rgba(37,119,232,0.18), 0 0 0 10px rgba(37,119,232,0.06);
+      animation: halo 2.4s ease-in-out infinite;
+    }
+    @keyframes halo { 0%, 100% { box-shadow: 0 18px 50px rgba(37,119,232,0.18), 0 0 0 10px rgba(37,119,232,0.06); } 50% { box-shadow: 0 18px 50px rgba(37,119,232,0.24), 0 0 0 20px rgba(37,119,232,0.03); } }
+    .soon strong { color: var(--ink); font-size: 20px; font-weight: 600; }
+    .soon p { margin: -8px 0 0; color: var(--muted); font-size: 14px; }
+    .soon .bar-run { position: relative; width: 180px; height: 4px; overflow: hidden; border-radius: 999px; background: #d9e5f5; }
+    .soon .bar-run::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 999px; background: var(--grad); animation: run 1.3s ease-in-out infinite; }
+    @keyframes run { from { left: -40%; } to { left: 100%; } }
+    .monitor { width: 84px; height: 72px; }
+    .eye { fill: var(--blue); transform-box: fill-box; transform-origin: center; animation: count 1.4s infinite; }
     .eye.b { animation-delay: 0.7s; }
     @keyframes count {
       0%, 46%, 100% { opacity: 0.2; transform: scale(0.55); }
@@ -22,22 +42,37 @@
     .app { display: none; height: 100%; background: #000; }
     .app.on { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: 1fr 28px; }
     .rail {
-      grid-row: 1 / span 2; background: #1c3d5a; color: #fff;
-      display: flex; flex-direction: column; align-items: center; padding-top: 8px; z-index: 3;
+      grid-row: 1 / span 2; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0;
+      background: linear-gradient(180deg, #14365a 0%, #0c233b 100%); color: #fff;
+      box-shadow: 1px 0 0 rgba(255,255,255,0.06);
     }
+    .brand {
+      display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 6px; border-radius: 9px;
+      box-shadow: 0 6px 16px rgba(124,58,237,0.35);
+    }
+    .rail .brand svg { width: 38px; height: 38px; margin: 0; }
+    .timer {
+      display: flex; align-items: center; gap: 4px; margin-bottom: 8px; padding: 3px 6px; border-radius: 999px;
+      background: rgba(255,255,255,0.08); color: #dfe8f1; font-size: 10px; font-variant-numeric: tabular-nums;
+    }
+    .timer::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px rgba(61,220,132,0.18); }
     .rail button {
-      width: 64px; margin: 2px 0; padding: 8px 0 6px; border: 0; border-radius: 6px;
-      background: transparent; color: #fff; cursor: pointer; font: inherit; font-size: 11px;
+      width: 60px; padding: 9px 0 7px; border: 0; border-radius: 12px;
+      background: transparent; color: rgba(255,255,255,0.72); cursor: pointer; font-size: 11px; font-weight: 500;
+      transition: background 0.15s, color 0.15s, box-shadow 0.15s;
     }
-    .rail button.on, .rail button:hover { background: rgba(255,255,255,0.14); }
+    .rail button:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    .rail button.on { background: linear-gradient(135deg, rgba(37,119,232,0.95), rgba(37,119,232,0.6)); color: #fff; box-shadow: 0 6px 16px rgba(37,119,232,0.32); }
     .rail svg { display: block; width: 22px; height: 22px; margin: 0 auto 4px; }
+    .rail .end { margin-top: auto; color: #ff8f8f; }
+    .rail .end:hover { background: rgba(217,58,58,0.9); color: #fff; box-shadow: 0 6px 16px rgba(217,58,58,0.35); }
     .stage { position: relative; min-width: 0; min-height: 0; background: #000; }
     #desk { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
     footer {
-      display: flex; align-items: center; justify-content: flex-end; gap: 16px;
-      padding: 0 14px; color: #c5c5c5; background: #000; font-size: 12px;
+      display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+      padding: 0 14px; color: #8fa1b5; background: #0a121c; font-size: 12px;
     }
-    .timer { width: 100%; padding: 4px 0 8px; text-align: center; font-size: 12px; color: #dfe8f1; }
+    footer::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
     .edge { display: none; }
     .app.full { grid-template-columns: 1fr; grid-template-rows: 1fr; }
     .app.full footer { display: none; }
@@ -48,154 +83,277 @@
     .app.full .rail.peek { transform: none; }
     .app.full .edge { display: block; position: fixed; left: 0; top: 0; bottom: 0; width: 6px; z-index: 5; }
     .fly {
-      display: none; position: fixed; left: 72px; top: 8px; z-index: 7;
-      min-width: 210px; padding: 8px; border-radius: 6px;
-      background: #fff; color: #1c2430; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      display: none; position: fixed; left: 80px; top: 8px; z-index: 7;
+      min-width: 240px; padding: 6px; border-radius: 14px;
+      background: #fff; color: var(--ink); box-shadow: var(--menu-shadow);
+      animation: flyin 0.14s ease-out;
     }
+    @keyframes flyin { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
     .fly.on { display: block; }
-    .fly p { margin: 0 0 8px; font-size: 13px; }
     .fly button {
-      display: block; width: 100%; margin: 0; padding: 8px 10px; border: 0; border-radius: 4px;
-      background: transparent; color: #1c2430; text-align: left; font: inherit; font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; gap: 12px; width: 100%; margin: 0; padding: 9px 10px; border: 0; border-radius: 9px;
+      background: transparent; color: var(--ink); text-align: left; font-size: 14px; white-space: nowrap; cursor: pointer;
+      transition: background 0.12s, color 0.12s;
     }
-    .fly button:hover { background: #eef3f8; }
-    .fly .end { color: #9d1c1c; }
-    .fly.dark {
-      min-width: 230px; padding: 4px 0; border-radius: 2px;
-      background: #1a4f7a; color: #fff; box-shadow: 0 8px 22px rgba(0,0,0,0.35);
+    .fly button:hover, .has-sub.open > button { background: var(--hover); }
+    .fly button svg { flex: none; width: 18px; height: 18px; color: var(--blue); }
+    .fly .grow { margin-left: auto; padding-left: 12px; color: #9aa9b9; font-size: 16px; line-height: 1; }
+    .fly .who { margin: 0; padding: 8px 10px 6px; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+    .fly hr { margin: 6px 4px; border: 0; border-top: 1px solid var(--line); }
+    .fly .end, .fly .end svg { color: var(--red); }
+    .fly .end:hover { background: #fdecec; }
+    .fly .note { margin: 0; padding: 10px 12px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .fly dl { margin: 0; padding: 10px 12px; display: grid; grid-template-columns: auto auto; gap: 8px 18px; font-size: 13px; white-space: nowrap; }
+    .fly dt { color: var(--muted); }
+    .fly dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+    .tick {
+      display: grid; place-items: center; width: 18px; height: 18px; margin-left: auto; padding-left: 12px; box-sizing: content-box;
+      color: var(--blue); font-size: 13px; font-weight: 700; visibility: hidden;
     }
-    .fly.dark button {
-      display: flex; align-items: center; gap: 10px; color: #fff; border-radius: 0; font-size: 14px;
-    }
-    .fly.dark button svg { width: 16px; height: 16px; flex: none; }
-    .fly.dark button { white-space: nowrap; }
-    .fly.dark button:hover, .fly.dark button.on { background: rgba(255,255,255,0.14); }
-    .fly.dark .grow { margin-left: auto; opacity: 0.8; }
-    .fly.dark .who { margin: 0; padding: 8px 10px 6px; font-size: 12px; color: #c9d8e6; }
-    .fly.dark hr { margin: 4px 0; border: 0; border-top: 1px solid rgba(255,255,255,0.18); }
-    .fly.dark .end { color: #ffb4b4; }
-    .fly.dark .note { margin: 0; padding: 8px 12px; font-size: 13px; color: #dfe8f1; white-space: nowrap; }
-    .fly.dark dl { margin: 0; padding: 8px 12px; display: grid; grid-template-columns: auto auto; gap: 6px 16px; font-size: 13px; white-space: nowrap; }
-    .fly.dark dt { color: #c9d8e6; }
-    .fly.dark dd { margin: 0; }
-    .tick { margin-left: auto; visibility: hidden; }
     .on > .tick { visibility: visible; }
-    .fly.dark button.on { background: transparent; }
-    .fly.dark button.on:hover { background: rgba(255,255,255,0.14); }
-    .fly.dark .sub button.on { background: rgba(255,255,255,0.14); }
     .has-sub { position: relative; }
     .sub {
-      display: none; position: absolute; left: 100%; top: -4px; min-width: 170px;
-      padding: 4px 0; background: #1a4f7a; box-shadow: 0 8px 22px rgba(0,0,0,0.35);
+      display: none; position: absolute; left: calc(100% + 8px); top: -6px; min-width: 190px; padding: 6px;
+      border-radius: 14px; background: #fff; box-shadow: var(--menu-shadow); animation: flyin 0.12s ease-out;
     }
+    .sub::before { content: ""; position: absolute; left: -14px; top: 0; bottom: 0; width: 14px; }
+    .sub button.on { background: var(--hover); color: var(--blue); font-weight: 600; }
+    .sub button.on::after { content: "✓"; margin-left: auto; padding-left: 12px; font-weight: 700; }
     .has-sub.open > .sub, .has-sub:hover > .sub { display: block; }
-    .fly.tools { width: 280px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; }
+    .sub-scroll { max-height: min(420px, calc(100vh - 60px)); overflow-y: auto; scrollbar-width: thin; }
+    .sub-note { margin: 0; padding: 8px 10px; color: var(--muted); font-size: 12.5px; line-height: 1.4; max-width: 220px; }
+    .sub-scroll .restore { color: var(--blue); font-weight: 600; }
+    .sub-scroll hr { margin: 4px 6px; border: 0; border-top: 1px solid var(--line); }
+    .fly.tools { width: 300px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; overflow: hidden; }
     .fly.tools.on { display: flex; }
     .tool-search {
-      display: flex; align-items: center; gap: 8px; margin: 10px 12px; padding: 6px 10px;
-      border-radius: 3px; background: rgba(255,255,255,0.1);
+      display: flex; align-items: center; gap: 8px; margin: 10px; padding: 8px 12px;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--soft); transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .tool-search svg { width: 16px; height: 16px; flex: none; opacity: 0.8; }
-    .tool-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: #fff; font: inherit; font-size: 14px; }
-    .tool-search input::placeholder { color: #a9bdd0; }
+    .tool-search:focus-within { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .tool-search svg { width: 16px; height: 16px; flex: none; color: #8b9bad; }
+    .tool-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 14px; }
+    .tool-search input::placeholder { color: #8b9bad; }
     .tool-list {
-      flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid rgba(255,255,255,0.14);
-      scrollbar-width: thin; scrollbar-color: #6f8fab transparent;
+      flex: 1; min-height: 0; overflow-y: auto; padding: 4px 6px 6px; border-top: 1px solid var(--line);
+      scrollbar-width: thin; scrollbar-color: #c3cfdc transparent;
     }
-    .tool-list > .tool, .group { border-bottom: 1px solid rgba(255,255,255,0.14); }
-    .tool-list > .tool, .group .head { padding: 11px 12px; }
-    .group .items { display: none; padding-bottom: 6px; }
+    .group .items { display: none; padding: 2px 0 6px; }
     .group.open .items { display: block; }
-    .group .items .tool { padding: 8px 12px 8px 38px; }
-    .chev { margin-left: auto; width: 8px; height: 8px; border-right: 1.5px solid #c9d8e6; border-bottom: 1.5px solid #c9d8e6; transform: rotate(45deg) translateY(-3px); }
+    .group.open > .head { background: var(--hover); }
+    .group .items .tool { padding: 8px 10px 8px 40px; font-size: 13.5px; color: #34404f; }
+    .chev { margin-left: auto; width: 7px; height: 7px; border-right: 1.6px solid #9aa9b9; border-bottom: 1.6px solid #9aa9b9; transform: rotate(45deg) translateY(-3px); transition: transform 0.15s; }
     .group.open .chev { transform: rotate(-135deg) translateY(-2px); }
     .launch-as {
-      display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 6px 38px; padding: 4px 8px;
-      border-radius: 3px; background: rgba(0,0,0,0.25); font-size: 13px; color: #dfe8f1;
+      display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 6px 40px; padding: 4px 10px;
+      border-radius: 999px; background: var(--soft); font-size: 12.5px; color: var(--muted);
     }
-    .launch-as select { border: 0; outline: 0; background: transparent; color: #7cc0ff; font: inherit; cursor: pointer; }
-    .launch-as option { color: #1c2430; }
-    .request { display: block; padding: 12px; border-top: 1px solid rgba(255,255,255,0.14); color: #7cc0ff; font-size: 14px; text-decoration: none; }
-    .request:hover { text-decoration: underline; }
+    .launch-as select { border: 0; outline: 0; background: transparent; color: var(--blue); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+    .launch-as option { color: var(--ink); }
+    .request {
+      display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-top: 1px solid var(--line);
+      color: var(--blue); font-size: 13.5px; font-weight: 600; text-decoration: none;
+    }
+    .request::after { content: "→"; transition: transform 0.15s; }
+    .request:hover::after { transform: translateX(3px); }
     .app.linux .win-only { display: none !important; }
-    .panel {
-      position: absolute; right: 20px; top: 20px; z-index: 8; width: min(640px, calc(100% - 40px));
-      display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px;
-      background: #1a4f7a; color: #fff; box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+    .bar {
+      display: flex; align-items: center; gap: 10px; flex: none; min-height: 50px; padding: 0 8px 0 16px; box-sizing: border-box;
+      background: var(--grad); color: #fff; font-size: 15px;
     }
-    .panel[hidden] { display: none; }
-    .panel header { display: flex; align-items: center; justify-content: space-between; padding: 10px 0 2px; }
-    .panel header button { border: 0; background: transparent; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; }
-    .panel-row { display: flex; gap: 8px; }
-    .panel select, .panel textarea {
-      border: 1px solid rgba(255,255,255,0.25); border-radius: 3px; background: #0f3554; color: #fff; font: inherit; font-size: 13px;
+    .bar strong { font-weight: 600; white-space: nowrap; }
+    .bar span { min-width: 0; overflow: hidden; color: rgba(255,255,255,0.78); font-size: 12.5px; white-space: nowrap; text-overflow: ellipsis; }
+    .bar button {
+      flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+      border: 0; border-radius: 50%; background: transparent; color: #fff; cursor: pointer; transition: background 0.15s;
     }
-    .panel select { padding: 6px; }
-    .panel .run { margin-left: auto; padding: 6px 18px; border: 0; border-radius: 3px; background: #1f6fe0; color: #fff; font: inherit; cursor: pointer; }
-    .panel .run:disabled { opacity: 0.6; cursor: default; }
-    .panel textarea { height: 140px; padding: 8px; resize: vertical; font-family: Consolas, "Courier New", monospace; }
-    .panel pre {
-      margin: 0; min-height: 60px; max-height: 260px; overflow: auto; padding: 8px; background: #0b2238;
-      font-family: Consolas, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word;
-    }
-    .toast {
-      position: absolute; left: 50%; bottom: 20px; z-index: 9; transform: translateX(-50%);
-      max-width: 70%; padding: 10px 16px; border-radius: 4px; background: #1a4f7a; color: #fff;
-      font-size: 14px; box-shadow: 0 8px 22px rgba(0,0,0,0.4);
-    }
-    .toast[hidden] { display: none; }
-    .files-win, .wft {
-      position: absolute; z-index: 8; display: flex; flex-direction: column;
-      background: #fff; box-shadow: 0 12px 34px rgba(0,0,0,0.5);
+    .bar button:first-of-type { margin-left: auto; }
+    .bar button:hover { background: rgba(255,255,255,0.18); }
+    .bar button svg { width: 16px; height: 16px; }
+    .files-win, .wft, .recv {
+      position: absolute; z-index: 8; display: flex; flex-direction: column; overflow: hidden;
+      border-radius: 16px; background: #fff; box-shadow: var(--card-shadow);
     }
     .files-win { inset: 18px; }
-    .wft { right: 20px; bottom: 20px; width: min(470px, calc(100% - 40px)); height: min(400px, calc(100% - 40px)); }
-    .files-win[hidden], .wft[hidden] { display: none; }
-    .files-win header, .wft header {
-      display: flex; align-items: center; gap: 10px; flex: none; height: 42px; padding: 0 6px 0 14px;
-      background: #1a4f7a; color: #fff; font-size: 14px;
-    }
-    .files-win header span { color: #c9d8e6; font-size: 13px; }
-    .files-win header button, .wft header button {
-      width: 32px; height: 32px; border: 0; background: transparent; color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
-    }
-    .files-win header button:hover, .wft header button:hover { background: rgba(255,255,255,0.14); }
-    .files-win header button:first-of-type, .wft header button:first-of-type { margin-left: auto; }
-    .files-win iframe, .wft iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+    .wft { right: 20px; bottom: 20px; width: min(470px, calc(100% - 40px)); height: min(420px, calc(100% - 40px)); }
+    .recv { z-index: 9; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(840px, calc(100% - 40px)); height: min(560px, calc(100% - 40px)); }
+    .files-win[hidden], .wft[hidden], .recv[hidden] { display: none; }
+    .files-win iframe, .wft iframe, .recv iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
     .wft.min { height: auto; }
     .wft.min iframe { display: none; }
-    .recv {
-      position: absolute; z-index: 9; left: 50%; top: 50%; transform: translate(-50%, -50%);
-      display: flex; flex-direction: column; width: min(820px, calc(100% - 40px)); height: min(540px, calc(100% - 40px));
-      background: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.55);
+    .chat-win {
+      position: absolute; z-index: 8; right: 20px; top: 20px; display: flex; flex-direction: column;
+      width: min(380px, calc(100% - 40px)); height: min(560px, calc(100% - 40px));
+      border-radius: 16px; overflow: hidden; background: #f3f6fa; color: #1c2430;
+      box-shadow: 0 24px 60px rgba(4,20,40,0.45), 0 0 0 1px rgba(255,255,255,0.08);
     }
-    .recv[hidden] { display: none; }
-    .recv header {
-      display: flex; align-items: center; gap: 10px; flex: none; height: 42px; padding: 0 6px 0 14px;
-      background: #1a4f7a; color: #fff; font-size: 14px;
+    .chat-win[hidden] { display: none; }
+    .chat-win.min { height: auto; }
+    .chat-win.min .chat-log, .chat-win.min .chat-compose { display: none; }
+    .chat-win header {
+      display: flex; align-items: center; gap: 12px; flex: none; padding: 12px 10px 12px 14px;
+      background: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%); color: #fff;
     }
-    .recv header span { color: #c9d8e6; font-size: 13px; }
-    .recv header button { margin-left: auto; width: 32px; height: 32px; border: 0; background: transparent; color: #fff; font-size: 20px; line-height: 1; cursor: pointer; }
-    .recv header button:hover { background: rgba(255,255,255,0.14); }
-    .recv iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
-    .drag header { cursor: move; user-select: none; }
+    .chat-avatar {
+      position: relative; flex: none; width: 40px; height: 40px; border-radius: 50%;
+      display: grid; place-items: center; background: rgba(255,255,255,0.18); font-size: 15px; font-weight: 600; letter-spacing: 0.5px;
+    }
+    .chat-avatar::after {
+      content: ""; position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%;
+      background: #9fb0c2; border: 2px solid #2164c4; transition: background 0.2s;
+    }
+    .chat-win.live .chat-avatar::after { background: #3ddc84; }
+    .chat-who { flex: 1; min-width: 0; }
+    .chat-who strong, .chat-who span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .chat-who strong { font-size: 15px; font-weight: 600; }
+    .chat-who span { margin-top: 1px; font-size: 12px; color: rgba(255,255,255,0.8); }
+    .chat-win header button {
+      flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+      border: 0; border-radius: 50%; background: transparent; color: #fff; cursor: pointer; transition: background 0.15s;
+    }
+    .chat-win header button:hover { background: rgba(255,255,255,0.18); }
+    .chat-win header button svg { width: 16px; height: 16px; }
+    .chat-log {
+      flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 16px 14px;
+      scrollbar-width: thin; scrollbar-color: #c3cfdc transparent;
+    }
+    .chat-empty {
+      margin: auto; max-width: 250px; text-align: center; color: #5c6d80; font-size: 13px; line-height: 1.5;
+    }
+    .chat-empty svg { display: block; width: 54px; height: 54px; margin: 0 auto 12px; color: #2577e8; }
+    .chat-empty strong { display: block; margin-bottom: 4px; color: #1c2430; font-size: 15px; font-weight: 600; }
+    .chat-empty span { display: block; }
+    .bubble {
+      max-width: 78%; padding: 9px 13px; border-radius: 18px; font-size: 14px; line-height: 1.4;
+      white-space: pre-wrap; overflow-wrap: anywhere; animation: pop 0.16s ease-out;
+    }
+    .bubble time { display: block; margin-top: 3px; font-size: 11px; opacity: 0.65; text-align: right; }
+    .bubble.me { align-self: flex-end; background: #2577e8; color: #fff; border-bottom-right-radius: 6px; }
+    .bubble.them { align-self: flex-start; background: #fff; color: #1c2430; border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
+    .chat-note {
+      align-self: center; margin: 6px 0; padding: 4px 12px; border-radius: 999px;
+      background: #e2e9f2; color: #5c6d80; font-size: 12px; text-align: center;
+    }
+    .chat-typing { align-self: flex-start; display: flex; gap: 4px; padding: 12px 14px; border-radius: 18px; border-bottom-left-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
+    .chat-typing[hidden] { display: none; }
+    .chat-typing i, .chat-wait i { width: 7px; height: 7px; border-radius: 50%; background: #9fb0c2; animation: blink 1.2s infinite; }
+    .chat-typing i:nth-child(2), .chat-wait i:nth-child(2) { animation-delay: 0.2s; }
+    .chat-typing i:nth-child(3), .chat-wait i:nth-child(3) { animation-delay: 0.4s; }
+    .chat-wait { display: flex; justify-content: center; gap: 5px; margin-top: 14px; }
+    @keyframes blink { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+    @keyframes pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+    .chat-compose {
+      display: flex; align-items: flex-end; gap: 8px; flex: none; padding: 10px 12px 12px;
+      background: #fff; border-top: 1px solid #e3e9f1;
+    }
+    .chat-compose textarea {
+      flex: 1; min-width: 0; height: 40px; max-height: 120px; padding: 10px 14px; resize: none; box-sizing: border-box; overflow-y: hidden;
+      border: 1px solid #d6dee8; border-radius: 20px; outline: 0; background: #f3f6fa; color: #1c2430;
+      font: inherit; font-size: 14px; line-height: 1.4; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    .chat-compose textarea:focus { border-color: #2577e8; background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .chat-compose textarea:disabled { opacity: 0.6; }
+    .chat-compose button {
+      flex: none; display: grid; place-items: center; width: 40px; height: 40px; padding: 0;
+      border: 0; border-radius: 50%; background: #2577e8; color: #fff; cursor: pointer; transition: background 0.15s, transform 0.1s;
+    }
+    .chat-compose button:hover:not(:disabled) { background: #1b63c9; }
+    .chat-compose button:active:not(:disabled) { transform: scale(0.94); }
+    .chat-compose button:disabled { background: #b9c7d6; cursor: default; }
+    .chat-compose button svg { width: 18px; height: 18px; margin-left: 2px; }
+    .panel {
+      position: absolute; right: 20px; top: 20px; z-index: 8; width: min(640px, calc(100% - 40px));
+      display: flex; flex-direction: column; overflow: hidden;
+      border-radius: 16px; background: #fff; color: var(--ink); box-shadow: var(--card-shadow);
+    }
+    .panel.drag { width: min(460px, calc(100% - 40px)); }
+    .panel.drag.wide { width: min(640px, calc(100% - 40px)); }
+    .panel[hidden] { display: none; }
+    .panel-body { display: flex; flex-direction: column; gap: 10px; padding: 16px; }
+    .panel-row { display: flex; align-items: center; gap: 8px; }
+    .panel select, .panel textarea, .panel input {
+      box-sizing: border-box; border: 1px solid var(--field); border-radius: 10px; outline: 0;
+      background: var(--soft); color: var(--ink); font-size: 13.5px;
+      transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    .panel select:focus, .panel textarea:focus, .panel input:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .panel select {
+      appearance: none; padding: 8px 32px 8px 12px; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%235c6d80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; background-size: 12px;
+    }
+    .panel input { padding: 9px 12px; }
+    .panel input::placeholder, .panel textarea::placeholder { color: #8b9bad; }
+    .panel textarea { height: 150px; padding: 10px 12px; resize: vertical; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 13px; line-height: 1.45; }
+    .panel textarea.msg { height: 110px; font-family: inherit; font-size: 14px; }
+    .run, .btn {
+      flex: none; padding: 9px 22px; border: 0; border-radius: 999px; background: var(--blue); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+      box-shadow: 0 4px 12px rgba(37,119,232,0.28);
+    }
+    .run { margin-left: auto; }
+    .run:hover:not(:disabled), .btn:hover:not(:disabled) { background: var(--blue-d); }
+    .run:active:not(:disabled), .btn:active:not(:disabled) { transform: scale(0.97); }
+    .run:disabled, .btn:disabled { background: #b9c7d6; box-shadow: none; cursor: default; }
+    .btn.ghost { background: var(--soft); color: var(--ink); box-shadow: none; }
+    .btn.ghost:hover { background: #e6edf5; }
+    .btn.danger { background: var(--red); box-shadow: 0 4px 12px rgba(217,58,58,0.28); }
+    .btn.danger:hover:not(:disabled) { background: #bf2f2f; }
+    .panel pre {
+      margin: 0; min-height: 64px; max-height: 260px; overflow: auto; padding: 12px 14px; border-radius: 10px;
+      background: #0f1b2a; color: #d7e3f1; font-family: Consolas, "Cascadia Mono", "Courier New", monospace; font-size: 12.5px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word; scrollbar-width: thin; scrollbar-color: #3a4d63 transparent;
+    }
+    .panel pre:empty::before { content: "Output appears here"; color: #6f8399; }
+    .panel .status { flex: 1; margin: 0; min-height: 18px; font-size: 13px; color: var(--muted); }
+    .toast {
+      position: absolute; left: 50%; bottom: 24px; z-index: 10; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px; max-width: min(560px, 80%); padding: 12px 18px;
+      border-radius: 14px; background: rgba(16,27,42,0.94); color: #fff; font-size: 14px; line-height: 1.4;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06); animation: rise 0.18s ease-out;
+    }
+    .toast::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(37,119,232,0.25); }
+    .toast[hidden] { display: none; }
+    @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    .modal {
+      position: absolute; inset: 0; z-index: 12; display: grid; place-items: center; padding: 20px;
+      background: rgba(6,16,30,0.45); backdrop-filter: blur(3px); animation: fade 0.15s ease-out;
+    }
+    .modal[hidden] { display: none; }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    .modal-card {
+      width: min(400px, 100%); padding: 24px 24px 20px; box-sizing: border-box; border-radius: 18px;
+      background: #fff; color: var(--ink); text-align: center; box-shadow: var(--card-shadow); animation: pop 0.18s ease-out;
+    }
+    .modal-icon { display: grid; place-items: center; width: 52px; height: 52px; margin: 0 auto 14px; border-radius: 50%; background: var(--hover); color: var(--blue); }
+    .modal-icon svg { width: 26px; height: 26px; }
+    .modal.danger .modal-icon { background: #fdecec; color: var(--red); }
+    .modal-card h2 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+    .modal-card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+    .modal-actions { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
+    .modal-actions .btn { min-width: 110px; }
+    .drag > header { cursor: move; user-select: none; }
     body.dragging iframe { pointer-events: none; }
-    .toast { z-index: 10; }
   </style>
 </head>
 <body>
   <main class="soon" id="soon">
-    <svg class="monitor" viewBox="0 0 92 78" aria-hidden="true">
-      <rect x="8" y="4" width="76" height="52" rx="2" fill="none" stroke="#1f6fe0" stroke-width="2.4"/>
-      <circle class="eye a" cx="36" cy="30" r="3.2"/>
-      <circle class="eye b" cx="56" cy="30" r="3.2"/>
-      <path d="M38 56h16M46 56v8M32 68h28" fill="none" stroke="#1f6fe0" stroke-width="2.4" stroke-linecap="round"/>
-    </svg>
-    <p>You'll be able to access the remote device shortly.</p>
+    <div class="halo">
+      <svg class="monitor" viewBox="0 0 92 78" aria-hidden="true">
+        <rect x="8" y="4" width="76" height="52" rx="8" fill="#eef4fd" stroke="#2577e8" stroke-width="2.6"/>
+        <circle class="eye a" cx="36" cy="30" r="3.4"/>
+        <circle class="eye b" cx="56" cy="30" r="3.4"/>
+        <path d="M38 56h16M46 56v8M32 68h28" fill="none" stroke="#2577e8" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <strong>Connecting to the remote device</strong>
+    <p>You'll be able to access it shortly.</p>
+    <div class="bar-run" aria-hidden="true"></div>
   </main>
   <div class="app" id="app">
     <div class="edge" id="edge"></div>
     <nav class="rail" id="rail" aria-label="Remote session">
+      <div class="brand" title="Digital Fingers"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240"><defs><linearGradient id="df-brand" x1="0" y1="200" x2="200" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#7C3AED"/></linearGradient><linearGradient id="gt" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#7C3AED"/></linearGradient></defs><rect width="240" height="240" rx="52" fill="url(#df-brand)"/><g transform="translate(40,40) scale(0.8)"><g fill="#FFF"><path d="M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z" fill-rule="evenodd"/><rect x="34" y="72" width="20" height="108" rx="10"/><rect x="6" y="118" width="20" height="62" rx="10"/><circle cx="16" cy="92" r="10"/></g><path d="M3,78A19,19 0 0 1 29,78" fill="none" stroke="#FFF" stroke-width="5" stroke-linecap="round"/></g></svg></div>
       <div class="timer" id="timer">00:00:00</div>
       <button type="button" id="nav-view" class="on">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -217,6 +375,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6.5h14v9H8l-3 3v-12z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
         Chat
       </button>
+      <button type="button" class="end" id="end" title="End session">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M6.5 6.5a8 8 0 1 0 11 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        End
+      </button>
     </nav>
     <div class="stage">
       <iframe id="desk" title="Remote desktop" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
@@ -234,13 +396,17 @@
           </div>
         </div>
         <div class="has-sub" id="view-size">
-          <button type="button"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Screen Resolution<span class="grow">›</span></button>
+          <button type="button"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Stream Scaling<span class="grow">›</span></button>
           <div class="sub">
             <button type="button" data-scale="1024">100%</button>
             <button type="button" data-scale="768">75%</button>
             <button type="button" data-scale="512">50%</button>
             <button type="button" data-scale="256">25%</button>
           </div>
+        </div>
+        <div class="has-sub" id="view-display">
+          <button type="button"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 20h6M12 16v4M7 10h10M7 10l2-2M7 10l2 2M17 10l-2-2M17 10l-2 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Display Resolution<span class="grow">›</span></button>
+          <div class="sub"><div class="sub-scroll" id="display-modes"></div></div>
         </div>
       </div>
       <div class="fly dark" id="fly-session">
@@ -276,8 +442,6 @@
           <button type="button"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 20h8M12 16v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Switch Monitor<span class="grow">›</span></button>
           <div class="sub" id="monitors"></div>
         </div>
-        <hr>
-        <button type="button" class="end" id="end"><svg viewBox="0 0 24 24"><path d="M12 3v8M6.5 6.5a8 8 0 1 0 11 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>End session</button>
       </div>
       <div class="fly dark tools" id="fly-tools">
         <label class="tool-search">
@@ -330,7 +494,7 @@
             </div>
           </div>
           <div class="group win-only" data-group="admin">
-            <button type="button" class="head"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="13" height="18" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="16" r="3.4" fill="#1a4f7a" stroke="currentColor" stroke-width="1.6"/><path d="M8 8h5M8 12h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Administrator Tasks<span class="chev"></span></button>
+            <button type="button" class="head"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="13" height="18" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="16" r="3.4" fill="#fff" stroke="currentColor" stroke-width="1.6"/><path d="M8 8h5M8 12h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Administrator Tasks<span class="chev"></span></button>
             <div class="items">
               <button type="button" class="tool" data-launch="cleanup">Clean Up Disk</button>
               <button type="button" class="tool" data-launch="cleanset">Configure Cleanup</button>
@@ -352,36 +516,100 @@
           Web File Transfer
         </button>
       </div>
-      <section class="files-win" id="files-win" hidden>
+      <div class="fly dark" id="fly-chat">
+        <button type="button" id="c-chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v10H9l-5 4v-14z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 9.5h8M8 12.5h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          Chat with User
+        </button>
+        <button type="button" id="c-message">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 20.5a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+          Send Message
+        </button>
+      </div>
+      <section class="chat-win drag" id="chat-win" hidden>
         <header>
+          <span class="chat-avatar" id="chat-avatar" aria-hidden="true"></span>
+          <div class="chat-who">
+            <strong id="chat-name"></strong>
+            <span id="chat-state"></span>
+          </div>
+          <button type="button" id="chat-save" aria-label="Save conversation" title="Save conversation">
+            <svg viewBox="0 0 24 24"><path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" id="chat-min" aria-label="Minimize" title="Minimize">
+            <svg viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" id="chat-close" aria-label="End chat" title="End chat">
+            <svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </header>
+        <div class="chat-log" id="chat-log" aria-live="polite"></div>
+        <form class="chat-compose" id="chat-form">
+          <textarea id="chat-text" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Message"></textarea>
+          <button type="submit" id="chat-send" aria-label="Send" title="Send">
+            <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="currentColor"/></svg>
+          </button>
+        </form>
+      </section>
+      <section class="panel drag" id="msg-panel" hidden>
+        <header class="bar">
+          <strong>Send Message</strong>
+          <button type="button" id="msg-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+        </header>
+        <div class="panel-body">
+        <div class="panel-row">
+          <select id="msg-kind" aria-label="Message style">
+            <option value="toast">Toast notification</option>
+            <option value="messagebox">Message box</option>
+            <option value="alertbox">Alert box</option>
+          </select>
+          <select id="msg-timeout" aria-label="Show for" hidden>
+            <option value="2">Show for 2 minutes</option>
+            <option value="10">Show for 10 minutes</option>
+            <option value="30">Show for 30 minutes</option>
+            <option value="60">Show for 60 minutes</option>
+            <option value="0">Show until closed</option>
+          </select>
+        </div>
+        <input id="msg-title" maxlength="256" placeholder="Title (Digital Fingers)" autocomplete="off">
+        <textarea id="msg-text" class="msg" maxlength="4096" placeholder="Type the message the user will see"></textarea>
+        <div class="panel-row">
+          <p class="status" id="msg-status"></p>
+          <button type="button" class="run" id="msg-send">Send</button>
+        </div>
+        </div>
+      </section>
+      <section class="files-win" id="files-win" hidden>
+        <header class="bar">
           <strong>Advanced File Manager</strong>
           <span id="files-host"></span>
-          <button type="button" id="files-reload" aria-label="Reload" title="Reload">↻</button>
-          <button type="button" id="files-close" aria-label="Close" title="Close">×</button>
+          <button type="button" id="files-reload" aria-label="Reload" title="Reload"><svg viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 5v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button type="button" id="files-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         </header>
         <iframe id="files-frame" title="Advanced File Manager"></iframe>
       </section>
       <section class="wft drag" id="wft" hidden>
-        <header>
+        <header class="bar">
           <strong>File Transfer</strong>
-          <button type="button" id="wft-min" aria-label="Minimize" title="Minimize">—</button>
-          <button type="button" id="wft-close" aria-label="Close" title="Close">×</button>
+          <button type="button" id="wft-min" aria-label="Minimize" title="Minimize"><svg viewBox="0 0 24 24"><path d="M6 12h12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+          <button type="button" id="wft-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         </header>
         <iframe id="wft-frame" title="Web File Transfer" referrerpolicy="origin"></iframe>
       </section>
       <section class="recv drag" id="recv" hidden>
-        <header>
+        <header class="bar">
           <strong>Receive Files</strong>
           <span id="recv-host"></span>
-          <button type="button" id="recv-close" aria-label="Close" title="Close">×</button>
+          <button type="button" id="recv-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         </header>
         <iframe id="recv-frame" title="Receive Files" referrerpolicy="origin"></iframe>
       </section>
-      <section class="panel" id="script-panel" hidden>
-        <header>
+      <section class="panel drag wide" id="script-panel" hidden>
+        <header class="bar">
           <strong id="script-title">Execute Script</strong>
-          <button type="button" id="script-close" aria-label="Close">×</button>
+          <button type="button" id="script-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         </header>
+        <div class="panel-body">
         <div class="panel-row">
           <select id="script-type" aria-label="Script type"></select>
           <select id="script-user" aria-label="Run as">
@@ -392,8 +620,20 @@
         </div>
         <textarea id="script-text" spellcheck="false" placeholder="Type the commands to run on the remote computer"></textarea>
         <pre id="script-out"></pre>
+        </div>
       </section>
       <div class="toast" id="toast" hidden></div>
+      <div class="modal" id="ask" hidden role="dialog" aria-modal="true" aria-labelledby="ask-title">
+        <div class="modal-card">
+          <div class="modal-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5v5.5M12 16.5v.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></div>
+          <h2 id="ask-title"></h2>
+          <p id="ask-text"></p>
+          <div class="modal-actions">
+            <button type="button" class="btn ghost" id="ask-no">Cancel</button>
+            <button type="button" class="btn" id="ask-yes">OK</button>
+          </div>
+        </div>
+      </div>
     </div>
     <footer id="foot"></footer>
   </div>
@@ -407,6 +647,8 @@
     var asked = { view: false, terminal: false, person: false };
     var shown = false;
     var prepared = false;
+    var wasConnected = false;
+    var dropped = false;
     var viewState = { actual: false, cursor: true, quality: 40, scale: 1024 };
 
     function meshWindow() {
@@ -515,8 +757,14 @@
       closeFly();
       if (!open) {
         node.classList.add("on");
-        node.style.top = Math.max(0, Math.min(top, window.innerHeight - node.offsetHeight - 8)) + "px";
+        node.setAttribute("data-top", top);
+        placeFly(node);
       }
+    }
+
+    function placeFly(node) {
+      var top = Number(node.getAttribute("data-top")) || 8;
+      node.style.top = Math.max(8, Math.min(top, window.innerHeight - node.offsetHeight - 8)) + "px";
     }
 
     function go(view) {
@@ -574,19 +822,37 @@
     function tidy() {
       var connected = /^connected\b/i.test(statusText());
       if (connected) {
+        wasConnected = true;
         document.getElementById("soon").hidden = true;
         document.getElementById("app").classList.add("on");
         armDesk();
         if (mode === "view") fitDesk(true);
+      } else if (wasConnected && !dropped && /disconnected/i.test(statusText())) {
+        sessionDropped();
       }
       paintFoot();
+    }
+
+    function sessionDropped() {
+      dropped = true;
+      closeFly();
+      if (display.original && !sameSize(display.original, display.current)) {
+        toast("Restoring the remote screen to " + sizeLabel(display.original) + "…");
+        displayRestore().then(function () {
+          toast("Remote screen restored to " + sizeLabel(display.original) + ".");
+        }, function () {});
+      }
+      ask("Session ended", "The connection to " + title + " was closed. It may have been ended from the console.", "Close window").then(function (yes) {
+        if (yes) window.close();
+      });
     }
 
     function sendKey(kind, event) {
       if (document.activeElement === frame) return;
       var tag = event.target && event.target.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (document.querySelector(".fly.on")) return;
+      if (document.querySelector(".fly.on") || !document.getElementById("ask").hidden) return;
+      if (event.target && event.target.closest && event.target.closest(".panel, .chat-win, .modal")) return;
       var page = doc();
       var win = page && page.defaultView;
       if (!win || !win.desktop || !win.desktop.m || win.desktop.State != 3) return;
@@ -703,16 +969,23 @@
         applyView(true);
       };
     });
-    document.getElementById("view-color").querySelector("button").onclick = function (event) {
-      event.stopPropagation();
-      document.getElementById("view-color").classList.toggle("open");
-      document.getElementById("view-size").classList.remove("open");
-    };
-    document.getElementById("view-size").querySelector("button").onclick = function (event) {
-      event.stopPropagation();
-      document.getElementById("view-size").classList.toggle("open");
-      document.getElementById("view-color").classList.remove("open");
-    };
+    ["view-color", "view-size", "view-display"].forEach(function (id, index, all) {
+      document.getElementById(id).querySelector("button").onclick = function (event) {
+        event.stopPropagation();
+        all.forEach(function (other) {
+          if (other !== id) document.getElementById(other).classList.remove("open");
+        });
+        document.getElementById(id).classList.toggle("open");
+        if (id === "view-display") {
+          displayLoad(false);
+          displayReveal();
+        }
+      };
+    });
+    document.getElementById("view-display").addEventListener("mouseenter", function () {
+      displayLoad(false);
+      requestAnimationFrame(displayReveal);
+    });
     document.getElementById("nav-session").onclick = function (event) {
       mark("session");
       toggleFly("fly-session", event.currentTarget.offsetTop);
@@ -738,7 +1011,7 @@
       rows.push(["Session time", clock(elapsed())]);
       rows.push(["Remote screen", m && m.width ? m.width + " × " + m.height : "Not connected"]);
       rows.push(["Color quality", viewState.quality + "%"]);
-      rows.push(["Resolution", Math.round(viewState.scale / 10.24) + "%"]);
+      rows.push(["Stream scaling", Math.round(viewState.scale / 10.24) + "%"]);
       rows.push(["Route", win && win.webRtcDesktop && win.webRtcDesktop.webRtcActive ? "Direct (WebRTC)" : "Relay"]);
       var list = document.getElementById("stats");
       list.textContent = "";
@@ -963,6 +1236,210 @@
       "}"
     ].join("\n");
 
+    var DISPLAY_CS = [
+      "using System;",
+      "using System.Collections.Generic;",
+      "using System.Runtime.InteropServices;",
+      "public class DFDisplay {",
+      "  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]",
+      "  public struct DM {",
+      "    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmDeviceName;",
+      "    public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;",
+      "    public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;",
+      "    public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;",
+      "    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmFormName;",
+      "    public short dmLogPixels;",
+      "    public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency, dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;",
+      "  }",
+      "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] static extern bool EnumDisplaySettings(string dev, int mode, ref DM dm);",
+      "  [DllImport(\"user32.dll\", CharSet=CharSet.Unicode)] static extern int ChangeDisplaySettingsEx(string dev, ref DM dm, IntPtr hwnd, int flags, IntPtr param);",
+      "  static DM Blank() { DM dm = new DM(); dm.dmSize = (short)Marshal.SizeOf(typeof(DM)); return dm; }",
+      "  public static string List() {",
+      "    DM cur = Blank();",
+      "    if (!EnumDisplaySettings(null, -1, ref cur)) return \"ERR Could not read the display.\";",
+      "    HashSet<string> seen = new HashSet<string>();",
+      "    List<string> lines = new List<string>();",
+      "    lines.Add(\"CUR \" + cur.dmPelsWidth + \" \" + cur.dmPelsHeight);",
+      "    DM dm = Blank();",
+      "    for (int i = 0; EnumDisplaySettings(null, i, ref dm); i++) {",
+      "      if (dm.dmBitsPerPel == cur.dmBitsPerPel && dm.dmPelsWidth >= 800 && dm.dmPelsHeight >= 600 && seen.Add(dm.dmPelsWidth + \" \" + dm.dmPelsHeight)) lines.Add(\"MODE \" + dm.dmPelsWidth + \" \" + dm.dmPelsHeight);",
+      "      dm = Blank();",
+      "    }",
+      "    return string.Join(\"\\n\", lines.ToArray());",
+      "  }",
+      "  public static string Set(int w, int h) {",
+      "    DM dm = Blank();",
+      "    if (!EnumDisplaySettings(null, -1, ref dm)) return \"ERR Could not read the display.\";",
+      "    dm.dmPelsWidth = w; dm.dmPelsHeight = h; dm.dmFields = 0x80000 | 0x100000;",
+      "    int r = ChangeDisplaySettingsEx(null, ref dm, IntPtr.Zero, 0, IntPtr.Zero);",
+      "    if (r == 0) return \"OK\";",
+      "    if (r == 1) return \"ERR The computer needs a restart for that resolution.\";",
+      "    if (r == -2) return \"ERR The display does not support that resolution.\";",
+      "    return \"ERR Windows refused the change (\" + r + \").\";",
+      "  }",
+      "}"
+    ].join("\n");
+
+    var display = { modes: null, current: null, original: null, loading: false, error: "" };
+
+    function displayRun(call) {
+      var script = "$ProgressPreference='SilentlyContinue'\n" +
+        "if (-not ('DFDisplay' -as [type])) { Add-Type -TypeDefinition @'\n" + DISPLAY_CS + "\n'@ }\n" +
+        "[DFDisplay]::" + call;
+      return runMesh(2, powershellLine(script), 2).then(function (result) {
+        var lines = String(result || "").split(/\r?\n/).map(function (line) { return line.trim(); }).filter(Boolean);
+        var error = lines.filter(function (line) { return line.indexOf("ERR ") === 0; })[0];
+        if (error) throw new Error(error.slice(4));
+        return lines;
+      });
+    }
+
+    function sizeLabel(size) {
+      return size[0] + " × " + size[1];
+    }
+
+    function sameSize(a, b) {
+      return !!a && !!b && a[0] === b[0] && a[1] === b[1];
+    }
+
+    function displayLoad(force) {
+      if (display.loading || (display.modes && !force)) return;
+      if (!isWindows()) {
+        display.error = "Changing the display resolution is only available on Windows.";
+        paintDisplay();
+        return;
+      }
+      display.loading = true;
+      display.error = "";
+      paintDisplay();
+      displayRun("List()").then(function (lines) {
+        var modes = [];
+        display.current = null;
+        lines.forEach(function (line) {
+          var part = line.split(" ");
+          var size = [Number(part[1]), Number(part[2])];
+          if (part[0] === "CUR") display.current = size;
+          if (part[0] === "MODE") modes.push(size);
+        });
+        if (!display.current) throw new Error(lines[0] || "The computer did not report its screen modes.");
+        if (!modes.length) throw new Error("Windows did not report any screen modes.");
+        modes.sort(function (a, b) { return b[0] - a[0] || b[1] - a[1]; });
+        display.modes = modes;
+      }).then(null, function (error) {
+        display.error = /signed in|No answer/i.test(error.message)
+          ? "Nobody is signed in at the computer's screen, so its resolution can't be read."
+          : error.message;
+      }).then(function () {
+        display.loading = false;
+        paintDisplay();
+      });
+    }
+
+    function paintDisplay() {
+      var box = document.getElementById("display-modes");
+      box.textContent = "";
+      function note(text) {
+        var p = document.createElement("p");
+        p.className = "sub-note";
+        p.textContent = text;
+        box.appendChild(p);
+      }
+      if (display.loading) {
+        note("Reading the screen modes…");
+        return;
+      }
+      if (display.error && !display.modes) {
+        note(display.error);
+        if (isWindows()) {
+          var retry = document.createElement("button");
+          retry.type = "button";
+          retry.className = "restore";
+          retry.textContent = "Try again";
+          retry.onclick = function (event) {
+            event.stopPropagation();
+            displayLoad(true);
+          };
+          box.appendChild(retry);
+        }
+        return;
+      }
+      if (!display.modes) return;
+      if (display.original && !sameSize(display.original, display.current)) {
+        var back = document.createElement("button");
+        back.type = "button";
+        back.className = "restore";
+        back.textContent = "Restore " + sizeLabel(display.original);
+        back.onclick = function () { displaySet(display.original); };
+        box.appendChild(back);
+        box.appendChild(document.createElement("hr"));
+      }
+      display.modes.forEach(function (size) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.textContent = sizeLabel(size);
+        button.classList.toggle("on", sameSize(size, display.current));
+        button.onclick = function () { displaySet(size); };
+        box.appendChild(button);
+      });
+      displayReveal();
+    }
+
+    function displayReveal() {
+      var box = document.getElementById("display-modes");
+      var on = box.querySelector(".on");
+      if (on && box.clientHeight) box.scrollTop = on.offsetTop - box.offsetTop - (box.clientHeight - on.offsetHeight) / 2;
+    }
+
+    function displaySet(size) {
+      closeFly();
+      if (sameSize(size, display.current)) return;
+      var before = display.current;
+      toast("Changing the remote screen to " + sizeLabel(size) + "…");
+      displayRun("Set(" + size[0] + ", " + size[1] + ")").then(function () {
+        if (!display.original) display.original = before;
+        display.current = size;
+        paintDisplay();
+        toast(sameSize(size, display.original)
+          ? "Remote screen restored to " + sizeLabel(size) + "."
+          : "Remote screen set to " + sizeLabel(size) + ". It goes back to " + sizeLabel(display.original) + " when you end the session.");
+        focusDesk();
+      }, function (error) { toast(error.message); });
+    }
+
+    function displayRestore() {
+      if (!display.original || sameSize(display.original, display.current)) return Promise.resolve();
+      return displayRun("Set(" + display.original[0] + ", " + display.original[1] + ")").then(function () {
+        display.current = display.original;
+      });
+    }
+
+    function ask(heading, text, yes, danger) {
+      return new Promise(function (resolve) {
+        var modal = document.getElementById("ask");
+        var ok = document.getElementById("ask-yes");
+        var no = document.getElementById("ask-no");
+        document.getElementById("ask-title").textContent = heading;
+        document.getElementById("ask-text").textContent = text;
+        ok.textContent = yes || "OK";
+        ok.classList.toggle("danger", !!danger);
+        modal.classList.toggle("danger", !!danger);
+        modal.hidden = false;
+        no.focus();
+        function done(answer) {
+          modal.hidden = true;
+          ok.onclick = no.onclick = modal.onclick = modal.onkeydown = null;
+          resolve(answer);
+        }
+        ok.onclick = function () { done(true); };
+        no.onclick = function () { done(false); };
+        modal.onclick = function (event) { if (event.target === modal) done(false); };
+        modal.onkeydown = function (event) {
+          if (event.key === "Escape") done(false);
+          event.stopPropagation();
+        };
+      });
+    }
+
     function toast(text) {
       var node = document.getElementById("toast");
       node.textContent = text;
@@ -991,6 +1468,12 @@
         }
         if (done && message.action === "runcommands") {
           done(new Error(message.result === "Agent not connected" ? "The computer is not connected." : String(message.result || "The command did not run.")));
+          return;
+        }
+        if (done && message.action === "toast") {
+          done(message.result === "ok" ? null : new Error(message.result === "Access Denied"
+            ? "You do not have permission to message this computer."
+            : String(message.result || "The notification was not sent.")));
           return;
         }
         return original.apply(this, arguments);
@@ -1115,17 +1598,20 @@
         toast("Close this window and click Connect again to use power options.");
         return;
       }
-      if (item.ask && !window.confirm(item.ask.replace("{0}", title))) return;
-      fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-power", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: action })
-      }).then(function (response) {
-        return response.json().catch(function () { return {}; }).then(function (body) {
-          toast(response.ok ? item.done : (body.error || item.label + " did not start."));
-        });
-      }, function () { toast("Could not reach the console. " + item.label + " was not sent."); });
+      var sure = item.ask ? ask(item.label + "?", item.ask.replace("{0}", title), item.label, true) : Promise.resolve(true);
+      sure.then(function (yes) {
+        if (!yes) return;
+        fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-power", {
+          method: "POST",
+          credentials: "include",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action: action })
+        }).then(function (response) {
+          return response.json().catch(function () { return {}; }).then(function (body) {
+            toast(response.ok ? item.done : (body.error || item.label + " did not start."));
+          });
+        }, function () { toast("Could not reach the console. " + item.label + " was not sent."); });
+      });
     }
 
     function filterTools(query) {
@@ -1157,13 +1643,18 @@
       document.getElementById("tool-none").hidden = any;
     }
 
-    document.getElementById("tool-search").addEventListener("input", function (event) { filterTools(event.target.value); });
+    document.getElementById("tool-search").addEventListener("input", function (event) {
+      filterTools(event.target.value);
+      placeFly(document.getElementById("fly-tools"));
+    });
     document.querySelectorAll("#tool-list .group .head").forEach(function (head) {
       head.onclick = function () {
         var group = head.parentNode;
         var open = group.classList.contains("open");
         document.querySelectorAll("#tool-list .group").forEach(function (other) { other.classList.remove("open"); });
         if (!open) group.classList.add("open");
+        placeFly(document.getElementById("fly-tools"));
+        if (!open) group.scrollIntoView({ block: "nearest" });
       };
     });
     document.querySelectorAll("[data-launch]").forEach(function (button) {
@@ -1295,12 +1786,359 @@
     }
     draggable(document.getElementById("wft"));
     draggable(document.getElementById("recv"));
-    document.getElementById("nav-chat").onclick = function () {
+    draggable(document.getElementById("chat-win"));
+    draggable(document.getElementById("msg-panel"));
+    draggable(document.getElementById("script-panel"));
+    document.getElementById("nav-chat").onclick = function (event) {
       mark("chat");
+      toggleFly("fly-chat", event.currentTarget.offsetTop);
+    };
+    function meshNode() {
+      var win = meshWindow();
+      return win && win.meshserver && win.currentNode && win.userinfo ? win : null;
+    }
+    function nodeName(win) {
+      return (win && win.currentNode && win.currentNode.name) || title;
+    }
+    var chat = { socket: null, state: 0, wanted: false, typing: false, fails: 0, device: "", lines: [] };
+
+    function chatWho() {
+      return person ? person.replace(/^.*\\/, "") : "the user";
+    }
+
+    function chatWhoStart() {
+      var who = chatWho();
+      return who.charAt(0).toUpperCase() + who.slice(1);
+    }
+
+    function chatTime(date) {
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function chatState(text, live) {
+      document.getElementById("chat-state").textContent = text;
+      document.getElementById("chat-win").classList.toggle("live", !!live);
+      var ready = chat.state === 2;
+      document.getElementById("chat-text").disabled = !ready;
+      document.getElementById("chat-send").disabled = !ready || !document.getElementById("chat-text").value.trim();
+    }
+
+    function chatScroll() {
+      var log = document.getElementById("chat-log");
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function chatTypingRow() {
+      var row = document.getElementById("chat-typing");
+      if (!row) {
+        row = document.createElement("div");
+        row.id = "chat-typing";
+        row.className = "chat-typing";
+        row.hidden = true;
+        row.innerHTML = "<i></i><i></i><i></i>";
+      }
+      document.getElementById("chat-log").appendChild(row);
+      return row;
+    }
+
+    function chatLine(kind, text) {
+      var log = document.getElementById("chat-log");
+      var empty = document.getElementById("chat-empty");
+      if (empty) empty.remove();
+      var now = new Date();
+      var node = document.createElement("div");
+      if (kind === "note") {
+        node.className = "chat-note";
+        node.textContent = text;
+      } else {
+        node.className = "bubble " + kind;
+        node.textContent = text;
+        var stamp = document.createElement("time");
+        stamp.textContent = chatTime(now);
+        node.appendChild(stamp);
+      }
+      log.appendChild(node);
+      chatTypingRow();
+      chat.lines.push("[" + chatTime(now) + "] " + (kind === "me" ? "You" : kind === "them" ? chatWho() : "—") + ": " + text);
+      chatScroll();
+    }
+
+    function chatEmpty() {
+      var log = document.getElementById("chat-log");
+      log.textContent = "";
+      var box = document.createElement("div");
+      box.id = "chat-empty";
+      box.className = "chat-empty";
+      box.innerHTML = "<svg viewBox=\"0 0 48 48\" aria-hidden=\"true\"><rect x=\"6\" y=\"9\" width=\"30\" height=\"22\" rx=\"7\" fill=\"currentColor\" opacity=\"0.15\"/>" +
+        "<path d=\"M13 9h16a7 7 0 0 1 7 7v8a7 7 0 0 1-7 7H19l-7 6v-6.3A7 7 0 0 1 6 24v-8a7 7 0 0 1 7-7z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linejoin=\"round\"/>" +
+        "<path d=\"M38 17a6 6 0 0 1 4 5.7v6.6A6 6 0 0 1 37 35v5l-6-5h-6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"0.55\"/></svg>" +
+        "<strong></strong><span></span><div class=\"chat-wait\"><i></i><i></i><i></i></div>";
+      box.querySelector("strong").textContent = "Starting the chat";
+      box.querySelector("span").textContent = "A chat window is opening on " + chat.device + ". The conversation starts as soon as " + chatWho() + " sees it.";
+      log.appendChild(box);
+      chatTypingRow();
+    }
+
+    function chatTyping(on) {
+      chatTypingRow().hidden = !on;
+      if (on) chatScroll();
+    }
+
+    function chatSend(data) {
+      if (!chat.socket || chat.socket.readyState !== 1) return false;
+      try { chat.socket.send(JSON.stringify(data)); return true; } catch (e) { return false; }
+    }
+
+    function chatOutText(on) {
+      if (chat.typing === on || chat.state !== 2) return;
+      chat.typing = on;
+      chatSend({ action: "outtext", value: on });
+    }
+
+    function chatConnect() {
+      var win = meshNode();
+      if (!win) {
+        chatState("The remote connection is not ready", false);
+        return;
+      }
+      var suffix = win.serverinfo && win.serverinfo.domainsuffix ? "/" + win.serverinfo.domainsuffix : "";
+      var url = "wss://" + location.host + suffix + "/meshrelay.ashx?id=meshmessenger/" +
+        encodeURIComponent(win.currentNode._id) + "/" + encodeURIComponent(win.userinfo._id);
+      if (win.authCookie) url += "&auth=" + encodeURIComponent(win.authCookie);
+      var socket = new WebSocket(url);
+      var opened = false;
+      chat.socket = socket;
+      chat.state = 1;
+      chatState("Connecting…", false);
+      socket.onopen = function () {
+        opened = true;
+        chat.fails = 0;
+        chatState("Waiting to join…", false);
+      };
+      socket.onmessage = function (event) {
+        if (chat.socket !== socket || typeof event.data !== "string") return;
+        if (chat.state < 2 && (event.data === "c" || event.data === "cr")) {
+          chat.state = 2;
+          chat.typing = false;
+          chatState("Online", true);
+          chatLine("note", chatWhoStart() + " joined the chat");
+          if (event.data === "cr") chatLine("note", "This chat is being recorded");
+          document.getElementById("chat-text").focus();
+          return;
+        }
+        if (event.data.charAt(0) !== "{") return;
+        var data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        if (data.ctrlChannel == "102938") {
+          if (data.type === "ping") chatSend({ ctrlChannel: "102938", type: "pong" });
+          return;
+        }
+        if (data.action === "chat" && typeof data.msg === "string") {
+          chatTyping(false);
+          chatLine("them", data.msg);
+        } else if (data.action === "outtext") {
+          chatTyping(data.value === true);
+        } else if (data.action === "file") {
+          chatSend({ action: "fileUploadCancel", id: data.id });
+          chatLine("note", chatWhoStart() + " tried to send a file. Use Files › Web File Transfer instead.");
+        }
+      };
+      socket.onclose = function () {
+        if (chat.socket !== socket) return;
+        var was = chat.state;
+        chat.socket = null;
+        chat.state = 0;
+        chatTyping(false);
+        if (!chat.wanted) return;
+        if (was === 2) chatLine("note", chatWhoStart() + " left the chat");
+        if (!opened && ++chat.fails >= 4) {
+          chatState("Could not reach the chat server", false);
+          chatLine("note", "The chat could not connect. Close it and try again.");
+          return;
+        }
+        chatState("Reconnecting…", false);
+        setTimeout(function () { if (chat.wanted && !chat.socket) chatConnect(); }, was === 2 ? 600 : 3000);
+      };
+    }
+
+    function chatOpenInBrowser(win) {
+      win.meshserver.send({ action: "meshmessenger", nodeid: decodeURIComponent(win.currentNode._id) });
+    }
+
+    function chatOpenRemote(win) {
+      if (!isWindows()) {
+        chatOpenInBrowser(win);
+        return;
+      }
+      var suffix = win.serverinfo && win.serverinfo.domainsuffix ? "/" + win.serverinfo.domainsuffix : "";
+      var url = "https://" + location.host + suffix + "/messenger?id=meshmessenger/" +
+        encodeURIComponent(win.currentNode._id) + "/" + encodeURIComponent(win.userinfo._id);
+      var script = "$ProgressPreference='SilentlyContinue'\n" +
+        "$b = @('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe','C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe'," +
+        "'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe','C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1\n" +
+        "if (-not $b) { 'NOBROWSER'; return }\n" +
+        "if (-not ('DFLaunch' -as [type])) { Add-Type -TypeDefinition @'\n" + LAUNCH_CS + "\n'@ }\n" +
+        "[DFLaunch]::Run('\"' + $b + '\" --app=\"" + url.replace(/'/g, "''") + "\" --window-size=440,680 --new-window', $false)";
+      runMesh(2, powershellLine(script), 0).then(function (result) {
+        var text = String(result || "").trim().split(/\r?\n/).filter(Boolean).pop() || "";
+        if (text !== "Started.") chatOpenInBrowser(win);
+      }, function () { chatOpenInBrowser(win); });
+    }
+
+    function chatEnd() {
+      chat.wanted = false;
+      var socket = chat.socket;
+      chat.socket = null;
+      chat.state = 0;
+      if (socket) try { socket.close(); } catch (e) {}
+    }
+
+    document.getElementById("c-chat").onclick = function () {
       closeFly();
-      var page = doc();
-      var win = page && page.defaultView;
-      if (win && typeof win.deviceChat === "function") win.deviceChat();
+      var win = meshNode();
+      if (!win) {
+        toast("The remote connection is not ready yet.");
+        return;
+      }
+      var panel = document.getElementById("chat-win");
+      if (!chat.wanted) {
+        chat.wanted = true;
+        chat.fails = 0;
+        chat.lines = [];
+        chat.device = nodeName(win);
+        var who = chatWho();
+        document.getElementById("chat-name").textContent = person ? who : chat.device;
+        document.getElementById("chat-avatar").textContent = person
+          ? who.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map(function (part) { return part.charAt(0).toUpperCase(); }).join("")
+          : "DF";
+        document.getElementById("chat-text").value = "";
+        chatEmpty();
+        chatConnect();
+        chatOpenRemote(win);
+      }
+      panel.hidden = false;
+      panel.classList.remove("min");
+      if (chat.state === 2) document.getElementById("chat-text").focus();
+    };
+    document.getElementById("chat-text").addEventListener("input", function (event) {
+      var box = event.target;
+      box.style.height = "40px";
+      box.style.height = Math.min(box.scrollHeight + 2, 120) + "px";
+      box.style.overflowY = box.scrollHeight + 2 > 120 ? "auto" : "hidden";
+      document.getElementById("chat-send").disabled = chat.state !== 2 || !box.value.trim();
+      chatOutText(!!box.value.trim());
+    });
+    document.getElementById("chat-text").addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        document.getElementById("chat-form").requestSubmit();
+      }
+    });
+    document.getElementById("chat-form").onsubmit = function (event) {
+      event.preventDefault();
+      var box = document.getElementById("chat-text");
+      var text = box.value.trim();
+      if (!text || chat.state !== 2) return;
+      if (!chatSend({ action: "chat", msg: text })) {
+        chatLine("note", "Not sent. The chat is reconnecting.");
+        return;
+      }
+      chat.typing = false;
+      chatLine("me", text);
+      box.value = "";
+      box.style.height = "40px";
+      box.style.overflowY = "hidden";
+      document.getElementById("chat-send").disabled = true;
+      box.focus();
+    };
+    document.getElementById("chat-save").onclick = function () {
+      if (!chat.lines.length) {
+        toast("There is nothing to save yet.");
+        return;
+      }
+      var text = "Chat with " + chatWho() + " on " + chat.device + "\r\n" + new Date().toString() + "\r\n\r\n" + chat.lines.join("\r\n") + "\r\n";
+      var link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+      link.download = "chat-" + chat.device.replace(/[^\w.-]+/g, "_") + "-" + new Date().toISOString().slice(0, 10) + ".txt";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
+    };
+    document.getElementById("chat-min").onclick = function () {
+      document.getElementById("chat-win").classList.toggle("min");
+    };
+    document.getElementById("chat-close").onclick = function () {
+      var sure = chat.state === 2
+        ? ask("End the chat?", chatWhoStart() + " will see that you left the conversation.", "End chat", true)
+        : Promise.resolve(true);
+      sure.then(function (yes) {
+        if (!yes) return;
+        chatEnd();
+        document.getElementById("chat-win").hidden = true;
+        focusDesk();
+      });
+    };
+    function paintMessage() {
+      document.getElementById("msg-timeout").hidden = document.getElementById("msg-kind").value !== "messagebox";
+    }
+    document.getElementById("msg-kind").onchange = paintMessage;
+    document.getElementById("c-message").onclick = function () {
+      closeFly();
+      paintMessage();
+      document.getElementById("msg-status").textContent = "";
+      document.getElementById("msg-panel").hidden = false;
+      document.getElementById("msg-text").focus();
+    };
+    document.getElementById("msg-close").onclick = function () {
+      document.getElementById("msg-panel").hidden = true;
+      focusDesk();
+    };
+    document.getElementById("msg-send").onclick = function () {
+      var status = document.getElementById("msg-status");
+      var box = document.getElementById("msg-text");
+      var text = box.value.trim();
+      var heading = document.getElementById("msg-title").value.trim() || "Digital Fingers";
+      var kind = document.getElementById("msg-kind").value;
+      var win = meshNode();
+      if (!text) {
+        status.textContent = "Type a message first.";
+        box.focus();
+        return;
+      }
+      if (!win) {
+        status.textContent = "The remote connection is not ready yet.";
+        return;
+      }
+      hookMesh(win);
+      var nodeid = win.currentNode._id;
+      function sent() {
+        status.textContent = "Sent to " + nodeName(win) + ".";
+        box.value = "";
+      }
+      if (kind !== "toast") {
+        var command = { action: "msg", type: kind, nodeid: nodeid, title: heading, msg: text };
+        if (kind === "messagebox") command.timeout = Number(document.getElementById("msg-timeout").value) * 60000;
+        win.meshserver.send(command);
+        sent();
+        return;
+      }
+      var id = "df-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      var button = document.getElementById("msg-send");
+      var timer = setTimeout(function () {
+        delete waiting[id];
+        button.disabled = false;
+        status.textContent = "The server did not answer. The notification may not have been sent.";
+      }, 15000);
+      waiting[id] = function (error) {
+        clearTimeout(timer);
+        delete waiting[id];
+        button.disabled = false;
+        if (error) status.textContent = error.message; else sent();
+      };
+      button.disabled = true;
+      status.textContent = "Sending…";
+      win.meshserver.send({ action: "toast", nodeids: [nodeid], title: heading, msg: text, responseid: id });
     };
     document.getElementById("tool-terminal").onclick = function () { show("terminal"); };
     document.getElementById("cad").onclick = function () {
@@ -1310,7 +2148,25 @@
       closeFly();
       focusDesk();
     };
-    document.getElementById("end").onclick = function () { window.close(); };
+    document.getElementById("end").onclick = function () {
+      closeFly();
+      ask("End this session?", "You will be disconnected from " + title + ".", "End session", true).then(function (yes) {
+        if (!yes) return;
+        if (!display.original || sameSize(display.original, display.current)) {
+          window.close();
+          return;
+        }
+        toast("Restoring the remote screen to " + sizeLabel(display.original) + "…");
+        var closing = setTimeout(function () { window.close(); }, 8000);
+        displayRestore().then(null, function () {}).then(function () {
+          clearTimeout(closing);
+          window.close();
+        });
+      });
+    };
+    window.addEventListener("pagehide", function () {
+      if (display.original && !sameSize(display.original, display.current)) displayRestore().then(null, function () {});
+    });
 
     function parseData(text) {
       if (!text) return null;

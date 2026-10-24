@@ -1,0 +1,23 @@
+{
+  "agentcustomization": {
+    "displayname": "Digital Fingers Agent",
+    "description": "Digital Fingers remote support",
+    "companyname": "Digital Fingers",
+    "image": "df-agent-logo.png",
+    "foregroundcolor": "#FFFFFF",
+    "backgroundcolor": "#0B1020"
+  },
+  "consentmessages": {
+    "title": "Digital Fingers Support",
+    "desktop": "Digital Fingers Support would like to view and control this computer. Allow access?",
+    "terminal": "Digital Fingers Support would like to open a command session on this computer. Allow access?",
+    "files": "Digital Fingers Support would like to access files on this computer. Allow access?"
+  },
+  "notificationmessages": {
+    "title": "Digital Fingers Support",
+    "desktop": "Digital Fingers Support is now connected to this computer.",
+    "terminal": "Digital Fingers Support opened a command session on this computer.",
+    "files": "Digital Fingers Support opened a file session on this computer."
+  },
+  "desktopprivacybartext": "Digital Fingers Support is connected"
+}

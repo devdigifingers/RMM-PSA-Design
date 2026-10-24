@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 240 240%22%3E%3Cdefs%3E%3ClinearGradient id=%22g%22 x1=%220%22 y1=%22200%22 x2=%22200%22 y2=%220%22 gradientUnits=%22userSpaceOnUse%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3ClinearGradient id=%22gt%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%220%22 gradientUnits=%22objectBoundingBox%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width=%22240%22 height=%22240%22 rx=%2252%22 fill=%22url%28%23g%29%22/%3E%3Cg transform=%22translate%2840,40%29 scale%280.8%29%22%3E%3Cg fill=%22%23FFF%22%3E%3Cpath d=%22M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z%22 fill-rule=%22evenodd%22/%3E%3Crect x=%2234%22 y=%2272%22 width=%2220%22 height=%22108%22 rx=%2210%22/%3E%3Crect x=%226%22 y=%22118%22 width=%2220%22 height=%2262%22 rx=%2210%22/%3E%3Ccircle cx=%2216%22 cy=%2292%22 r=%2210%22/%3E%3C/g%3E%3Cpath d=%22M3,78A19,19 0 0 1 29,78%22 fill=%22none%22 stroke=%22%23FFF%22 stroke-width=%225%22 stroke-linecap=%22round%22/%3E%3C/g%3E%3C/svg%3E">
+  <title>Digital Fingers Support</title>
+  <style>
+    :root {
+      --blue: #2577e8; --blue-d: #1b63c9; --grad: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%);
+      --ink: #1c2430; --muted: #5c6d80; --line: #e3e9f1; --soft: #f3f6fa; --field: #d6dee8; --green: #3ddc84;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid; place-items: center; padding: 24px; color: var(--ink);
+      font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% 10%, #ffffff 0%, #eef4fc 45%, #dfe9f7 100%);
+    }
+    .card {
+      display: flex; flex-direction: column; width: min(560px, 100%); height: min(760px, 100%); overflow: hidden;
+      border-radius: 20px; background: #f3f6fa; box-shadow: 0 30px 70px rgba(16,40,70,0.22), 0 0 0 1px rgba(16,40,70,0.06);
+    }
+    header {
+      display: flex; align-items: center; gap: 14px; flex: none; padding: 18px 20px;
+      background: var(--grad); color: #fff;
+    }
+    .badge {
+      position: relative; flex: none; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 11px;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+    }
+    .badge svg { display: block; width: 100%; height: 100%; }
+    .badge::after {
+      content: ""; position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%;
+      background: #9fb0c2; border: 2px solid #2164c4; transition: background 0.2s;
+    }
+    .card.live .badge::after { background: var(--green); }
+    .who { min-width: 0; }
+    .who strong, .who span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .who strong { font-size: 17px; font-weight: 600; }
+    .who span { margin-top: 2px; font-size: 13px; color: rgba(255,255,255,0.82); }
+    .log {
+      flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 20px 18px;
+      scrollbar-width: thin; scrollbar-color: #c3cfdc transparent;
+    }
+    .empty { margin: auto; max-width: 320px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.55; }
+    .empty svg { display: block; width: 64px; height: 64px; margin: 0 auto 14px; color: var(--blue); }
+    .empty strong { display: block; margin-bottom: 6px; color: var(--ink); font-size: 17px; font-weight: 600; }
+    .dots { display: flex; justify-content: center; gap: 5px; margin-top: 16px; }
+    .bubble {
+      max-width: 78%; padding: 10px 14px; border-radius: 18px; font-size: 15px; line-height: 1.45;
+      white-space: pre-wrap; overflow-wrap: anywhere; animation: pop 0.16s ease-out;
+    }
+    .bubble time { display: block; margin-top: 3px; font-size: 11px; opacity: 0.65; text-align: right; }
+    .bubble.me { align-self: flex-end; background: var(--blue); color: #fff; border-bottom-right-radius: 6px; }
+    .bubble.them { align-self: flex-start; background: #fff; color: var(--ink); border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
+    .note { align-self: center; margin: 6px 0; padding: 5px 14px; border-radius: 999px; background: #e2e9f2; color: var(--muted); font-size: 12.5px; text-align: center; }
+    .typing { align-self: flex-start; display: flex; gap: 4px; padding: 13px 15px; border-radius: 18px; border-bottom-left-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
+    .typing[hidden] { display: none; }
+    .typing i, .dots i { width: 7px; height: 7px; border-radius: 50%; background: #9fb0c2; animation: blink 1.2s infinite; }
+    .typing i:nth-child(2), .dots i:nth-child(2) { animation-delay: 0.2s; }
+    .typing i:nth-child(3), .dots i:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+    @keyframes pop { from { opacity: 0; transform: translateY(4px) scale(0.98); } to { opacity: 1; transform: none; } }
+    form { display: flex; align-items: flex-end; gap: 10px; flex: none; padding: 12px 14px; background: #fff; border-top: 1px solid var(--line); }
+    textarea {
+      flex: 1; min-width: 0; height: 44px; max-height: 140px; padding: 11px 16px; resize: none; overflow-y: hidden;
+      border: 1px solid var(--field); border-radius: 22px; outline: 0; background: var(--soft); color: var(--ink);
+      font: inherit; font-size: 15px; line-height: 1.4; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    textarea:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    textarea:disabled { opacity: 0.6; }
+    form button {
+      flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
+      background: var(--blue); color: #fff; cursor: pointer; transition: background 0.15s, transform 0.1s;
+    }
+    form button:hover:not(:disabled) { background: var(--blue-d); }
+    form button:active:not(:disabled) { transform: scale(0.94); }
+    form button:disabled { background: #b9c7d6; cursor: default; }
+    form button svg { width: 20px; height: 20px; margin-left: 2px; }
+    footer { flex: none; padding: 8px 14px 12px; background: #fff; color: #8b9bad; font-size: 11.5px; text-align: center; }
+    footer svg { width: 11px; height: 11px; margin-right: 4px; vertical-align: -1px; }
+    @media (max-width: 600px) {
+      body { padding: 0; }
+      .card { width: 100%; height: 100%; border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="card" id="card">
+    <header>
+      <div class="badge" aria-hidden="true"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240"><defs><linearGradient id="df-badge" x1="0" y1="200" x2="200" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#7C3AED"/></linearGradient><linearGradient id="gt" x1="0" y1="0" x2="1" y2="0" gradientUnits="objectBoundingBox"><stop offset="0" stop-color="#22D3EE"/><stop offset="1" stop-color="#7C3AED"/></linearGradient></defs><rect width="240" height="240" rx="52" fill="url(#df-badge)"/><g transform="translate(40,40) scale(0.8)"><g fill="#FFF"><path d="M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z" fill-rule="evenodd"/><rect x="34" y="72" width="20" height="108" rx="10"/><rect x="6" y="118" width="20" height="62" rx="10"/><circle cx="16" cy="92" r="10"/></g><path d="M3,78A19,19 0 0 1 29,78" fill="none" stroke="#FFF" stroke-width="5" stroke-linecap="round"/></g></svg></div>
+      <div class="who">
+        <strong>Digital Fingers Support</strong>
+        <span id="state">Connecting…</span>
+      </div>
+    </header>
+    <div class="log" id="log" aria-live="polite">
+      <div class="empty" id="empty">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="9" width="30" height="22" rx="7" fill="currentColor" opacity="0.15"/><path d="M13 9h16a7 7 0 0 1 7 7v8a7 7 0 0 1-7 7H19l-7 6v-6.3A7 7 0 0 1 6 24v-8a7 7 0 0 1 7-7z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/><path d="M38 17a6 6 0 0 1 4 5.7v6.6A6 6 0 0 1 37 35v5l-6-5h-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/></svg>
+        <strong id="empty-title">Connecting you to support</strong>
+        <span id="empty-text">Your Digital Fingers technician has started a chat with you. Please keep this window open.</span>
+        <div class="dots"><i></i><i></i><i></i></div>
+      </div>
+      <div class="typing" id="typing" hidden><i></i><i></i><i></i></div>
+    </div>
+    <form id="form">
+      <textarea id="text" rows="1" maxlength="4000" placeholder="Type your message…" aria-label="Message" disabled></textarea>
+      <button type="submit" id="send" aria-label="Send" title="Send" disabled>
+        <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="currentColor"/></svg>
+      </button>
+    </form>
+    <footer><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" fill="currentColor"/><path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2"/></svg>Secure support chat by Digital Fingers</footer>
+  </main>
+  <script>
+    (function () {
+      var socket = null;
+      var state = 0;
+      var typing = false;
+      var fails = 0;
+      var unread = 0;
+      var baseTitle = document.title;
+
+      function el(id) { return document.getElementById(id); }
+
+      function query(name) {
+        var parts = location.search.slice(1).split("&");
+        for (var i = 0; i < parts.length; i++) {
+          var at = parts[i].indexOf("=");
+          if (at > 0 && parts[i].slice(0, at) === name) return parts[i].slice(at + 1);
+        }
+        return "";
+      }
+
+      var id = query("id");
+      var auth = query("auth");
+      if (!/^meshmessenger(\/|%2F)[A-Za-z0-9%@$._~\/-]+$/i.test(id)) id = "";
+      if (!/^[A-Za-z0-9%@$._~-]*$/.test(auth)) auth = "";
+
+      function now() {
+        return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+
+      function setState(text, live) {
+        el("state").textContent = text;
+        el("card").classList.toggle("live", !!live);
+        el("text").disabled = state !== 2;
+        el("send").disabled = state !== 2 || !el("text").value.trim();
+      }
+
+      function scroll() {
+        var log = el("log");
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function line(kind, text) {
+        var empty = el("empty");
+        if (empty) empty.remove();
+        var node = document.createElement("div");
+        node.className = kind === "note" ? "note" : "bubble " + kind;
+        node.textContent = text;
+        if (kind !== "note") {
+          var stamp = document.createElement("time");
+          stamp.textContent = now();
+          node.appendChild(stamp);
+        }
+        el("log").insertBefore(node, el("typing"));
+        scroll();
+      }
+
+      function showTyping(on) {
+        el("typing").hidden = !on;
+        if (on) scroll();
+      }
+
+      function send(data) {
+        if (!socket || socket.readyState !== 1) return false;
+        try { socket.send(JSON.stringify(data)); return true; } catch (e) { return false; }
+      }
+
+      function outText(on) {
+        if (typing === on || state !== 2) return;
+        typing = on;
+        send({ action: "outtext", value: on });
+      }
+
+      function alertTitle() {
+        if (!document.hidden) return;
+        unread++;
+        document.title = "(" + unread + ") New message - " + baseTitle;
+      }
+
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) {
+          unread = 0;
+          document.title = baseTitle;
+        }
+      });
+
+      function connect() {
+        var url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/meshrelay.ashx?id=" + id;
+        if (auth) url += "&auth=" + auth;
+        var ws = new WebSocket(url);
+        var opened = false;
+        socket = ws;
+        state = 1;
+        setState("Connecting…", false);
+        ws.onopen = function () {
+          opened = true;
+          fails = 0;
+          setState("Waiting for your technician…", false);
+        };
+        ws.onmessage = function (event) {
+          if (socket !== ws || typeof event.data !== "string") return;
+          if (state < 2 && (event.data === "c" || event.data === "cr")) {
+            state = 2;
+            typing = false;
+            setState("Technician online", true);
+            line("note", "Your technician joined the chat");
+            if (event.data === "cr") line("note", "This chat is being recorded");
+            el("text").focus();
+            return;
+          }
+          if (event.data.charAt(0) !== "{") return;
+          var data;
+          try { data = JSON.parse(event.data); } catch (e) { return; }
+          if (data.ctrlChannel == "102938") {
+            if (data.type === "ping") send({ ctrlChannel: "102938", type: "pong" });
+            return;
+          }
+          if (data.action === "chat" && typeof data.msg === "string") {
+            showTyping(false);
+            line("them", data.msg);
+            alertTitle();
+          } else if (data.action === "outtext") {
+            showTyping(data.value === true);
+          } else if (data.action === "file") {
+            send({ action: "fileUploadCancel", id: data.id });
+          }
+        };
+        ws.onclose = function () {
+          if (socket !== ws) return;
+          var was = state;
+          socket = null;
+          state = 0;
+          showTyping(false);
+          if (was === 2) line("note", "Your technician left the chat");
+          if (!opened && ++fails >= 5) {
+            setState("Not connected", false);
+            line("note", "The chat could not connect. You can close this window.");
+            return;
+          }
+          setState(was === 2 ? "Waiting for your technician…" : "Reconnecting…", false);
+          setTimeout(connect, was === 2 ? 1000 : 3000);
+        };
+      }
+
+      el("text").addEventListener("input", function () {
+        var box = el("text");
+        box.style.height = "44px";
+        box.style.height = Math.min(box.scrollHeight + 2, 140) + "px";
+        box.style.overflowY = box.scrollHeight + 2 > 140 ? "auto" : "hidden";
+        el("send").disabled = state !== 2 || !box.value.trim();
+        outText(!!box.value.trim());
+      });
+      el("text").addEventListener("keydown", function (event) {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          submit();
+        }
+      });
+      el("form").onsubmit = function (event) {
+        event.preventDefault();
+        submit();
+      };
+      function submit() {
+        var box = el("text");
+        var text = box.value.trim();
+        if (!text || state !== 2) return;
+        if (!send({ action: "chat", msg: text })) {
+          line("note", "Not sent. Reconnecting…");
+          return;
+        }
+        typing = false;
+        line("me", text);
+        box.value = "";
+        box.style.height = "44px";
+        box.style.overflowY = "hidden";
+        el("send").disabled = true;
+        box.focus();
+      }
+      window.addEventListener("beforeunload", function () {
+        var ws = socket;
+        socket = null;
+        if (ws) try { ws.close(); } catch (e) {}
+      });
+
+      if (id) {
+        connect();
+      } else {
+        el("empty-title").textContent = "This chat link is not valid";
+        el("empty-text").textContent = "Ask your technician to start the chat again.";
+        el("empty").querySelector(".dots").remove();
+        setState("Not connected", false);
+      }
+    })();
+  </script>
+</body>
+</html>

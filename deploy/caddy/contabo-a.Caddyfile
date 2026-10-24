@@ -3,13 +3,27 @@
 }
 
 mesh.digitalfingers.co.za {
-	reverse_proxy 127.0.0.1:4430 {
-		header_up X-Forwarded-Host {host}
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-For {remote_host}
-		transport http {
-			read_timeout 360s
-			write_timeout 360s
+	handle /df-session {
+		root * /var/lib/df-session
+		rewrite * /index.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle /messenger {
+		root * /var/lib/df-session
+		rewrite * /messenger.html
+		header Cache-Control "no-store"
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:4430 {
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+			transport http {
+				read_timeout 360s
+				write_timeout 360s
+			}
 		}
 	}
 }

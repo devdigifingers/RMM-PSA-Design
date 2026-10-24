@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-24
 **Scope:** The remote session window (left rail: View, Session, Tools, Files, Chat) and everything built for it in this chat.
-**Status:** All work below is **deployed to df-a and tested**, but **not committed or pushed**.
+**Status:** All work below is **deployed to df-a, tested, and committed/pushed as `5153a15`**.
 
 Related: [CHAT_HANDOFF.md](./CHAT_HANDOFF.md) (original platform planning) · [DECISIONS.md](./DECISIONS.md)
 
@@ -18,13 +18,36 @@ Related: [CHAT_HANDOFF.md](./CHAT_HANDOFF.md) (original platform planning) · [D
 
 ---
 
-## 2. Features built (all working)
+## 2. Design language (use it for everything new)
+
+The owner wants a modern look everywhere; nothing should look like stock MeshCentral. The chat panel set the style and the whole session window now follows it.
+
+- **Colours:** primary blue `#2577e8` (hover `#1b63c9`); header gradient `linear-gradient(135deg, #2577e8, #1a4f7a)`; ink `#1c2430`; muted `#5c6d80`; lines `#e3e9f1`; soft background `#f3f6fa`; hover `#eef4fd`; red `#d93a3a`; online green `#3ddc84`. In the session window these are CSS variables (`--blue`, `--grad`, `--ink`, …); in the console file pages they are `--df-*` on `.sf-page`, `.wft-page`, `.rcv-page`.
+- **Windows and panels:** white card, 16px radius, big soft shadow, gradient title bar (`.bar`) with round icon buttons (SVG minimise / close / reload, never text glyphs).
+- **Menus:** white cards, 14px radius, 6px padding; items are 9px-radius rows with a blue icon; submenus are separate cards 8px to the side; ticks in blue. Opening animation is a short slide/fade.
+- **Fields:** 10px radius, soft grey fill, blue focus ring. **Buttons:** pill-shaped blue (`.run` / `.btn`), `.btn.ghost` for secondary, `.btn.danger` for destructive.
+- **Confirmations:** never `window.confirm`; use `ask(title, text, buttonLabel, danger)` (returns a promise) for the styled dialog.
+- **Logo (Pulse D, from the owner's `concept-1-pulse-d` package):** cyan `#22D3EE` → violet `#7C3AED` gradient "iD" mark. Assets in `console/public/brand/`: `logo-horizontal-dark.svg` (with tagline, login card), `logo-horizontal-dark-notag.svg` (tagline removed and words moved down to centre, top bar), `logo-icon.svg`, `logo-tile.svg` (white mark on gradient tile). Favicons: `console/app/favicon.ico`, `icon.svg`, `apple-icon.png`. The session window rail and the remote chat badge inline the tile SVG and use it as a data-URI favicon (those pages live on the Mesh host). `console/app/mark.js` `Wordmark` renders the image; `tagline` prop picks the login version.
+- **Rail:** dark navy gradient, logo tile, timer pill with green dot, active item is a blue pill.
+- Keys typed in our panels, dialogs or chat are never forwarded to the remote desktop (`sendKey` ignores them).
+
+**The whole console uses it too** (after `5153a15`):
+- `console/app/globals.css` has a "Digital Fingers design language" block (just before the `.sf-page` styles) that overrides the old look: tokens on `:root` plus dark-mode values on `html[data-theme="dark"]`, navy top bar with DF badge, active nav pill (`console/app/nav-links.js`, client component using `usePathname`), white page card, soft section cards (`.job`, `.tenant`), rounded tables, pill buttons, 14px-radius menus, gradient title bar on the device details window, blue-pill active item in the diagnostics sidebar.
+- Dashboard (`console/app/dashboard/page.js`) was rebuilt: stat tiles, health cards with CPU/memory/disk bars, open tickets with SLA chips, export facts, patch compliance with expandable update lists.
+- Tickets: list first with status/priority chips (`.chip`), forms below in a grid; ticket page shows chips and SLA chips, comments as cards.
+- Login page: navy background, rounded card.
+
+---
+
+## 3. Features built (all working)
 
 ### Waiting screen
 Blue monitor with animated "eyes" and "You'll be able to access the remote device shortly." Shown until the desktop reports connected.
 
 ### View menu
-Actual Size, Full Screen, Show Remote Cursor, Color Quality (Best/High/Medium/Low), Screen Resolution (100/75/50/25%).
+Actual Size, Full Screen, Show Remote Cursor, Color Quality (Best/High/Medium/Low), Stream Scaling (100/75/50/25%), Display Resolution.
+- **Stream Scaling** is Mesh's old "Screen Resolution": it only downscales the picture we receive (`ScalingLevel`); the remote screen does not change.
+- **Display Resolution** changes the remote's real resolution. On first open it runs the `DFDisplay` C# helper (`DISPLAY_CS`) through PowerShell as the signed-in user (`runMesh(2, …, 2)`); `EnumDisplaySettings` lists the modes (same colour depth, at least 800 × 600) and the current one is ticked. Picking one calls `ChangeDisplaySettingsEx` with flags 0 (not saved to the registry). The first change remembers the original; a "Restore W × H" item appears, and End session restores it before closing (waits up to 8 s). Closing the tab some other way tries a best-effort restore. Windows only; needs someone signed in at the console.
 - Full screen fills the whole window (no white space or black strip; `fitDesk()` injects styles into the Mesh iframe).
 - In full screen the rail hides and slides back when the mouse touches the left edge.
 - Submenus sit flush against their menu.
@@ -57,6 +80,23 @@ Dark flyout with two items:
 - Clear All removes finished items.
 - Closing either window only hides it, so running transfers continue.
 
+### Chat menu
+Dark flyout (same style as Files) with two items. Both need MeshCentral's "chat and notify" right.
+
+**Chat with User** — our own modern chat panel (no MeshCentral page): rounded corners, gradient header with avatar and online dot, chat bubbles with times, typing dots, auto-growing message box (Enter sends, Shift+Enter new line), round send button, Save conversation (.txt), minimise, end chat. Top-right and draggable.
+- Talks straight to Mesh's relay: `wss://<mesh>/meshrelay.ashx?id=meshmessenger/<node>/<user>&auth=<authCookie>`, the same channel MeshCentral's messenger page uses.
+- Protocol: the server sends `c` (or `cr` when recorded) once the other side joins; then JSON `{action:"chat",msg}`, `{action:"outtext",value}` (typing), and control pings (`ctrlChannel 102938`, answered with pong). We never send `random`, so no WebRTC is set up and everything stays on the websocket.
+- After connecting it sends Mesh `meshmessenger`, which makes the agent open `https://<mesh>/messenger?id=meshmessenger/<node>/<user>` in the remote user's browser.
+- **Remote side is ours too:** Caddy serves `/messenger` from `/var/lib/df-session/messenger.html` (repo: `console/session-shell/messenger.html`) instead of MeshCentral's page. Same design: "Digital Fingers Support" header with DF badge and online dot, bubbles, typing dots, round send button, "Secure support chat by Digital Fingers". Same relay protocol (Mesh allows `meshmessenger/<node>/…` ids without login). It reconnects and waits when the technician leaves, gives up after 5 failed connects, and shows "(N) New message" in the tab title when hidden. It never shows the Mesh account name (that is the shared Mesh login, not the technician).
+- **App window on Windows:** `chatOpenRemote()` first launches Edge (or Chrome) as the logged-on user with `--app=<messenger url> --window-size=440,680` through the same `DFLaunch` helper as Quick Launch, so the user gets a small chat window with no address bar or tabs. If no browser is found, nobody is signed in to the console session, or it fails, it falls back to Mesh `meshmessenger` (default browser tab). Non-Windows always uses `meshmessenger`. Note `DFLaunch` uses the active console session, so users signed in only over RDP get the fallback.
+- Side effect: MeshCentral's own web UI chat (technician side) would now also open our remote-user page; we don't use it, the session window has its own panel.
+- If the user leaves, the panel notes it and reconnects to wait again. It gives up after 4 connection attempts that never open. Files the user tries to send are declined with a pointer to Web File Transfer.
+- Tested end-to-end by joining the relay from a second websocket in the same browser (as the "remote user"): join, typing, both directions, leave, reconnect.
+
+**Send Message** — draggable panel: style (Toast notification / Message box / Alert box), title (defaults to "Digital Fingers"), message, and "Show for" (2/10/30/60 minutes or until closed; message box only).
+- Toast uses Mesh `toast` with a `responseid`, so the panel reports "Access Denied" or success. Message box and alert box use Mesh `msg` (`messagebox` / `alertbox`), which never replies, so the panel only says it was sent.
+- The panel says "Sent to" followed by the device's Mesh name, so it is right even when the payload has no label.
+
 How the pieces talk:
 - Transfer panel → session window: `postMessage({type:"df-receive", path, to})`. The session window checks the sender's origin equals the console origin and that it came from the transfer frame.
 - Pop-up → transfer panel: `BroadcastChannel("df-transfer-<deviceId>")` with the panel's random `to` ID, so only the panel that asked receives the files (prevents duplicate downloads when two session windows are open). The panel acknowledges; if no acknowledgement, the pop-up downloads the files itself.
@@ -64,13 +104,25 @@ How the pieces talk:
 - Both frames use `referrerpolicy="origin"` so the console page knows the parent origin.
 - `console/next.config.mjs` sends `Content-Security-Policy: frame-ancestors 'self' https://mesh.digitalfingers.co.za` on the two file pages only.
 
+### Ending sessions from the console
+- Devices list: a red pulsing **End session** pill appears in the Remote cell (left of the wrench) while the device has any open Mesh session (desktop, terminal, files, TCP/UDP). The tooltip says what is open. The wrench menu has **End All Sessions (n)** too. Both ask for confirmation, then report "Ended n sessions."
+- `console/app/devices/session-status.js` polls `GET /v1/remote-sessions` once for the whole page every 15 s (and on window focus, skipped when hidden); all rows share it.
+- API: `GET /v1/remote-sessions` maps Mesh node sessions to org device ids (node ids never reach the browser). `POST /v1/devices/:id/sessions/end` ends everything and audits `remote.end` with `ended`/`remaining`.
+- `api/mesh-sessions.cjs` reads `node.sessions` from Mesh `nodes`, then for every viewer sends `endDesktopMultiplex` (desktop) and `msg`/`endtunnel` per protocol (what Mesh's own Sessions dialog does), waits 4 s and re-reads. All technicians share one Mesh account, so this ends every session on that device.
+- Login tokens are deliberately **not** touched: Mesh's `loginTokens` call purges every expired token, which would drop other technicians' older session windows on other devices.
+- Session window: when a connected desktop drops, it restores the original display resolution (the Mesh control channel is still up) and shows "Session ended … It may have been ended from the console." with **Close window**.
+
 ---
 
-## 3. Files changed (uncommitted)
+## 4. Files changed (in `5153a15`)
 
 | File | What |
 |------|------|
 | `console/session-shell/index.html` | The whole session window: menus, panels, drag, messaging |
+| `console/session-shell/messenger.html` | **New (after `5153a15`).** Chat page the remote user sees |
+| `deploy/caddy/contabo-a.Caddyfile` | Synced with live; adds `/messenger` route (after `5153a15`) |
+| `console/app/nav-links.js`, `console/app/bar.js` | **After `5153a15`.** Top nav with active page pill |
+| `console/app/dashboard/page.js`, `console/app/tickets/page.js`, `console/app/tickets/[id]/page.js` | **After `5153a15`.** Redesigned layouts |
 | `console/app/devices/[id]/session/launch.js` | Payload includes `deviceId` and console origin |
 | `console/app/devices/[id]/session-power/route.js` | **New.** Power actions from the session window |
 | `console/app/devices/[id]/file-manager/page.js` | **New.** Advanced File Manager page |
@@ -83,20 +135,24 @@ How the pieces talk:
 | `console/next.config.mjs` | Frame header for the two file pages |
 | `api/src/server.js` | Safe Mode, safe-boot clearing, `encodedPowerShell()` in `powerCommand()` |
 | `api/mesh-files.cjs` | File engine changes from earlier work |
+| `api/mesh-sessions.cjs` | **New (after `5153a15`).** List / end Mesh sessions per device |
+| `console/app/devices/session-status.js` | **New (after `5153a15`).** Shared open-session poller |
+| `console/app/devices/remote-actions.js`, `console/app/actions.js` | **After `5153a15`.** End session pill, End All Sessions menu item, `remoteSessions` / `endRemoteSessions` |
 
 ---
 
-## 4. Deploying (df-a)
+## 5. Deploying (df-a)
 
-- **Session window:** copy `index.html` to df-a `/tmp`, then `sudo install -m 644 -o root -g root … /var/lib/df-session/index.html`.
+- **Session window:** copy `index.html` to df-a `/tmp`, then `sudo install -m 644 -o root -g root … /var/lib/df-session/index.html`. `messenger.html` goes to `/var/lib/df-session/messenger.html` the same way.
+- **Caddy:** `deploy/caddy/contabo-a.Caddyfile` matches the live `/etc/caddy/Caddyfile` (routes `/df-session` and `/messenger`, then Mesh). Back up, `caddy validate`, install, `systemctl reload caddy`.
 - **Console:** `sudo install -D -o dfconsole -g dfconsole -m 644 <file> /opt/df-console/<same path>`, then `sudo chown -R dfconsole:dfconsole /opt/df-console/.next`, `sudo -u dfconsole npm --prefix /opt/df-console run build`, `sudo systemctl restart df-console`.
 - **API:** `sudo install -o dfapi -g dfapi -m 644 … /opt/df-api/src/server.js`, `sudo systemctl restart df-api`; health at `http://127.0.0.1:4000/health`.
-- There are no local `node_modules`, so builds run on the server.
+- There are no local `node_modules`, so builds run on the server. `rg` is not installed on df-a; never pipe the build into it (the build gets killed). Use `> /tmp/df-build.log` and `grep`.
 - Cursor's auto-review blocks scp/ssh/sudo deploys. Retry the **exact same command** with approval requested and the exact block reason; you then approve it.
 
 ---
 
-## 5. Working rules (from the owner)
+## 6. Working rules (from the owner)
 
 - Do not commit or push unless asked.
 - Never print live secrets, Mesh node IDs or the Mesh admin password.
@@ -107,28 +163,28 @@ How the pieces talk:
 
 ---
 
-## 6. Not tested on purpose
+## 7. Not tested on purpose
 
 - **Power Options** (all of them) and opening real programs from Quick Launch.
+- **Chat with User** opening on the real remote side (`meshmessenger`), and actually sending a **Send Message** toast or box. Either would pop up on a client screen. The chat itself was tested over the relay with a simulated remote user.
 - **Send Files / upload** — would write onto a client server. The upload code is the console's existing upload, moved into `transfer.js`. Try one small file yourself.
+- **Display Resolution** actually switching a mode, and the restore on End. Listing the modes was tested on KANLDZAVFS01 (19 modes, current 1024 × 768 ticked).
 - Clicking **Receive Files** inside a live session: the browser tool can't click into a frame from another site. The flow was fully tested on a console-site test page (`win.ini`, 92 B, received), and the pop-up and dragging were checked in the session window.
 
 ---
 
-## 7. Ideas / possible next steps
+## 8. Ideas / possible next steps
 
-- Commit this work when ready.
-- Chat button (currently opens MeshCentral's chat) could get the same flyout treatment.
 - Advanced File Manager could gain rename/delete, and drag-and-drop upload.
 - Re-clamp dragged panels when the browser window is resized smaller.
 
 ---
 
-## 8. First message for the new chat
+## 9. First message for the new chat
 
 ```text
 Continue the Digital Fingers remote session window from
 docs/SESSION_WINDOW_HANDOFF.md (and docs/CHAT_HANDOFF.md for the platform).
-All work in it is deployed to df-a and tested but not committed.
-Follow the working rules in section 5.
+All work in it is deployed to df-a and committed/pushed as 5153a15.
+Follow the working rules in section 6.
 ```

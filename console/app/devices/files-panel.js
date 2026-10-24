@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createDeviceFolder, deviceFiles } from "../actions";
+import { fetchFile, sendFile, sizeLabel, UPLOAD_LIMIT } from "./transfer";
 
-export function FileManager({ deviceId }) {
-  const [path, setPath] = useState("");
-  const [history, setHistory] = useState([""]);
+export function FileManager({ deviceId, startPath = "" }) {
+  const [path, setPath] = useState(startPath);
+  const [history, setHistory] = useState([startPath]);
   const [cursor, setCursor] = useState(0);
   const [entries, setEntries] = useState([]);
   const [note, setNote] = useState("");
@@ -111,6 +112,10 @@ export function FileManager({ deviceId }) {
 
   async function upload(file) {
     if (!file) return;
+    if (file.size > UPLOAD_LIMIT) {
+      setError("That file is larger than 8 GB.");
+      return;
+    }
     const id = nextId();
     setJobs((items) => [...items, { id, name: file.name, size: file.size, state: "uploading", status: "0%" }]);
     setDock("jobs");
@@ -118,48 +123,7 @@ export function FileManager({ deviceId }) {
     record(`Upload started: ${file.name} (${sizeLabel(file.size)})`);
     setBusy("Uploading…");
     setError("");
-    let result = { ok: false, error: "The file was not uploaded." };
-    try {
-      const response = await fetch(`/devices/${deviceId}/upload`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/octet-stream",
-          "x-df-path": encodeURIComponent(path || ""),
-          "x-df-name": encodeURIComponent(file.name || ""),
-        },
-        body: file,
-      });
-      const type = response.headers.get("content-type") || "";
-      if (!type.includes("ndjson") || !response.body) {
-        const body = await response.json().catch(() => ({}));
-        result = { ok: false, error: body.error || result.error };
-      } else {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const step = await reader.read();
-          if (step.done) break;
-          buffer += decoder.decode(step.value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            let message;
-            try {
-              message = JSON.parse(line);
-            } catch {
-              continue;
-            }
-            if (typeof message.progress === "number") setJob(id, { status: `${message.progress}%` });
-            if (message.ok) result = { ok: true };
-            if (message.error) result = { ok: false, error: message.error };
-          }
-        }
-      }
-    } catch {
-      result = { ok: false, error: "The file was not uploaded." };
-    }
+    const result = await sendFile(deviceId, path, file, (status) => setJob(id, { status }));
     setBusy("");
     if (picker.current) picker.current.value = "";
     if (!result.ok) {
@@ -182,56 +146,13 @@ export function FileManager({ deviceId }) {
     record(`Download started: ${label}`);
     setBusy("Downloading…");
     setError("");
-    let result = { ok: false, error: "The file was not downloaded." };
-    try {
-      const response = await fetch(`/devices/${deviceId}/download`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path, name: picked.name, kind: picked.kind, size: picked.size || 0 }),
-      });
-      const type = response.headers.get("content-type") || "";
-      if (!type.includes("ndjson") || !response.body) {
-        const body = await response.json().catch(() => ({}));
-        result = { ok: false, error: body.error || result.error };
-      } else {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (true) {
-          const step = await reader.read();
-          if (step.done) break;
-          buffer += decoder.decode(step.value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            let message;
-            try {
-              message = JSON.parse(line);
-            } catch {
-              continue;
-            }
-            if (message.status) setJob(id, { status: message.status });
-            if (message.ok) result = { ok: true, ticket: message.ticket, name: message.name || label };
-            if (message.error) result = { ok: false, error: message.error };
-          }
-        }
-      }
-    } catch {
-      result = { ok: false, error: "The file was not downloaded." };
-    }
+    const result = await fetchFile(deviceId, path, picked, (status) => setJob(id, { status }));
     setBusy("");
     if (!result.ok) {
       setJob(id, { state: "failed", status: result.error });
       record(`Download failed: ${label}. ${result.error}`);
       return;
     }
-    const link = document.createElement("a");
-    link.href = `/devices/${deviceId}/download/${result.ticket}`;
-    link.download = result.name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
     setJob(id, { state: "complete", status: "Complete" });
     record(`Download complete: ${result.name}`);
   }
@@ -405,18 +326,6 @@ function childPath(path, name) {
 function jobPercent(status) {
   const match = /(\d+)%/.exec(status || "");
   return match ? Number(match[1]) : null;
-}
-
-function sizeLabel(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let value = bytes / 1024;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
 
 function dateLabel(value) {

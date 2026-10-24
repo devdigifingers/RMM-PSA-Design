@@ -66,7 +66,7 @@ const socketBase = `${source.protocol === "https:" ? "wss:" : "ws:"}//${source.h
 const authHeader = `${Buffer.from(user).toString("base64")},${Buffer.from(pass).toString("base64")}`;
 const startedAt = Date.now();
 const idleLimit = action === "download" ? 45000 : action === "upload" ? 180000 : 40000;
-const maxLimit = action === "download" ? 20 * 60 * 1000 : idleLimit;
+const maxLimit = action === "download" ? 20 * 60 * 1000 : action === "upload" ? 6 * 60 * 60 * 1000 : idleLimit;
 function stall() {
   if (action !== "download") {
     finish({ error: "MeshCentral did not answer." });
@@ -120,7 +120,7 @@ function sendUploadChunk() {
   }
   const length = Math.min(65536, uploadSize - uploadOffset);
   const chunk = Buffer.alloc(length);
-  fs.readSync(uploadFd, chunk, 0, length, uploadOffset);
+  fs.readSync(uploadFd, chunk, 0, length, BigInt(uploadOffset));
   uploadOffset += length;
   uploadPending.push(length);
   const payload = chunk[0] === 0 || chunk[0] === 123 ? Buffer.concat([Buffer.from([0]), chunk]) : chunk;

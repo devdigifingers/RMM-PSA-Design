@@ -26,6 +26,8 @@ export function SessionLaunch({ deviceId, host, label, user }) {
         host,
         label,
         user,
+        deviceId: String(deviceId),
+        console: window.location.origin,
       }));
       window.location.replace(`${origin}/df-session#${payload}`);
     });

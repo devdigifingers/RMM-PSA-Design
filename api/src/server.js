@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -19,6 +19,9 @@ const EXPORT_HISTORY_LIMIT = 30;
 const port = Number(process.env.PORT || 4000);
 const downloadTickets = new Map();
 const DOWNLOAD_LIMIT = 256 * 1024 * 1024;
+const UPLOAD_LIMIT = 8 * 1024 * 1024 * 1024;
+const UPLOAD_MS = 6 * 60 * 60 * 1000;
+const fileUploads = new Map();
 
 const redis = new Redis({
   host: process.env.REDIS_HOST || "127.0.0.1",
@@ -34,6 +37,42 @@ function send(res, status, body) {
     "cache-control": "no-store",
   });
   res.end(payload);
+}
+
+function headerNumber(value) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) return null;
+  return number;
+}
+
+function pipeBody(req, file, max, already) {
+  return new Promise((resolve, reject) => {
+    let size = already;
+    let failed = false;
+    const fail = (error) => {
+      if (failed) return;
+      failed = true;
+      file.destroy();
+      req.destroy();
+      reject(error);
+    };
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > max) {
+        fail(Object.assign(new Error("That file is larger than 8 GB."), { status: 413 }));
+        return;
+      }
+      if (!file.write(chunk)) req.pause();
+    });
+    file.on("drain", () => req.resume());
+    req.on("end", () => {
+      if (failed) return;
+      file.end(() => resolve(size));
+    });
+    req.on("error", fail);
+    file.on("error", fail);
+  });
 }
 
 function readBytes(req, max) {
@@ -277,12 +316,8 @@ function meshFilesUpload(nodeId, filePath, name, localFile, onProgress) {
     const out = [];
     let pending = "";
     let settled = false;
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      if (settled) return;
-      settled = true;
-      reject(Object.assign(new Error("Remote service did not answer."), { status: 502 }));
-    }, 120000);
+    const started = Date.now();
+    let timer = null;
     const finish = (ok, value) => {
       if (settled) return;
       settled = true;
@@ -290,6 +325,20 @@ function meshFilesUpload(nodeId, filePath, name, localFile, onProgress) {
       if (ok) resolve(value);
       else reject(value);
     };
+    const arm = () => {
+      clearTimeout(timer);
+      const remain = UPLOAD_MS - (Date.now() - started);
+      if (remain <= 0) {
+        child.kill("SIGKILL");
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+        return;
+      }
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(false, Object.assign(new Error("Remote service did not answer."), { status: 502 }));
+      }, Math.min(3 * 60 * 1000, remain));
+    };
+    arm();
     child.stdout.on("data", (chunk) => out.push(chunk));
     child.stderr.on("data", (chunk) => {
       pending += chunk.toString("utf8");
@@ -298,7 +347,10 @@ function meshFilesUpload(nodeId, filePath, name, localFile, onProgress) {
         const line = pending.slice(0, split);
         pending = pending.slice(split + 1);
         const match = /^P (\d+) (\d+)$/.exec(line);
-        if (match) onProgress(Number(match[1]), Number(match[2]));
+        if (match) {
+          arm();
+          onProgress(Number(match[1]), Number(match[2]));
+        }
         split = pending.indexOf("\n");
       }
     });
@@ -1549,10 +1601,29 @@ async function storeHealthSample(orgId, deviceId, metrics) {
   );
 }
 
+function encodedPowerShell(script) {
+  return `C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+}
+
+const SAFE_MODE_SCRIPT = `$ProgressPreference = 'SilentlyContinue'
+$names = @('df-agent') + @(Get-Service | Where-Object { $_.Name -like '*mesh*' -or $_.DisplayName -like '*mesh*' } | ForEach-Object { $_.Name })
+foreach ($name in ($names | Select-Object -Unique)) {
+  $key = "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\$name"
+  New-Item -Path $key -Force | Out-Null
+  Set-Item -Path $key -Value 'Service'
+}
+& "$env:SystemRoot\\System32\\bcdedit.exe" /set '{current}' safeboot network | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Output 'Could not set safe mode.'; exit 1 }
+& "$env:SystemRoot\\System32\\shutdown.exe" /r /t 5 /f
+Write-Output 'Restarting in safe mode with networking.'`;
+
+const LEAVE_SAFE_MODE = "C:\\Windows\\System32\\bcdedit.exe /deletevalue {current} safeboot >nul 2>&1 & ";
+
 function powerCommand(action, osName, hostname) {
   const windows = {
-    shutdown: "shutdown /s /t 0 /f",
-    restart: "shutdown /r /t 5 /f",
+    shutdown: `${LEAVE_SAFE_MODE}shutdown /s /t 0 /f`,
+    restart: `${LEAVE_SAFE_MODE}shutdown /r /t 5 /f`,
+    safemode: encodedPowerShell(SAFE_MODE_SCRIPT),
     logoff: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAByAGEAdwAgAD0AIAAmACAAIgAkAGUAbgB2ADoAUwB5AHMAdABlAG0AUgBvAG8AdABcAFMAeQBzAHQAZQBtADMAMgBcAHEAdQBlAHIAeQAuAGUAeABlACIAIABzAGUAcwBzAGkAbwBuACAAfAAgAE8AdQB0AC0AUwB0AHIAaQBuAGcACgAkAGYAbwB1AG4AZAAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAByAGEAdwAgAC0AcwBwAGwAaQB0ACAAIgBgAHIAYABuACIAKQApACAAewAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbQBhAHQAYwBoACAAJwBcAHMAKABcAGQAKwApAFwAcwArAEEAYwB0AGkAdgBlACcAKQAgAHsACgAgACAAIAAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAbABvAGcAbwBmAGYALgBlAHgAZQAiACAAJABNAGEAdABjAGgAZQBzAFsAMQBdAAoAIAAgACAAIABpAGYAIAAoACQATABBAFMAVABFAFgASQBUAEMATwBEAEUAIAAtAG4AZQAgADAAKQAgAHsAIABXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACIAbABvAGcAbwBmAGYAIAAkACgAJABNAGEAdABjAGgAZQBzAFsAMQBdACkAIABmAGEAaQBsAGUAZAA6ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAiADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQAgAH0ACgAgACAAIAAgACQAZgBvAHUAbgBkACAAPQAgACQAdAByAHUAZQAKACAAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAZgBvAHUAbgBkACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAE4AbwAgAGEAYwB0AGkAdgBlACAAcwBlAHMAcwBpAG8AbgAgAHQAbwAgAGwAbwBnACAAbwBmAGYALgAiADsAIABlAHgAaQB0ACAAMQAgAH0ACgBXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACIATABvAGcAZwBlAGQAIABvAGYAZgAuACIA",
     hibernate: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAB0AGUAeAB0ACAAPQAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcABvAHcAZQByAGMAZgBnAC4AZQB4AGUAIgAgAC8AYQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnAAoAJABpAG4AIAA9ACAAJABmAGEAbABzAGUACgAkAG8AawAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAB0AGUAeAB0ACAALQBzAHAAbABpAHQAIAAiAGAAcgBgAG4AIgApACkAIAB7AAoAIAAgAGkAZgAgACgAJABsAGkAbgBlACAALQBsAGkAawBlACAAIgBUAGgAZQAgAGYAbwBsAGwAbwB3AGkAbgBnACAAcwBsAGUAZQBwACAAcwB0AGEAdABlAHMAIABhAHIAZQAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAdAByAHUAZQA7ACAAYwBvAG4AdABpAG4AdQBlACAAfQAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbABpAGsAZQAgACIAVABoAGUAIABmAG8AbABsAG8AdwBpAG4AZwAgAHMAbABlAGUAcAAgAHMAdABhAHQAZQBzACAAYQByAGUAIABuAG8AdAAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAZgBhAGwAcwBlADsAIABjAG8AbgB0AGkAbgB1AGUAIAB9AAoAIAAgAGkAZgAgACgAJABpAG4AIAAtAGEAbgBkACAAJABsAGkAbgBlACAALQBtAGEAdABjAGgAIAAiAEgAaQBiAGUAcgBuAGEAdABlACIAKQAgAHsAIAAkAG8AawAgAD0AIAAkAHQAcgB1AGUAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAbwBrACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAEgAaQBiAGUAcgBuAGEAdABlACAAaQBzACAAbgBvAHQAIABhAHYAYQBpAGwAYQBiAGwAZQAgAG8AbgAgAHQAaABpAHMAIABQAEMALgAiADsAIABXAHIAaQB0AGUALQBPAHUAdABwAHUAdAAgACQAdABlAHgAdAA7ACAAZQB4AGkAdAAgADEAIAB9AAoAJgAgACIAJABlAG4AdgA6AFMAeQBzAHQAZQBtAFIAbwBvAHQAXABTAHkAcwB0AGUAbQAzADIAXABzAGgAdQB0AGQAbwB3AG4ALgBlAHgAZQAiACAALwBoACAALwBmAAoAZQB4AGkAdAAgACQATABBAFMAVABFAFgASQBUAEMATwBEAEUA",
     sleep: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQAgAD0AIAAnAFMAaQBsAGUAbgB0AGwAeQBDAG8AbgB0AGkAbgB1AGUAJwAKAAoAJAB0AGUAeAB0ACAAPQAgACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcABvAHcAZQByAGMAZgBnAC4AZQB4AGUAIgAgAC8AYQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnAAoAJABpAG4AIAA9ACAAJABmAGEAbABzAGUACgAkAG8AawAgAD0AIAAkAGYAYQBsAHMAZQAKAGYAbwByAGUAYQBjAGgAIAAoACQAbABpAG4AZQAgAGkAbgAgACgAJAB0AGUAeAB0ACAALQBzAHAAbABpAHQAIAAiAGAAcgBgAG4AIgApACkAIAB7AAoAIAAgAGkAZgAgACgAJABsAGkAbgBlACAALQBsAGkAawBlACAAIgBUAGgAZQAgAGYAbwBsAGwAbwB3AGkAbgBnACAAcwBsAGUAZQBwACAAcwB0AGEAdABlAHMAIABhAHIAZQAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAdAByAHUAZQA7ACAAYwBvAG4AdABpAG4AdQBlACAAfQAKACAAIABpAGYAIAAoACQAbABpAG4AZQAgAC0AbABpAGsAZQAgACIAVABoAGUAIABmAG8AbABsAG8AdwBpAG4AZwAgAHMAbABlAGUAcAAgAHMAdABhAHQAZQBzACAAYQByAGUAIABuAG8AdAAgAGEAdgBhAGkAbABhAGIAbABlACoAIgApACAAewAgACQAaQBuACAAPQAgACQAZgBhAGwAcwBlADsAIABjAG8AbgB0AGkAbgB1AGUAIAB9AAoAIAAgAGkAZgAgACgAJABpAG4AIAAtAGEAbgBkACAAJABsAGkAbgBlACAALQBtAGEAdABjAGgAIAAiAFMAdABhAG4AZABiAHkAIABcACgAUwAzAFwAKQB8AFMAdABhAG4AZABiAHkAIABcACgAUwAwACIAKQAgAHsAIAAkAG8AawAgAD0AIAAkAHQAcgB1AGUAIAB9AAoAfQAKAGkAZgAgACgALQBuAG8AdAAgACQAbwBrACkAIAB7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAFMAbABlAGUAcAAgAGkAcwAgAG4AbwB0ACAAYQB2AGEAaQBsAGEAYgBsAGUAIABvAG4AIAB0AGgAaQBzACAAUABDAC4AIgA7ACAAVwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAkAHQAZQB4AHQAOwAgAGUAeABpAHQAIAAxACAAfQAKACYAIAAiACQAZQBuAHYAOgBTAHkAcwB0AGUAbQBSAG8AbwB0AFwAUwB5AHMAdABlAG0AMwAyAFwAcgB1AG4AZABsAGwAMwAyAC4AZQB4AGUAIgAgACIAcABvAHcAcgBwAHIAbwBmAC4AZABsAGwALABTAGUAdABTAHUAcwBwAGUAbgBkAFMAdABhAHQAZQAiACAAIgAwACwAMQAsADAAIgA=",
@@ -3915,12 +3986,69 @@ const server = createServer(async (req, res) => {
         [deviceUploadMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
-      const bytes = await readBytes(req, 32 * 1024 * 1024);
-      const scratch = await mkdtemp(join(tmpdir(), "df-upload-"));
-      const stored = join(scratch, "upload.bin");
+      const uploadId = String(req.headers["x-df-id"] || "");
+      const start = headerNumber(req.headers["x-df-start"]);
+      const total = headerNumber(req.headers["x-df-total"]);
+      const chunked = start != null && total != null;
+      if (chunked && (!/^[0-9a-f-]{36}$/i.test(uploadId) || total > UPLOAD_LIMIT || start > total)) {
+        return send(res, 400, { error: "Choose a file." });
+      }
+      const now = Date.now();
+      for (const [key, session] of fileUploads) {
+        if (now - session.at > UPLOAD_MS) {
+          fileUploads.delete(key);
+          await rm(session.scratch, { recursive: true, force: true });
+        }
+      }
+      const uploadKey = chunked ? `${actor.id}:${device.rows[0].id}:${uploadId}` : "";
+      let session = chunked ? fileUploads.get(uploadKey) : null;
+      if (chunked && start === 0) {
+        if (session) await rm(session.scratch, { recursive: true, force: true });
+        const scratch = await mkdtemp(join(tmpdir(), "df-upload-"));
+        session = {
+          scratch,
+          stored: join(scratch, "upload.bin"),
+          received: 0,
+          total,
+          folder,
+          name,
+          at: now,
+        };
+        fileUploads.set(uploadKey, session);
+      } else if (chunked && (!session || session.received !== start || session.total !== total || session.folder !== folder || session.name !== name)) {
+        return send(res, 409, { error: "The upload did not continue. Choose the file again." });
+      }
+      const scratch = session ? session.scratch : await mkdtemp(join(tmpdir(), "df-upload-"));
+      const stored = session ? session.stored : join(scratch, "upload.bin");
+      const file = createWriteStream(stored, {
+        flags: chunked && start > 0 ? "r+" : "w",
+        start: chunked ? start : 0,
+        mode: 0o600,
+      });
+      let received = 0;
+      try {
+        received = await pipeBody(req, file, UPLOAD_LIMIT, chunked ? start : 0);
+      } catch (error) {
+        if (error.status === 413 || !session || start === 0) {
+          fileUploads.delete(uploadKey);
+          await rm(scratch, { recursive: true, force: true });
+        }
+        const message = error.status === 413 ? error.message : "The file was not uploaded.";
+        return send(res, error.status || 502, { error: message });
+      }
+      if (session) {
+        session.received = received;
+        session.at = Date.now();
+        if (received > total) {
+          fileUploads.delete(uploadKey);
+          await rm(scratch, { recursive: true, force: true });
+          return send(res, 400, { error: "Choose a file." });
+        }
+        if (received < total) return send(res, 200, { received, total });
+        fileUploads.delete(uploadKey);
+      }
       let started = false;
       try {
-        await writeFile(stored, bytes, { mode: 0o600 });
         let nodeId = device.rows[0].mesh_node_id || "";
         if (!nodeId) {
           const node = await resolveMeshNode(device.rows[0]);
@@ -3947,11 +4075,11 @@ const server = createServer(async (req, res) => {
           res.end();
           return;
         }
-        await writeAudit(actor.org_id, actor.id, "file.upload", "device", String(device.rows[0].id), { path: folder, name, bytes: bytes.length });
+        await writeAudit(actor.org_id, actor.id, "file.upload", "device", String(device.rows[0].id), { path: folder, name, bytes: received });
         res.write(`${JSON.stringify({ ok: true, name, progress: 100 })}\n`);
         res.end();
       } catch (error) {
-        const message = error.status === 413 ? "That file is larger than 32 MB." : "MeshCentral did not answer.";
+        const message = error.status === 413 ? (error.message || "That file is larger than 8 GB.") : "MeshCentral did not answer.";
         if (!started) return send(res, error.status || 502, { error: message });
         res.write(`${JSON.stringify({ error: message })}\n`);
         res.end();

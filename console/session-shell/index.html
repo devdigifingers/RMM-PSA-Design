@@ -6,19 +6,19 @@
   <title>Remote session</title>
   <style>
     html, body { margin: 0; height: 100%; background: #fff; color: #222; font-family: "Segoe UI", sans-serif; }
-    .wait, .fail {
-      position: fixed; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 8px; background: #fff;
+    .soon {
+      position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 22px; background: #fff;
     }
-    .wait p, .fail p { margin: 0; font-size: 14px; }
-    .wait strong, .fail strong { font-size: 16px; }
-    .spin {
-      width: 28px; height: 28px; margin-top: 10px; border-radius: 50%;
-      background: conic-gradient(#4285f4, #34a853, #fbbc05, #ea4335, transparent 72%, #4285f4);
-      mask: radial-gradient(farthest-side, transparent 62%, #000 64%);
-      animation: spin 0.8s linear infinite;
+    .soon[hidden] { display: none; }
+    .soon p { margin: 0; color: #1f6fe0; font-size: 16px; }
+    .monitor { width: 92px; height: 78px; }
+    .eye { fill: #1f6fe0; transform-box: fill-box; transform-origin: center; animation: count 1.4s infinite; }
+    .eye.b { animation-delay: 0.7s; }
+    @keyframes count {
+      0%, 46%, 100% { opacity: 0.2; transform: scale(0.55); }
+      18% { opacity: 1; transform: scale(1); }
     }
-    @keyframes spin { to { transform: rotate(1turn); } }
     .app { display: none; height: 100%; background: #000; }
     .app.on { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: 1fr 28px; }
     .rail {
@@ -32,13 +32,23 @@
     .rail button.on, .rail button:hover { background: rgba(255,255,255,0.14); }
     .rail svg { display: block; width: 22px; height: 22px; margin: 0 auto 4px; }
     .stage { position: relative; min-width: 0; min-height: 0; background: #000; }
-    .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+    #desk { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
     footer {
       display: flex; align-items: center; justify-content: flex-end; gap: 16px;
       padding: 0 14px; color: #c5c5c5; background: #000; font-size: 12px;
     }
+    .timer { width: 100%; padding: 4px 0 8px; text-align: center; font-size: 12px; color: #dfe8f1; }
+    .edge { display: none; }
+    .app.full { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+    .app.full footer { display: none; }
+    .app.full .rail {
+      position: fixed; left: 0; top: 0; bottom: 0; width: 72px; z-index: 6;
+      transform: translateX(-100%); transition: transform 0.18s ease;
+    }
+    .app.full .rail.peek { transform: none; }
+    .app.full .edge { display: block; position: fixed; left: 0; top: 0; bottom: 0; width: 6px; z-index: 5; }
     .fly {
-      display: none; position: absolute; left: 76px; top: 8px; z-index: 4;
+      display: none; position: fixed; left: 72px; top: 8px; z-index: 7;
       min-width: 210px; padding: 8px; border-radius: 6px;
       background: #fff; color: #1c2430; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
     }
@@ -50,20 +60,143 @@
     }
     .fly button:hover { background: #eef3f8; }
     .fly .end { color: #9d1c1c; }
+    .fly.dark {
+      min-width: 230px; padding: 4px 0; border-radius: 2px;
+      background: #1a4f7a; color: #fff; box-shadow: 0 8px 22px rgba(0,0,0,0.35);
+    }
+    .fly.dark button {
+      display: flex; align-items: center; gap: 10px; color: #fff; border-radius: 0; font-size: 14px;
+    }
+    .fly.dark button svg { width: 16px; height: 16px; flex: none; }
+    .fly.dark button { white-space: nowrap; }
+    .fly.dark button:hover, .fly.dark button.on { background: rgba(255,255,255,0.14); }
+    .fly.dark .grow { margin-left: auto; opacity: 0.8; }
+    .fly.dark .who { margin: 0; padding: 8px 10px 6px; font-size: 12px; color: #c9d8e6; }
+    .fly.dark hr { margin: 4px 0; border: 0; border-top: 1px solid rgba(255,255,255,0.18); }
+    .fly.dark .end { color: #ffb4b4; }
+    .fly.dark .note { margin: 0; padding: 8px 12px; font-size: 13px; color: #dfe8f1; white-space: nowrap; }
+    .fly.dark dl { margin: 0; padding: 8px 12px; display: grid; grid-template-columns: auto auto; gap: 6px 16px; font-size: 13px; white-space: nowrap; }
+    .fly.dark dt { color: #c9d8e6; }
+    .fly.dark dd { margin: 0; }
+    .tick { margin-left: auto; visibility: hidden; }
+    .on > .tick { visibility: visible; }
+    .fly.dark button.on { background: transparent; }
+    .fly.dark button.on:hover { background: rgba(255,255,255,0.14); }
+    .fly.dark .sub button.on { background: rgba(255,255,255,0.14); }
+    .has-sub { position: relative; }
+    .sub {
+      display: none; position: absolute; left: 100%; top: -4px; min-width: 170px;
+      padding: 4px 0; background: #1a4f7a; box-shadow: 0 8px 22px rgba(0,0,0,0.35);
+    }
+    .has-sub.open > .sub, .has-sub:hover > .sub { display: block; }
+    .fly.tools { width: 280px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; }
+    .fly.tools.on { display: flex; }
+    .tool-search {
+      display: flex; align-items: center; gap: 8px; margin: 10px 12px; padding: 6px 10px;
+      border-radius: 3px; background: rgba(255,255,255,0.1);
+    }
+    .tool-search svg { width: 16px; height: 16px; flex: none; opacity: 0.8; }
+    .tool-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: #fff; font: inherit; font-size: 14px; }
+    .tool-search input::placeholder { color: #a9bdd0; }
+    .tool-list {
+      flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid rgba(255,255,255,0.14);
+      scrollbar-width: thin; scrollbar-color: #6f8fab transparent;
+    }
+    .tool-list > .tool, .group { border-bottom: 1px solid rgba(255,255,255,0.14); }
+    .tool-list > .tool, .group .head { padding: 11px 12px; }
+    .group .items { display: none; padding-bottom: 6px; }
+    .group.open .items { display: block; }
+    .group .items .tool { padding: 8px 12px 8px 38px; }
+    .chev { margin-left: auto; width: 8px; height: 8px; border-right: 1.5px solid #c9d8e6; border-bottom: 1.5px solid #c9d8e6; transform: rotate(45deg) translateY(-3px); }
+    .group.open .chev { transform: rotate(-135deg) translateY(-2px); }
+    .launch-as {
+      display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 6px 38px; padding: 4px 8px;
+      border-radius: 3px; background: rgba(0,0,0,0.25); font-size: 13px; color: #dfe8f1;
+    }
+    .launch-as select { border: 0; outline: 0; background: transparent; color: #7cc0ff; font: inherit; cursor: pointer; }
+    .launch-as option { color: #1c2430; }
+    .request { display: block; padding: 12px; border-top: 1px solid rgba(255,255,255,0.14); color: #7cc0ff; font-size: 14px; text-decoration: none; }
+    .request:hover { text-decoration: underline; }
+    .app.linux .win-only { display: none !important; }
+    .panel {
+      position: absolute; right: 20px; top: 20px; z-index: 8; width: min(640px, calc(100% - 40px));
+      display: flex; flex-direction: column; gap: 8px; padding: 0 12px 12px;
+      background: #1a4f7a; color: #fff; box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+    }
+    .panel[hidden] { display: none; }
+    .panel header { display: flex; align-items: center; justify-content: space-between; padding: 10px 0 2px; }
+    .panel header button { border: 0; background: transparent; color: #fff; font-size: 22px; line-height: 1; cursor: pointer; }
+    .panel-row { display: flex; gap: 8px; }
+    .panel select, .panel textarea {
+      border: 1px solid rgba(255,255,255,0.25); border-radius: 3px; background: #0f3554; color: #fff; font: inherit; font-size: 13px;
+    }
+    .panel select { padding: 6px; }
+    .panel .run { margin-left: auto; padding: 6px 18px; border: 0; border-radius: 3px; background: #1f6fe0; color: #fff; font: inherit; cursor: pointer; }
+    .panel .run:disabled { opacity: 0.6; cursor: default; }
+    .panel textarea { height: 140px; padding: 8px; resize: vertical; font-family: Consolas, "Courier New", monospace; }
+    .panel pre {
+      margin: 0; min-height: 60px; max-height: 260px; overflow: auto; padding: 8px; background: #0b2238;
+      font-family: Consolas, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    }
+    .toast {
+      position: absolute; left: 50%; bottom: 20px; z-index: 9; transform: translateX(-50%);
+      max-width: 70%; padding: 10px 16px; border-radius: 4px; background: #1a4f7a; color: #fff;
+      font-size: 14px; box-shadow: 0 8px 22px rgba(0,0,0,0.4);
+    }
+    .toast[hidden] { display: none; }
+    .files-win, .wft {
+      position: absolute; z-index: 8; display: flex; flex-direction: column;
+      background: #fff; box-shadow: 0 12px 34px rgba(0,0,0,0.5);
+    }
+    .files-win { inset: 18px; }
+    .wft { right: 20px; bottom: 20px; width: min(470px, calc(100% - 40px)); height: min(400px, calc(100% - 40px)); }
+    .files-win[hidden], .wft[hidden] { display: none; }
+    .files-win header, .wft header {
+      display: flex; align-items: center; gap: 10px; flex: none; height: 42px; padding: 0 6px 0 14px;
+      background: #1a4f7a; color: #fff; font-size: 14px;
+    }
+    .files-win header span { color: #c9d8e6; font-size: 13px; }
+    .files-win header button, .wft header button {
+      width: 32px; height: 32px; border: 0; background: transparent; color: #fff; font-size: 20px; line-height: 1; cursor: pointer;
+    }
+    .files-win header button:hover, .wft header button:hover { background: rgba(255,255,255,0.14); }
+    .files-win header button:first-of-type, .wft header button:first-of-type { margin-left: auto; }
+    .files-win iframe, .wft iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+    .wft.min { height: auto; }
+    .wft.min iframe { display: none; }
+    .recv {
+      position: absolute; z-index: 9; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      display: flex; flex-direction: column; width: min(820px, calc(100% - 40px)); height: min(540px, calc(100% - 40px));
+      background: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.55);
+    }
+    .recv[hidden] { display: none; }
+    .recv header {
+      display: flex; align-items: center; gap: 10px; flex: none; height: 42px; padding: 0 6px 0 14px;
+      background: #1a4f7a; color: #fff; font-size: 14px;
+    }
+    .recv header span { color: #c9d8e6; font-size: 13px; }
+    .recv header button { margin-left: auto; width: 32px; height: 32px; border: 0; background: transparent; color: #fff; font-size: 20px; line-height: 1; cursor: pointer; }
+    .recv header button:hover { background: rgba(255,255,255,0.14); }
+    .recv iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #fff; }
+    .drag header { cursor: move; user-select: none; }
+    body.dragging iframe { pointer-events: none; }
+    .toast { z-index: 10; }
   </style>
 </head>
 <body>
-  <main class="wait" id="wait">
-    <p>Please wait</p>
-    <strong>Starting Support Session</strong>
-    <span class="spin" aria-hidden="true"></span>
-  </main>
-  <main class="fail" id="fail" hidden>
-    <p>The remote session did not start</p>
-    <strong id="fail-text"></strong>
+  <main class="soon" id="soon">
+    <svg class="monitor" viewBox="0 0 92 78" aria-hidden="true">
+      <rect x="8" y="4" width="76" height="52" rx="2" fill="none" stroke="#1f6fe0" stroke-width="2.4"/>
+      <circle class="eye a" cx="36" cy="30" r="3.2"/>
+      <circle class="eye b" cx="56" cy="30" r="3.2"/>
+      <path d="M38 56h16M46 56v8M32 68h28" fill="none" stroke="#1f6fe0" stroke-width="2.4" stroke-linecap="round"/>
+    </svg>
+    <p>You'll be able to access the remote device shortly.</p>
   </main>
   <div class="app" id="app">
-    <nav class="rail" aria-label="Remote session">
+    <div class="edge" id="edge"></div>
+    <nav class="rail" id="rail" aria-label="Remote session">
+      <div class="timer" id="timer">00:00:00</div>
       <button type="button" id="nav-view" class="on">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         View
@@ -86,15 +219,181 @@
       </button>
     </nav>
     <div class="stage">
-      <iframe id="desk" title="Remote desktop"></iframe>
-      <div class="fly" id="fly-session">
-        <p id="who"></p>
-        <button type="button" id="cad">Send Ctrl+Alt+Del</button>
-        <button type="button" class="end" id="end">End session</button>
+      <iframe id="desk" title="Remote desktop" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+      <div class="fly dark" id="fly-view">
+        <button type="button" id="view-actual"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>Actual Size<span class="tick">✓</span></button>
+        <button type="button" id="view-full"><svg viewBox="0 0 24 24"><path d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>Full Screen<span class="tick">✓</span></button>
+        <button type="button" id="view-cursor"><svg viewBox="0 0 24 24"><path d="M6 4l5 14 2-5 5-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Show Remote Cursor<span class="tick">✓</span></button>
+        <div class="has-sub" id="view-color">
+          <button type="button"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>Color Quality<span class="grow">›</span></button>
+          <div class="sub">
+            <button type="button" data-quality="80">Best</button>
+            <button type="button" data-quality="60">High</button>
+            <button type="button" data-quality="40">Medium</button>
+            <button type="button" data-quality="20">Low</button>
+          </div>
+        </div>
+        <div class="has-sub" id="view-size">
+          <button type="button"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 20h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>Screen Resolution<span class="grow">›</span></button>
+          <div class="sub">
+            <button type="button" data-scale="1024">100%</button>
+            <button type="button" data-scale="768">75%</button>
+            <button type="button" data-scale="512">50%</button>
+            <button type="button" data-scale="256">25%</button>
+          </div>
+        </div>
       </div>
-      <div class="fly" id="fly-tools">
-        <button type="button" id="tool-terminal">Terminal</button>
+      <div class="fly dark" id="fly-session">
+        <p class="who" id="who"></p>
+        <button type="button" id="s-invite"><svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 19c1.2-3 3.3-4.5 6-4.5M17 13v6M14 16h6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Invite Technician</button>
+        <button type="button" id="s-alttab"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="11" height="9" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9" y="10" width="11" height="9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Send Alt+Tab</button>
+        <button type="button" id="s-paste"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="16" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 4h6v3H9zM8 12h8M8 16h6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Send Clipboard Keystrokes</button>
+        <button type="button" id="cad"><svg viewBox="0 0 24 24"><rect x="3" y="8" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="9.5" y="8" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="16" y="8" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Send Ctrl+Alt+Del</button>
+        <button type="button" id="s-shot"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Screenshot</button>
+        <div class="has-sub" id="s-keys">
+          <button type="button"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 10h1M11 10h1M15 10h1M8 14h8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Short Keys<span class="grow">›</span></button>
+          <div class="sub">
+            <button type="button" data-keys="win">Windows key</button>
+            <button type="button" data-keys="run">Run (Win+R)</button>
+            <button type="button" data-keys="explorer">File Explorer (Win+E)</button>
+            <button type="button" data-keys="desktop">Show desktop (Win+D)</button>
+            <button type="button" data-keys="taskmgr">Task Manager (Ctrl+Shift+Esc)</button>
+            <button type="button" data-keys="altf4">Close window (Alt+F4)</button>
+            <button type="button" data-keys="esc">Escape</button>
+            <button type="button" data-keys="lock">Lock computer</button>
+          </div>
+        </div>
+        <div class="has-sub" id="s-net">
+          <button type="button"><svg viewBox="0 0 24 24"><path d="M3 9.5a13 13 0 0 1 18 0M6 13a8.5 8.5 0 0 1 12 0M9 16.5a4 4 0 0 1 6 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/></svg>Network Statistics<span class="grow">›</span></button>
+          <div class="sub"><dl id="stats"></dl></div>
+        </div>
+        <hr>
+        <button type="button" id="s-input"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 3l18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Disable Input Devices<span class="tick">✓</span></button>
+        <button type="button" id="s-clip"><svg viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="16" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9 13a3 3 0 0 1 6 0M15 13l-1.5-1.5M15 13l1.5-1.5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Clipboard Sync<span class="tick">✓</span></button>
+        <hr>
+        <button type="button" id="s-record"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="13" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M16 11l5-3v8l-5-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span id="s-record-text">Start Recording</span></button>
+        <div class="has-sub" id="s-monitor">
+          <button type="button"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 20h8M12 16v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Switch Monitor<span class="grow">›</span></button>
+          <div class="sub" id="monitors"></div>
+        </div>
+        <hr>
+        <button type="button" class="end" id="end"><svg viewBox="0 0 24 24"><path d="M12 3v8M6.5 6.5a8 8 0 1 0 11 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>End session</button>
       </div>
+      <div class="fly dark tools" id="fly-tools">
+        <label class="tool-search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M16 16l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <input type="search" id="tool-search" placeholder="Search" autocomplete="off">
+        </label>
+        <div class="tool-list" id="tool-list">
+          <button type="button" class="tool" id="tool-diagnostics"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 12h3l2-4 2 6 2-3h3M8 20h8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Diagnostics</button>
+          <button type="button" class="tool" id="tool-script"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Execute Script</button>
+          <button type="button" class="tool" id="tool-terminal"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 10l3 2.5L7 15M12 15h5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>Terminal</button>
+          <div class="group" data-group="power">
+            <button type="button" class="head"><svg viewBox="0 0 24 24"><path d="M12 3v8M6.5 6.5a8 8 0 1 0 11 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Power Options<span class="chev"></span></button>
+            <div class="items">
+              <button type="button" class="tool" data-power="lock">Lock Screen</button>
+              <button type="button" class="tool" data-power="logoff">Log Off</button>
+              <button type="button" class="tool" data-power="restart">Reboot</button>
+              <button type="button" class="tool win-only" data-power="safemode">Reboot in Safe Mode</button>
+              <button type="button" class="tool" data-power="shutdown">Shutdown</button>
+            </div>
+          </div>
+          <div class="group win-only" data-group="launch">
+            <button type="button" class="head"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="4" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="4" y="13" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="13" y="13" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>Quick Launch<span class="chev"></span></button>
+            <div class="items">
+              <label class="launch-as">Launch as
+                <select id="launch-as">
+                  <option value="system">System</option>
+                  <option value="user">Logged-on user</option>
+                </select>
+              </label>
+              <button type="button" class="tool" data-launch="appwiz">Add/Remove Programs</button>
+              <button type="button" class="tool" data-launch="cmd">Command Prompt</button>
+              <button type="button" class="tool" data-launch="compmgmt">Computer Management</button>
+              <button type="button" class="tool" data-launch="control">Control Panel</button>
+              <button type="button" class="tool" data-launch="devmgmt">Device Manager</button>
+              <button type="button" class="tool" data-launch="display">Display Settings</button>
+              <button type="button" class="tool" data-launch="eventvwr">Event Viewer</button>
+              <button type="button" class="tool" data-launch="explorer">Explorer</button>
+              <button type="button" class="tool" data-launch="fsmgmt">File System Management</button>
+              <button type="button" class="tool" data-launch="firewall">Firewall</button>
+              <button type="button" class="tool" data-launch="gpedit">Group Policy Editor</button>
+              <button type="button" class="tool" data-launch="nslookup">NS Lookup</button>
+              <button type="button" class="tool" data-launch="ncpa">Network Connections</button>
+              <button type="button" class="tool" data-launch="perfmon">Performance Monitor</button>
+              <button type="button" class="tool" data-launch="regedit">Registry</button>
+              <button type="button" class="tool" data-launch="run">Run (Win + R)</button>
+              <button type="button" class="tool" data-launch="services">Services</button>
+              <button type="button" class="tool" data-launch="msinfo">System Information</button>
+              <button type="button" class="tool" data-launch="sysdm">System Properties</button>
+              <button type="button" class="tool" data-launch="taskmgr">Task Manager</button>
+            </div>
+          </div>
+          <div class="group win-only" data-group="admin">
+            <button type="button" class="head"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="13" height="18" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="16" r="3.4" fill="#1a4f7a" stroke="currentColor" stroke-width="1.6"/><path d="M8 8h5M8 12h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Administrator Tasks<span class="chev"></span></button>
+            <div class="items">
+              <button type="button" class="tool" data-launch="cleanup">Clean Up Disk</button>
+              <button type="button" class="tool" data-launch="cleanset">Configure Cleanup</button>
+              <button type="button" class="tool" data-launch="taskschd">Task Scheduler</button>
+              <button type="button" class="tool" data-run="gpupdate">Update Group Policy</button>
+            </div>
+          </div>
+          <p class="note" id="tool-none" hidden>No tool matches that search</p>
+        </div>
+        <a class="request" href="mailto:admin@digitalfingers.co.za?subject=Remote%20session%20tool%20request">Request a tool</a>
+      </div>
+      <div class="fly dark" id="fly-files">
+        <button type="button" id="f-manager">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          Advanced File Manager
+        </button>
+        <button type="button" id="f-transfer">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v13M3.5 13.5 7 17l3.5-3.5M17 20V7m-3.5 3.5L17 7l3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Web File Transfer
+        </button>
+      </div>
+      <section class="files-win" id="files-win" hidden>
+        <header>
+          <strong>Advanced File Manager</strong>
+          <span id="files-host"></span>
+          <button type="button" id="files-reload" aria-label="Reload" title="Reload">↻</button>
+          <button type="button" id="files-close" aria-label="Close" title="Close">×</button>
+        </header>
+        <iframe id="files-frame" title="Advanced File Manager"></iframe>
+      </section>
+      <section class="wft drag" id="wft" hidden>
+        <header>
+          <strong>File Transfer</strong>
+          <button type="button" id="wft-min" aria-label="Minimize" title="Minimize">—</button>
+          <button type="button" id="wft-close" aria-label="Close" title="Close">×</button>
+        </header>
+        <iframe id="wft-frame" title="Web File Transfer" referrerpolicy="origin"></iframe>
+      </section>
+      <section class="recv drag" id="recv" hidden>
+        <header>
+          <strong>Receive Files</strong>
+          <span id="recv-host"></span>
+          <button type="button" id="recv-close" aria-label="Close" title="Close">×</button>
+        </header>
+        <iframe id="recv-frame" title="Receive Files" referrerpolicy="origin"></iframe>
+      </section>
+      <section class="panel" id="script-panel" hidden>
+        <header>
+          <strong id="script-title">Execute Script</strong>
+          <button type="button" id="script-close" aria-label="Close">×</button>
+        </header>
+        <div class="panel-row">
+          <select id="script-type" aria-label="Script type"></select>
+          <select id="script-user" aria-label="Run as">
+            <option value="0">Run as System</option>
+            <option value="2">Run as logged-on user</option>
+          </select>
+          <button type="button" class="run" id="script-run">Run</button>
+        </div>
+        <textarea id="script-text" spellcheck="false" placeholder="Type the commands to run on the remote computer"></textarea>
+        <pre id="script-out"></pre>
+      </section>
+      <div class="toast" id="toast" hidden></div>
     </div>
     <footer id="foot"></footer>
   </div>
@@ -108,11 +407,85 @@
     var asked = { view: false, terminal: false, person: false };
     var shown = false;
     var prepared = false;
+    var viewState = { actual: false, cursor: true, quality: 40, scale: 1024 };
 
-    function fail(text) {
-      document.getElementById("wait").hidden = true;
-      document.getElementById("fail").hidden = false;
-      document.getElementById("fail-text").textContent = text;
+    function meshWindow() {
+      var page = doc();
+      return page && page.defaultView;
+    }
+
+    function live() {
+      var win = meshWindow();
+      return win && win.desktop && win.desktop.m && win.desktop.State == 3 ? win : null;
+    }
+
+    var FIT_CSS = "body.df-fit{background:#000!important;overflow:hidden!important}" +
+      "body.df-fit #deskarea3x{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;" +
+      "width:auto!important;height:auto!important;max-height:none!important;margin:0!important;z-index:50;background:#000}" +
+      "body.df-fit #DeskParent{position:absolute!important;left:0;top:0;right:0;bottom:0;height:auto!important;text-align:center;background:#000}";
+
+    function fitDesk(on) {
+      var page = doc();
+      var win = meshWindow();
+      if (!page || !win) return;
+      if (!page.getElementById("df-fit")) {
+        var style = page.createElement("style");
+        style.id = "df-fit";
+        style.textContent = FIT_CSS;
+        page.head.appendChild(style);
+      }
+      if (page.body.classList.contains("df-fit") !== on) {
+        page.body.classList.toggle("df-fit", on);
+        if (typeof win.deskAdjust === "function") setTimeout(function () { win.deskAdjust(); }, 50);
+      }
+      if (typeof win.deskToggleFull === "function" && !!win.fullscreen !== on) win.deskToggleFull({ shiftKey: false });
+    }
+
+    function clock(seconds) {
+      function two(n) { return (n < 10 ? "0" : "") + n; }
+      return two(Math.floor(seconds / 3600)) + ":" + two(Math.floor(seconds / 60) % 60) + ":" + two(seconds % 60);
+    }
+
+    function elapsed() {
+      var win = meshWindow();
+      if (!win || !win.desktop || !win.desktop.startTime) return 0;
+      return Math.max(0, Math.floor((Date.now() - win.desktop.startTime) / 1000));
+    }
+
+    function paintView() {
+      document.getElementById("view-full").classList.toggle("on", !!document.fullscreenElement);
+      document.getElementById("view-actual").classList.toggle("on", viewState.actual);
+      document.getElementById("view-cursor").classList.toggle("on", viewState.cursor);
+      document.querySelectorAll("[data-quality]").forEach(function (button) {
+        button.classList.toggle("on", Number(button.getAttribute("data-quality")) === viewState.quality);
+      });
+      document.querySelectorAll("[data-scale]").forEach(function (button) {
+        button.classList.toggle("on", Number(button.getAttribute("data-scale")) === viewState.scale);
+      });
+    }
+
+    function applyView(refresh) {
+      paintView();
+      var win = meshWindow();
+      if (!win) return;
+      win.deskAspectRatio = viewState.actual ? 1 : 0;
+      if (typeof win.putstore === "function") win.putstore("deskAspectRatio", String(win.deskAspectRatio));
+      if (typeof win.deskAdjust === "function") win.deskAdjust();
+      if (!win.desktop || !win.desktop.m) return;
+      win.desktop.m.showmouse = viewState.cursor;
+      if (!win.desktopsettings) return;
+      win.desktopsettings.showmouse = viewState.cursor;
+      if (refresh) {
+        win.desktopsettings.quality = viewState.quality;
+        win.desktopsettings.scaling = viewState.scale;
+        win.desktop.m.CompressionLevel = viewState.quality;
+        win.desktop.m.ScalingLevel = viewState.scale;
+        if (typeof win.desktop.m.SendCompressionLevel === "function") {
+          win.desktop.m.SendCompressionLevel(win.desktopsettings.agentencoding || 4, viewState.quality, viewState.scale, win.desktopsettings.framerate || 50);
+        }
+        if (typeof win.desktop.m.SendRefresh === "function") win.desktop.m.SendRefresh();
+      }
+      if (typeof win.putstore === "function") win.putstore("desktopsettings", JSON.stringify(win.desktopsettings));
     }
 
     function withView(url, view) {
@@ -133,6 +506,7 @@
 
     function closeFly() {
       document.querySelectorAll(".fly").forEach(function (node) { node.classList.remove("on"); });
+      document.querySelectorAll(".has-sub.open").forEach(function (node) { node.classList.remove("open"); });
     }
 
     function toggleFly(id, top) {
@@ -140,8 +514,8 @@
       var open = node.classList.contains("on");
       closeFly();
       if (!open) {
-        node.style.top = top + "px";
         node.classList.add("on");
+        node.style.top = Math.max(0, Math.min(top, window.innerHeight - node.offsetHeight - 8)) + "px";
       }
     }
 
@@ -182,6 +556,8 @@
       var canvas = page.getElementById("Desk");
       if (!canvas) return;
       prepared = true;
+      page.body.style.background = "#000";
+      fitDesk(true);
       ["deskarea1", "deskarea4"].forEach(function (id) {
         var node = page.getElementById(id);
         if (node) node.style.display = "none";
@@ -192,10 +568,17 @@
       if (page.defaultView && typeof page.defaultView.deskAdjust === "function") page.defaultView.deskAdjust();
       canvas.addEventListener("pointerdown", function () { canvas.focus(); });
       focusDesk();
+      applyView();
     }
 
     function tidy() {
-      if (/^connected\b/i.test(statusText())) armDesk();
+      var connected = /^connected\b/i.test(statusText());
+      if (connected) {
+        document.getElementById("soon").hidden = true;
+        document.getElementById("app").classList.add("on");
+        armDesk();
+        if (mode === "view") fitDesk(true);
+      }
       paintFoot();
     }
 
@@ -257,7 +640,6 @@
       tidy();
       if (!shown && page.getElementById("connectbutton1")) {
         shown = true;
-        document.getElementById("wait").hidden = true;
         document.getElementById("app").classList.add("on");
       }
     }
@@ -267,20 +649,652 @@
       mark(name === "terminal" ? "tools" : name);
       closeFly();
       if (name === "view") go(11);
-      if (name === "files") go(13);
       if (name === "terminal") go(12);
     }
 
-    document.getElementById("nav-view").onclick = function () { show("view"); focusDesk(); };
+    document.getElementById("nav-view").onclick = function (event) {
+      mark("view");
+      if (mode !== "view") show("view");
+      toggleFly("fly-view", event.currentTarget.offsetTop);
+      paintView();
+    };
+    document.getElementById("view-actual").onclick = function () {
+      viewState.actual = !viewState.actual;
+      applyView(false);
+    };
+    document.getElementById("view-full").onclick = function () {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+      else document.exitFullscreen();
+    };
+    document.addEventListener("fullscreenchange", function () {
+      var full = !!document.fullscreenElement;
+      document.getElementById("app").classList.toggle("full", full);
+      document.getElementById("rail").classList.remove("peek");
+      closeFly();
+      paintView();
+      setTimeout(function () {
+        var win = meshWindow();
+        if (win && typeof win.deskAdjust === "function") win.deskAdjust();
+      }, 200);
+    });
+    document.getElementById("edge").addEventListener("mouseenter", function () {
+      document.getElementById("rail").classList.add("peek");
+    });
+    document.getElementById("rail").addEventListener("mouseleave", function () {
+      if (!document.querySelector(".fly.on")) document.getElementById("rail").classList.remove("peek");
+    });
+    window.addEventListener("blur", function () {
+      closeFly();
+      document.getElementById("rail").classList.remove("peek");
+    });
+    document.getElementById("view-cursor").onclick = function () {
+      viewState.cursor = !viewState.cursor;
+      applyView(false);
+    };
+    document.querySelectorAll("[data-quality]").forEach(function (button) {
+      button.onclick = function () {
+        viewState.quality = Number(button.getAttribute("data-quality"));
+        applyView(true);
+      };
+    });
+    document.querySelectorAll("[data-scale]").forEach(function (button) {
+      button.onclick = function () {
+        viewState.scale = Number(button.getAttribute("data-scale"));
+        applyView(true);
+      };
+    });
+    document.getElementById("view-color").querySelector("button").onclick = function (event) {
+      event.stopPropagation();
+      document.getElementById("view-color").classList.toggle("open");
+      document.getElementById("view-size").classList.remove("open");
+    };
+    document.getElementById("view-size").querySelector("button").onclick = function (event) {
+      event.stopPropagation();
+      document.getElementById("view-size").classList.toggle("open");
+      document.getElementById("view-color").classList.remove("open");
+    };
     document.getElementById("nav-session").onclick = function (event) {
       mark("session");
       toggleFly("fly-session", event.currentTarget.offsetTop);
+      paintSession();
     };
+
+    function paintSession() {
+      var win = meshWindow();
+      var m = win && win.desktop && win.desktop.m;
+      var settings = win && win.desktopsettings;
+      document.getElementById("s-input").classList.toggle("on", !!(m && m.RemoteInputLock === true));
+      document.getElementById("s-clip").classList.toggle("on", !!(settings && settings.autoclipboard === true));
+      document.getElementById("s-record-text").textContent = m && m.recordedData != null ? "Stop Recording" : "Start Recording";
+    }
+
+    function paintStats() {
+      var win = meshWindow();
+      var desk = win && win.desktop;
+      var m = desk && desk.m;
+      var rows = [];
+      var latency = desk && desk.latency && desk.latency.current >= 0 ? desk.latency.current + " ms" : "Measuring";
+      rows.push(["Latency", latency]);
+      rows.push(["Session time", clock(elapsed())]);
+      rows.push(["Remote screen", m && m.width ? m.width + " × " + m.height : "Not connected"]);
+      rows.push(["Color quality", viewState.quality + "%"]);
+      rows.push(["Resolution", Math.round(viewState.scale / 10.24) + "%"]);
+      rows.push(["Route", win && win.webRtcDesktop && win.webRtcDesktop.webRtcActive ? "Direct (WebRTC)" : "Relay"]);
+      var list = document.getElementById("stats");
+      list.textContent = "";
+      rows.forEach(function (row) {
+        var term = document.createElement("dt");
+        var value = document.createElement("dd");
+        term.textContent = row[0];
+        value.textContent = row[1];
+        list.appendChild(term);
+        list.appendChild(value);
+      });
+    }
+
+    function paintMonitors() {
+      var win = meshWindow();
+      var m = win && win.desktop && win.desktop.m;
+      var box = document.getElementById("monitors");
+      box.textContent = "";
+      var keys = m && m.displays ? Object.keys(m.displays) : [];
+      if (keys.length < 2) {
+        var note = document.createElement("p");
+        note.className = "note";
+        note.textContent = "This computer has one display";
+        box.appendChild(note);
+        return;
+      }
+      keys.forEach(function (key) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.textContent = m.displays[key];
+        button.classList.toggle("on", String(m.selectedDisplay) === key);
+        button.onclick = function () {
+          if (typeof win.deskSetDisplay === "function") win.deskSetDisplay(key);
+          closeFly();
+        };
+        box.appendChild(button);
+      });
+    }
+
+    function press(name) {
+      var win = live();
+      if (!win) return;
+      var m = win.desktop.m;
+      var A = m.KeyAction;
+      var WIN = 0x5B;
+      function withWin(key) { return [[A.EXDOWN, WIN], [A.DOWN, key], [A.UP, key], [A.EXUP, WIN]]; }
+      var sets = {
+        alttab: [[A.EXDOWN, 18], [A.DOWN, 9], [A.UP, 9], [A.EXUP, 18]],
+        win: [[A.EXDOWN, WIN], [A.EXUP, WIN]],
+        run: withWin(82),
+        explorer: withWin(69),
+        desktop: withWin(68),
+        taskmgr: [[A.EXDOWN, 17], [A.DOWN, 16], [A.DOWN, 27], [A.UP, 27], [A.UP, 16], [A.EXUP, 17]],
+        altf4: [[A.EXDOWN, 18], [A.DOWN, 115], [A.UP, 115], [A.EXUP, 18]],
+        esc: [[A.EXDOWN, 27], [A.EXUP, 27]]
+      };
+      if (name === "lock") {
+        if (win.desktop.contype == 1 && typeof win.desktop.sendCtrlMsg === "function") {
+          win.desktop.sendCtrlMsg('{"ctrlChannel":"102938","type":"lock"}');
+        }
+      } else if (sets[name]) {
+        m.SendKeyMsgKC(sets[name]);
+      }
+      closeFly();
+      focusDesk();
+    }
+
+    ["s-keys", "s-net", "s-monitor"].forEach(function (id) {
+      var node = document.getElementById(id);
+      node.addEventListener("mouseenter", function () {
+        if (id === "s-net") paintStats();
+        if (id === "s-monitor") paintMonitors();
+      });
+      node.querySelector("button").onclick = function (event) {
+        event.stopPropagation();
+        if (id === "s-net") paintStats();
+        if (id === "s-monitor") paintMonitors();
+        var open = node.classList.contains("open");
+        document.querySelectorAll("#fly-session .has-sub").forEach(function (other) { other.classList.remove("open"); });
+        if (!open) node.classList.add("open");
+      };
+    });
+    document.querySelectorAll("[data-keys]").forEach(function (button) {
+      button.onclick = function () { press(button.getAttribute("data-keys")); };
+    });
+    document.getElementById("s-alttab").onclick = function () { press("alttab"); };
+    document.getElementById("s-invite").onclick = function () {
+      var win = meshWindow();
+      closeFly();
+      if (win && typeof win.showShareDevice === "function") win.showShareDevice();
+    };
+    document.getElementById("s-paste").onclick = function () {
+      var win = live();
+      closeFly();
+      if (!win) return;
+      function typeIt(text) {
+        if (text && typeof win.showDeskTypeEx === "function") {
+          win.showDeskTypeEx(text.slice(0, 5000));
+          focusDesk();
+        } else if (typeof win.showDeskType === "function") {
+          win.showDeskType("");
+        }
+      }
+      if (navigator.clipboard && typeof navigator.clipboard.readText === "function") {
+        navigator.clipboard.readText().then(typeIt, function () { typeIt(""); });
+      } else {
+        typeIt("");
+      }
+    };
+    document.getElementById("s-shot").onclick = function () {
+      var win = live();
+      closeFly();
+      if (win && typeof win.deskSaveImage === "function") win.deskSaveImage();
+    };
+    document.getElementById("s-input").onclick = function () {
+      var win = live();
+      if (!win || typeof win.desktop.m.SendRemoteInputLock !== "function") return;
+      win.desktop.m.SendRemoteInputLock(win.desktop.m.RemoteInputLock === true ? 0 : 1);
+      setTimeout(paintSession, 700);
+    };
+    document.getElementById("s-clip").onclick = function () {
+      var win = meshWindow();
+      if (!win || !win.desktopsettings) return;
+      win.desktopsettings.autoclipboard = win.desktopsettings.autoclipboard !== true;
+      var box = win.document.getElementById("d7deskAutoClipboard");
+      if (box) box.checked = win.desktopsettings.autoclipboard;
+      if (typeof win.putstore === "function") win.putstore("desktopsettings", JSON.stringify(win.desktopsettings));
+      paintSession();
+    };
+    document.getElementById("s-record").onclick = function () {
+      var win = live();
+      if (!win || typeof win.deskRecordSession !== "function") return;
+      win.deskRecordSession();
+      paintSession();
+    };
+    setInterval(function () {
+      document.getElementById("timer").textContent = clock(elapsed());
+      if (document.getElementById("s-net").matches(":hover, .open")) paintStats();
+    }, 1000);
     document.getElementById("nav-tools").onclick = function (event) {
       mark("tools");
+      document.getElementById("app").classList.toggle("linux", !isWindows());
+      var search = document.getElementById("tool-search");
+      search.value = "";
+      filterTools("");
       toggleFly("fly-tools", event.currentTarget.offsetTop);
+      if (document.getElementById("fly-tools").classList.contains("on")) search.focus();
     };
-    document.getElementById("nav-files").onclick = function () { show("files"); };
+
+    var deviceId = "";
+    var consoleOrigin = "";
+    var waiting = {};
+    var toastTimer = null;
+    var LAUNCH = {
+      appwiz: "control.exe appwiz.cpl",
+      cmd: "cmd.exe",
+      compmgmt: "compmgmt.msc",
+      control: "control.exe",
+      devmgmt: "devmgmt.msc",
+      display: "control.exe desk.cpl",
+      eventvwr: "eventvwr.msc",
+      explorer: "explorer.exe",
+      fsmgmt: "fsmgmt.msc",
+      firewall: "wf.msc",
+      gpedit: "gpedit.msc",
+      nslookup: "cmd.exe /k nslookup",
+      ncpa: "control.exe ncpa.cpl",
+      perfmon: "perfmon.exe",
+      regedit: "regedit.exe",
+      services: "services.msc",
+      msinfo: "msinfo32.exe",
+      sysdm: "control.exe sysdm.cpl",
+      taskmgr: "taskmgr.exe",
+      cleanup: "cleanmgr.exe /sagerun:65",
+      cleanset: "cleanmgr.exe /sageset:65",
+      taskschd: "taskschd.msc"
+    };
+    var LAUNCH_CS = [
+      "using System;",
+      "using System.Runtime.InteropServices;",
+      "using System.Text;",
+      "public class DFLaunch {",
+      "  [DllImport(\"kernel32.dll\")] static extern uint WTSGetActiveConsoleSessionId();",
+      "  [DllImport(\"kernel32.dll\")] static extern IntPtr GetCurrentProcess();",
+      "  [DllImport(\"wtsapi32.dll\", SetLastError=true)] static extern bool WTSQueryUserToken(uint session, out IntPtr token);",
+      "  [DllImport(\"advapi32.dll\", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);",
+      "  [DllImport(\"advapi32.dll\", SetLastError=true)] static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attrs, int level, int type, out IntPtr dup);",
+      "  [DllImport(\"advapi32.dll\", SetLastError=true)] static extern bool SetTokenInformation(IntPtr token, int infoClass, ref uint value, int length);",
+      "  [DllImport(\"ntdll.dll\")] static extern int RtlAdjustPrivilege(int privilege, bool enable, bool thread, out bool was);",
+      "  [DllImport(\"userenv.dll\", SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr env, IntPtr token, bool inherit);",
+      "  [DllImport(\"advapi32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr token, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref SI si, out PI pi);",
+      "  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]",
+      "  public struct SI { public int cb; public string reserved; public string desktop; public string title; public int x, y, xSize, ySize, xCount, yCount, fill, flags; public short showWindow, reserved2; public IntPtr reserved3, stdIn, stdOut, stdErr; }",
+      "  [StructLayout(LayoutKind.Sequential)]",
+      "  public struct PI { public IntPtr process, thread; public int processId, threadId; }",
+      "  public static string Run(string command, bool asSystem) {",
+      "    uint session = WTSGetActiveConsoleSessionId();",
+      "    if (session == 0xFFFFFFFF) return \"No desktop session is active on this computer.\";",
+      "    bool was;",
+      "    RtlAdjustPrivilege(3, true, false, out was);",
+      "    RtlAdjustPrivilege(5, true, false, out was);",
+      "    RtlAdjustPrivilege(7, true, false, out was);",
+      "    IntPtr token;",
+      "    if (asSystem) {",
+      "      if (!OpenProcessToken(GetCurrentProcess(), 0xF01FF, out token)) return \"Could not open the System account. \" + Marshal.GetLastWin32Error();",
+      "    } else if (!WTSQueryUserToken(session, out token)) {",
+      "      return \"Nobody is signed in to start it as the logged-on user.\";",
+      "    }",
+      "    IntPtr dup;",
+      "    if (!DuplicateTokenEx(token, 0x02000000, IntPtr.Zero, 2, 1, out dup)) return \"Could not prepare the account. \" + Marshal.GetLastWin32Error();",
+      "    if (asSystem && !SetTokenInformation(dup, 12, ref session, 4)) return \"Could not reach the desktop. \" + Marshal.GetLastWin32Error();",
+      "    IntPtr env;",
+      "    uint flags = 0x08000000;",
+      "    if (CreateEnvironmentBlock(out env, dup, false)) flags |= 0x400; else env = IntPtr.Zero;",
+      "    SI si = new SI();",
+      "    si.cb = Marshal.SizeOf(typeof(SI));",
+      "    si.desktop = \"winsta0\\\\default\";",
+      "    PI pi;",
+      "    if (!CreateProcessAsUser(dup, null, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false, flags, env, \"C:\\\\Windows\\\\System32\", ref si, out pi)) return \"Could not start it. \" + Marshal.GetLastWin32Error();",
+      "    return \"Started.\";",
+      "  }",
+      "}"
+    ].join("\n");
+
+    function toast(text) {
+      var node = document.getElementById("toast");
+      node.textContent = text;
+      node.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { node.hidden = true; }, 6000);
+    }
+
+    function isWindows() {
+      var win = meshWindow();
+      var node = win && win.currentNode;
+      if (!node || !node.agent) return true;
+      var id = node.agent.id;
+      return (id > 0 && id < 5) || (id > 41 && id < 44);
+    }
+
+    function hookMesh(win) {
+      if (win.meshserver.dfHooked) return;
+      win.meshserver.dfHooked = true;
+      var original = win.meshserver.onMessage;
+      win.meshserver.onMessage = function (server, message) {
+        var done = message && message.responseid && waiting[message.responseid];
+        if (done && message.action === "msg" && message.type === "runcommands") {
+          done(null, typeof message.result === "string" ? message.result : "");
+          return;
+        }
+        if (done && message.action === "runcommands") {
+          done(new Error(message.result === "Agent not connected" ? "The computer is not connected." : String(message.result || "The command did not run.")));
+          return;
+        }
+        return original.apply(this, arguments);
+      };
+    }
+
+    function runMesh(type, cmds, runAsUser) {
+      return new Promise(function (resolve, reject) {
+        var win = meshWindow();
+        if (!win || !win.meshserver || !win.currentNode) {
+          reject(new Error("The remote connection is not ready yet."));
+          return;
+        }
+        hookMesh(win);
+        var id = "df-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+        var timer = setTimeout(function () {
+          delete waiting[id];
+          reject(new Error(runAsUser === 2
+            ? "No answer. Nobody may be signed in, or another command is still running."
+            : "The computer did not answer in time, or another command is still running."));
+        }, 120000);
+        waiting[id] = function (error, result) {
+          clearTimeout(timer);
+          delete waiting[id];
+          if (error) reject(error); else resolve(result);
+        };
+        win.meshserver.send({
+          action: "runcommands",
+          nodeids: [win.currentNode._id],
+          type: type,
+          cmds: cmds,
+          runAsUser: runAsUser,
+          reply: true,
+          responseid: id
+        });
+      });
+    }
+
+    function powershellLine(script) {
+      var bytes = "";
+      for (var i = 0; i < script.length; i++) {
+        var code = script.charCodeAt(i);
+        bytes += String.fromCharCode(code & 255, code >> 8);
+      }
+      return "$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + btoa(bytes) + "'));Invoke-Expression $s";
+    }
+
+    function launch(key, label) {
+      closeFly();
+      if (key === "run") {
+        press("run");
+        return;
+      }
+      var target = LAUNCH[key];
+      if (!target) return;
+      var asSystem = document.getElementById("launch-as").value === "system" && key !== "display";
+      var command = "C:\\Windows\\System32\\cmd.exe /c start \"\" " + target;
+      var script = "$ProgressPreference='SilentlyContinue'\n" +
+        "if (-not ('DFLaunch' -as [type])) { Add-Type -TypeDefinition @'\n" + LAUNCH_CS + "\n'@ }\n" +
+        "[DFLaunch]::Run('" + command.replace(/'/g, "''") + "', $" + (asSystem ? "true" : "false") + ")";
+      toast("Starting " + label + (asSystem ? " as System…" : " as the logged-on user…"));
+      runMesh(2, powershellLine(script), 0).then(function (result) {
+        var text = String(result || "").trim().split(/\r?\n/).filter(Boolean).pop() || "";
+        toast(text === "Started." ? "Started on the remote desktop." : (text || "It did not start."));
+        focusDesk();
+      }, function (error) { toast(error.message); });
+    }
+
+    function openScript(title, text, autorun) {
+      var windows = isWindows();
+      var type = document.getElementById("script-type");
+      type.innerHTML = windows
+        ? "<option value=\"1\">Command Prompt</option><option value=\"2\">PowerShell</option>"
+        : "<option value=\"3\">Shell</option>";
+      document.getElementById("script-title").textContent = title;
+      document.getElementById("script-text").value = text || "";
+      document.getElementById("script-out").textContent = "";
+      document.getElementById("script-panel").hidden = false;
+      closeFly();
+      if (autorun) runScript(); else document.getElementById("script-text").focus();
+    }
+
+    function cleanOutput(result) {
+      return String(result || "")
+        .replace(/^Microsoft Windows \[Version[^\n]*\n/m, "")
+        .replace(/^\(c\) Microsoft Corporation[^\n]*\n/m, "")
+        .replace(/^[A-Z]:\\[^\n>]*>(@echo off|exit)?[ \t]*\r?$/gim, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+
+    function runScript() {
+      var text = document.getElementById("script-text").value;
+      var out = document.getElementById("script-out");
+      var button = document.getElementById("script-run");
+      if (!text.trim()) {
+        out.textContent = "Type a command first.";
+        return;
+      }
+      var type = Number(document.getElementById("script-type").value);
+      button.disabled = true;
+      out.textContent = "Running…";
+      runMesh(type, type === 1 ? "@echo off\r\n" + text : text, Number(document.getElementById("script-user").value))
+        .then(function (result) { out.textContent = cleanOutput(result) || "Finished with no output."; },
+          function (error) { out.textContent = error.message; })
+        .then(function () { button.disabled = false; });
+    }
+
+    var POWER = {
+      lock: { label: "Lock Screen", ask: "", done: "Lock sent. The screen will lock within a few seconds." },
+      logoff: { label: "Log Off", ask: "Sign the user out of {0}? Unsaved work will be lost.", done: "Log off sent." },
+      restart: { label: "Reboot", ask: "Restart {0}? Anyone using it will lose unsaved work.", done: "Reboot sent. The session reconnects when the computer is back." },
+      safemode: { label: "Reboot in Safe Mode", ask: "Restart {0} in Safe Mode with Networking? It stays in Safe Mode until you choose Reboot from this menu.", done: "Safe Mode reboot sent." },
+      shutdown: { label: "Shutdown", ask: "Shut down {0}? Nobody can reconnect until someone turns it back on.", done: "Shutdown sent." }
+    };
+
+    function power(action) {
+      var item = POWER[action];
+      closeFly();
+      if (!item) return;
+      if (!deviceId || !consoleOrigin) {
+        toast("Close this window and click Connect again to use power options.");
+        return;
+      }
+      if (item.ask && !window.confirm(item.ask.replace("{0}", title))) return;
+      fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-power", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: action })
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          toast(response.ok ? item.done : (body.error || item.label + " did not start."));
+        });
+      }, function () { toast("Could not reach the console. " + item.label + " was not sent."); });
+    }
+
+    function filterTools(query) {
+      var q = query.trim().toLowerCase();
+      var linux = document.getElementById("app").classList.contains("linux");
+      var any = false;
+      document.querySelectorAll("#tool-list > .tool").forEach(function (node) {
+        var show = !q || node.textContent.toLowerCase().indexOf(q) !== -1;
+        node.style.display = show ? "" : "none";
+        if (show) any = true;
+      });
+      document.querySelectorAll("#tool-list .group").forEach(function (group) {
+        if (linux && group.classList.contains("win-only")) return;
+        var head = group.querySelector(".head").textContent.toLowerCase();
+        var whole = !q || head.indexOf(q) !== -1;
+        var hits = 0;
+        group.querySelectorAll(".items .tool").forEach(function (node) {
+          var show = whole || node.textContent.toLowerCase().indexOf(q) !== -1;
+          if (linux && node.classList.contains("win-only")) show = false;
+          node.style.display = show ? "" : "none";
+          if (show) hits++;
+        });
+        group.querySelector(".launch-as") && (group.querySelector(".launch-as").style.display = hits ? "" : "none");
+        group.style.display = whole || hits ? "" : "none";
+        if (q) group.classList.toggle("open", hits > 0);
+        else group.classList.remove("open");
+        if (whole || hits) any = true;
+      });
+      document.getElementById("tool-none").hidden = any;
+    }
+
+    document.getElementById("tool-search").addEventListener("input", function (event) { filterTools(event.target.value); });
+    document.querySelectorAll("#tool-list .group .head").forEach(function (head) {
+      head.onclick = function () {
+        var group = head.parentNode;
+        var open = group.classList.contains("open");
+        document.querySelectorAll("#tool-list .group").forEach(function (other) { other.classList.remove("open"); });
+        if (!open) group.classList.add("open");
+      };
+    });
+    document.querySelectorAll("[data-launch]").forEach(function (button) {
+      button.onclick = function () { launch(button.getAttribute("data-launch"), button.textContent.trim()); };
+    });
+    document.querySelectorAll("[data-power]").forEach(function (button) {
+      button.onclick = function () { power(button.getAttribute("data-power")); };
+    });
+    document.querySelector("[data-run=gpupdate]").onclick = function () {
+      openScript("Update Group Policy", "gpupdate /force", true);
+    };
+    document.getElementById("tool-script").onclick = function () { openScript("Execute Script", "", false); };
+    document.getElementById("tool-diagnostics").onclick = function () {
+      closeFly();
+      if (!deviceId || !consoleOrigin) {
+        toast("Close this window and click Connect again to open Diagnostics.");
+        return;
+      }
+      var opened = window.open(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/diagnostics", "df-diagnostics-" + deviceId);
+      if (!opened) toast("Allow pop-ups for this site to open Diagnostics.");
+    };
+    document.getElementById("script-run").onclick = runScript;
+    document.getElementById("script-close").onclick = function () {
+      document.getElementById("script-panel").hidden = true;
+      focusDesk();
+    };
+    document.getElementById("nav-files").onclick = function (event) {
+      mark("files");
+      toggleFly("fly-files", event.currentTarget.offsetTop);
+    };
+    function filePage(name) {
+      return consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/" + name +
+        (person ? "?user=" + encodeURIComponent(person) : "");
+    }
+    function openFiles(panelId, frameId, name, label) {
+      closeFly();
+      if (!deviceId || !consoleOrigin) {
+        toast("Close this window and click Connect again to open " + label + ".");
+        return;
+      }
+      var panel = document.getElementById(panelId);
+      var inner = document.getElementById(frameId);
+      if (!inner.getAttribute("src")) inner.src = filePage(name);
+      panel.hidden = false;
+      panel.classList.remove("min");
+    }
+    document.getElementById("f-manager").onclick = function () {
+      document.getElementById("files-host").textContent = title || "";
+      openFiles("files-win", "files-frame", "file-manager", "the File Manager");
+    };
+    document.getElementById("f-transfer").onclick = function () {
+      openFiles("wft", "wft-frame", "file-transfer", "File Transfer");
+    };
+    document.getElementById("files-reload").onclick = function () {
+      document.getElementById("files-frame").src = filePage("file-manager");
+    };
+    document.getElementById("files-close").onclick = function () {
+      document.getElementById("files-win").hidden = true;
+      focusDesk();
+    };
+    document.getElementById("wft-min").onclick = function () {
+      document.getElementById("wft").classList.toggle("min");
+    };
+    document.getElementById("wft-close").onclick = function () {
+      document.getElementById("wft").hidden = true;
+      closeReceive();
+      focusDesk();
+    };
+    function closeReceive() {
+      document.getElementById("recv").hidden = true;
+      document.getElementById("recv-frame").removeAttribute("src");
+    }
+    document.getElementById("recv-close").onclick = function () {
+      closeReceive();
+      focusDesk();
+    };
+    window.addEventListener("message", function (event) {
+      if (!consoleOrigin || event.origin !== consoleOrigin) return;
+      var data = event.data || {};
+      if (data.type === "df-receive" && event.source === document.getElementById("wft-frame").contentWindow) {
+        var path = typeof data.path === "string" ? data.path.slice(0, 400) : "";
+        var src = filePage("file-transfer");
+        var to = typeof data.to === "string" && /^[0-9a-f-]{36}$/i.test(data.to) ? data.to : "";
+        src += (src.indexOf("?") < 0 ? "?" : "&") + "view=receive&path=" + encodeURIComponent(path) + "&to=" + to;
+        var popup = document.getElementById("recv");
+        document.getElementById("recv-host").textContent = title ? "from " + title : "";
+        document.getElementById("recv-frame").src = src;
+        popup.hidden = false;
+      }
+      if (data.type === "df-receive-close" && event.source === document.getElementById("recv-frame").contentWindow) {
+        closeReceive();
+      }
+    });
+    function draggable(panel) {
+      var bar = panel.querySelector("header");
+      var start = null;
+      bar.addEventListener("pointerdown", function (event) {
+        if (event.button !== 0 || event.target.closest("button")) return;
+        var stage = panel.offsetParent.getBoundingClientRect();
+        var box = panel.getBoundingClientRect();
+        start = { x: event.clientX, y: event.clientY, left: box.left - stage.left, top: box.top - stage.top, stage: stage, box: box };
+        panel.style.left = start.left + "px";
+        panel.style.top = start.top + "px";
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+        panel.style.transform = "none";
+        document.body.classList.add("dragging");
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", stop);
+        window.addEventListener("pointercancel", stop);
+        event.preventDefault();
+      });
+      function move(event) {
+        if (!start) return;
+        var left = start.left + event.clientX - start.x;
+        var top = start.top + event.clientY - start.y;
+        left = Math.max(0, Math.min(left, start.stage.width - start.box.width));
+        top = Math.max(0, Math.min(top, start.stage.height - bar.offsetHeight));
+        panel.style.left = left + "px";
+        panel.style.top = top + "px";
+      }
+      function stop() {
+        start = null;
+        document.body.classList.remove("dragging");
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      }
+    }
+    draggable(document.getElementById("wft"));
+    draggable(document.getElementById("recv"));
     document.getElementById("nav-chat").onclick = function () {
       mark("chat");
       closeFly();
@@ -294,24 +1308,48 @@
       var win = page && page.defaultView;
       if (win && win.desktop && win.desktop.m && typeof win.desktop.m.sendcad === "function") win.desktop.m.sendcad();
       closeFly();
+      focusDesk();
     };
     document.getElementById("end").onclick = function () { window.close(); };
 
-    var raw = "";
-    try { raw = decodeURIComponent(location.hash.slice(1)); } catch (e) { raw = ""; }
-    var data = null;
-    try { data = JSON.parse(raw); } catch (e) { data = null; }
-    if (!data || typeof data.url !== "string" || data.url.indexOf("https://") !== 0) {
-      fail("Start the session again from Connect.");
+    function parseData(text) {
+      if (!text) return null;
+      try {
+        var data = JSON.parse(text);
+        if (data && typeof data.url === "string" && data.url.indexOf("https://") === 0) return data;
+      } catch (e) {}
+      return null;
+    }
+
+    function readPayload() {
+      var hash = location.hash.slice(1);
+      var decoded = hash;
+      try { decoded = decodeURIComponent(hash); } catch (e) {}
+      var data = parseData(decoded) || parseData(hash);
+      if (!data) {
+        try { data = parseData(sessionStorage.getItem("df-session") || ""); } catch (e) {}
+      }
+      if (data) {
+        try { sessionStorage.setItem("df-session", JSON.stringify(data)); } catch (e) {}
+      }
+      return data;
+    }
+
+    var data = readPayload();
+    if (!data) {
+      document.getElementById("soon").hidden = false;
     } else {
       base = data.url;
       person = typeof data.user === "string" ? data.user : "";
+      deviceId = typeof data.deviceId === "string" && /^\d+$/.test(data.deviceId) ? data.deviceId : "";
+      consoleOrigin = typeof data.console === "string" && /^https:\/\/[a-z0-9.-]+$/i.test(data.console) ? data.console : "";
       var host = typeof data.host === "string" ? data.host : "";
       var label = typeof data.label === "string" ? data.label : "";
       title = label && host && label !== host ? (label + "  " + host) : (label || host || "Remote session");
       document.title = title;
       document.getElementById("who").textContent = person ? ("Session for " + person) : "Session for the logged-in user";
       document.getElementById("foot").textContent = title;
+      document.getElementById("app").classList.add("on");
       history.replaceState({}, "", "/df-session");
       frame.src = withView(base, 11);
       setInterval(poke, 400);

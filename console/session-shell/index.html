@@ -6,30 +6,32 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 240 240%22%3E%3Cdefs%3E%3ClinearGradient id=%22g%22 x1=%220%22 y1=%22200%22 x2=%22200%22 y2=%220%22 gradientUnits=%22userSpaceOnUse%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3ClinearGradient id=%22gt%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%220%22 gradientUnits=%22objectBoundingBox%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width=%22240%22 height=%22240%22 rx=%2252%22 fill=%22url%28%23g%29%22/%3E%3Cg transform=%22translate%2840,40%29 scale%280.8%29%22%3E%3Cg fill=%22%23FFF%22%3E%3Cpath d=%22M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z%22 fill-rule=%22evenodd%22/%3E%3Crect x=%2234%22 y=%2272%22 width=%2220%22 height=%22108%22 rx=%2210%22/%3E%3Crect x=%226%22 y=%22118%22 width=%2220%22 height=%2262%22 rx=%2210%22/%3E%3Ccircle cx=%2216%22 cy=%2292%22 r=%2210%22/%3E%3C/g%3E%3Cpath d=%22M3,78A19,19 0 0 1 29,78%22 fill=%22none%22 stroke=%22%23FFF%22 stroke-width=%225%22 stroke-linecap=%22round%22/%3E%3C/g%3E%3C/svg%3E">
   <title>Remote session</title>
   <style>
+    @font-face { font-family: "Inter"; src: url("/df-assets/Inter-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: "Sora"; src: url("/df-assets/Sora-Variable.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
     :root {
-      --blue: #2577e8; --blue-d: #1b63c9; --grad: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%);
-      --ink: #1c2430; --muted: #5c6d80; --line: #e3e9f1; --soft: #f3f6fa; --hover: #eef4fd; --field: #d6dee8;
+      --blue: #7c3aed; --blue-d: #6d28d9; --grad: linear-gradient(120deg, #6d28d9 0%, #4f46e5 50%, #0891b2 100%);
+      --ink: #0f172a; --muted: #475569; --line: #e3e9f1; --soft: #f3f6fa; --hover: #f3effe; --field: #d6dee8;
       --red: #d93a3a; --green: #3ddc84;
       --card-shadow: 0 24px 60px rgba(4,20,40,0.45), 0 0 0 1px rgba(255,255,255,0.08);
       --menu-shadow: 0 18px 44px rgba(4,20,40,0.32), 0 0 0 1px rgba(16,40,70,0.06);
     }
-    html, body { margin: 0; height: 100%; background: #fff; color: var(--ink); font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+    html, body { margin: 0; height: 100%; background: #fff; color: var(--ink); font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
     button, input, select, textarea { font-family: inherit; }
     .soon {
       position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 18px;
-      background: radial-gradient(circle at 50% 38%, #ffffff 0%, #eef4fc 55%, #e2ecf8 100%);
+      background: radial-gradient(circle at 50% 38%, #ffffff 0%, #f2effd 55%, #e8e3fb 100%);
     }
     .soon[hidden] { display: none; }
     .soon .halo {
       display: grid; place-items: center; width: 150px; height: 150px; border-radius: 50%;
-      background: #fff; box-shadow: 0 18px 50px rgba(37,119,232,0.18), 0 0 0 10px rgba(37,119,232,0.06);
+      background: #fff; box-shadow: 0 18px 50px rgba(124,58,237,0.18), 0 0 0 10px rgba(124,58,237,0.06);
       animation: halo 2.4s ease-in-out infinite;
     }
-    @keyframes halo { 0%, 100% { box-shadow: 0 18px 50px rgba(37,119,232,0.18), 0 0 0 10px rgba(37,119,232,0.06); } 50% { box-shadow: 0 18px 50px rgba(37,119,232,0.24), 0 0 0 20px rgba(37,119,232,0.03); } }
+    @keyframes halo { 0%, 100% { box-shadow: 0 18px 50px rgba(124,58,237,0.18), 0 0 0 10px rgba(124,58,237,0.06); } 50% { box-shadow: 0 18px 50px rgba(124,58,237,0.24), 0 0 0 20px rgba(124,58,237,0.03); } }
     .soon strong { color: var(--ink); font-size: 20px; font-weight: 600; }
     .soon p { margin: -8px 0 0; color: var(--muted); font-size: 14px; }
-    .soon .bar-run { position: relative; width: 180px; height: 4px; overflow: hidden; border-radius: 999px; background: #d9e5f5; }
+    .soon .bar-run { position: relative; width: 180px; height: 4px; overflow: hidden; border-radius: 999px; background: #e3dcfa; }
     .soon .bar-run::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 999px; background: var(--grad); animation: run 1.3s ease-in-out infinite; }
     @keyframes run { from { left: -40%; } to { left: 100%; } }
     .monitor { width: 84px; height: 72px; }
@@ -43,7 +45,7 @@
     .app.on { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: 1fr 28px; }
     .rail {
       grid-row: 1 / span 2; z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0;
-      background: linear-gradient(180deg, #14365a 0%, #0c233b 100%); color: #fff;
+      background: linear-gradient(180deg, #161b3d 0%, #0b1020 100%); color: #fff;
       box-shadow: 1px 0 0 rgba(255,255,255,0.06);
     }
     .brand {
@@ -62,7 +64,7 @@
       transition: background 0.15s, color 0.15s, box-shadow 0.15s;
     }
     .rail button:hover { background: rgba(255,255,255,0.08); color: #fff; }
-    .rail button.on { background: linear-gradient(135deg, rgba(37,119,232,0.95), rgba(37,119,232,0.6)); color: #fff; box-shadow: 0 6px 16px rgba(37,119,232,0.32); }
+    .rail button.on { background: linear-gradient(135deg, rgba(124,58,237,0.95), rgba(124,58,237,0.6)); color: #fff; box-shadow: 0 6px 16px rgba(124,58,237,0.32); }
     .rail svg { display: block; width: 22px; height: 22px; margin: 0 auto 4px; }
     .rail .end { margin-top: auto; color: #ff8f8f; }
     .rail .end:hover { background: rgba(217,58,58,0.9); color: #fff; box-shadow: 0 6px 16px rgba(217,58,58,0.35); }
@@ -123,6 +125,7 @@
     .sub-scroll { max-height: min(420px, calc(100vh - 60px)); overflow-y: auto; scrollbar-width: thin; }
     .sub-note { margin: 0; padding: 8px 10px; color: var(--muted); font-size: 12.5px; line-height: 1.4; max-width: 220px; }
     .sub-scroll .restore { color: var(--blue); font-weight: 600; }
+    .sub-scroll .restore:disabled { color: var(--muted); font-weight: 500; cursor: default; background: none; }
     .sub-scroll hr { margin: 4px 6px; border: 0; border-top: 1px solid var(--line); }
     .fly.tools { width: 300px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; overflow: hidden; }
     .fly.tools.on { display: flex; }
@@ -130,7 +133,7 @@
       display: flex; align-items: center; gap: 8px; margin: 10px; padding: 8px 12px;
       border: 1px solid var(--line); border-radius: 10px; background: var(--soft); transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .tool-search:focus-within { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .tool-search:focus-within { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
     .tool-search svg { width: 16px; height: 16px; flex: none; color: #8b9bad; }
     .tool-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 14px; }
     .tool-search input::placeholder { color: #8b9bad; }
@@ -184,7 +187,7 @@
     .chat-win {
       position: absolute; z-index: 8; right: 20px; top: 20px; display: flex; flex-direction: column;
       width: min(380px, calc(100% - 40px)); height: min(560px, calc(100% - 40px));
-      border-radius: 16px; overflow: hidden; background: #f3f6fa; color: #1c2430;
+      border-radius: 16px; overflow: hidden; background: #f3f6fa; color: #0f172a;
       box-shadow: 0 24px 60px rgba(4,20,40,0.45), 0 0 0 1px rgba(255,255,255,0.08);
     }
     .chat-win[hidden] { display: none; }
@@ -192,7 +195,7 @@
     .chat-win.min .chat-log, .chat-win.min .chat-compose { display: none; }
     .chat-win header {
       display: flex; align-items: center; gap: 12px; flex: none; padding: 12px 10px 12px 14px;
-      background: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%); color: #fff;
+      background: linear-gradient(135deg, #7c3aed 0%, #1e1b4b 100%); color: #fff;
     }
     .chat-avatar {
       position: relative; flex: none; width: 40px; height: 40px; border-radius: 50%;
@@ -200,7 +203,7 @@
     }
     .chat-avatar::after {
       content: ""; position: absolute; right: -1px; bottom: -1px; width: 11px; height: 11px; border-radius: 50%;
-      background: #9fb0c2; border: 2px solid #2164c4; transition: background 0.2s;
+      background: #9fb0c2; border: 2px solid #5b3fd6; transition: background 0.2s;
     }
     .chat-win.live .chat-avatar::after { background: #3ddc84; }
     .chat-who { flex: 1; min-width: 0; }
@@ -218,21 +221,21 @@
       scrollbar-width: thin; scrollbar-color: #c3cfdc transparent;
     }
     .chat-empty {
-      margin: auto; max-width: 250px; text-align: center; color: #5c6d80; font-size: 13px; line-height: 1.5;
+      margin: auto; max-width: 250px; text-align: center; color: #475569; font-size: 13px; line-height: 1.5;
     }
-    .chat-empty svg { display: block; width: 54px; height: 54px; margin: 0 auto 12px; color: #2577e8; }
-    .chat-empty strong { display: block; margin-bottom: 4px; color: #1c2430; font-size: 15px; font-weight: 600; }
+    .chat-empty svg { display: block; width: 54px; height: 54px; margin: 0 auto 12px; color: #7c3aed; }
+    .chat-empty strong { display: block; margin-bottom: 4px; color: #0f172a; font-size: 15px; font-weight: 600; }
     .chat-empty span { display: block; }
     .bubble {
       max-width: 78%; padding: 9px 13px; border-radius: 18px; font-size: 14px; line-height: 1.4;
       white-space: pre-wrap; overflow-wrap: anywhere; animation: pop 0.16s ease-out;
     }
     .bubble time { display: block; margin-top: 3px; font-size: 11px; opacity: 0.65; text-align: right; }
-    .bubble.me { align-self: flex-end; background: #2577e8; color: #fff; border-bottom-right-radius: 6px; }
-    .bubble.them { align-self: flex-start; background: #fff; color: #1c2430; border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
+    .bubble.me { align-self: flex-end; background: #7c3aed; color: #fff; border-bottom-right-radius: 6px; }
+    .bubble.them { align-self: flex-start; background: #fff; color: #0f172a; border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
     .chat-note {
       align-self: center; margin: 6px 0; padding: 4px 12px; border-radius: 999px;
-      background: #e2e9f2; color: #5c6d80; font-size: 12px; text-align: center;
+      background: #e2e9f2; color: #475569; font-size: 12px; text-align: center;
     }
     .chat-typing { align-self: flex-start; display: flex; gap: 4px; padding: 12px 14px; border-radius: 18px; border-bottom-left-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
     .chat-typing[hidden] { display: none; }
@@ -248,16 +251,16 @@
     }
     .chat-compose textarea {
       flex: 1; min-width: 0; height: 40px; max-height: 120px; padding: 10px 14px; resize: none; box-sizing: border-box; overflow-y: hidden;
-      border: 1px solid #d6dee8; border-radius: 20px; outline: 0; background: #f3f6fa; color: #1c2430;
+      border: 1px solid #d6dee8; border-radius: 20px; outline: 0; background: #f3f6fa; color: #0f172a;
       font: inherit; font-size: 14px; line-height: 1.4; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .chat-compose textarea:focus { border-color: #2577e8; background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .chat-compose textarea:focus { border-color: #7c3aed; background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
     .chat-compose textarea:disabled { opacity: 0.6; }
     .chat-compose button {
       flex: none; display: grid; place-items: center; width: 40px; height: 40px; padding: 0;
-      border: 0; border-radius: 50%; background: #2577e8; color: #fff; cursor: pointer; transition: background 0.15s, transform 0.1s;
+      border: 0; border-radius: 50%; background: #7c3aed; color: #fff; cursor: pointer; transition: background 0.15s, transform 0.1s;
     }
-    .chat-compose button:hover:not(:disabled) { background: #1b63c9; }
+    .chat-compose button:hover:not(:disabled) { background: #6d28d9; }
     .chat-compose button:active:not(:disabled) { transform: scale(0.94); }
     .chat-compose button:disabled { background: #b9c7d6; cursor: default; }
     .chat-compose button svg { width: 18px; height: 18px; margin-left: 2px; }
@@ -276,7 +279,7 @@
       background: var(--soft); color: var(--ink); font-size: 13.5px;
       transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .panel select:focus, .panel textarea:focus, .panel input:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    .panel select:focus, .panel textarea:focus, .panel input:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
     .panel select {
       appearance: none; padding: 8px 32px 8px 12px; cursor: pointer;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%235c6d80' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -289,7 +292,7 @@
     .run, .btn {
       flex: none; padding: 9px 22px; border: 0; border-radius: 999px; background: var(--blue); color: #fff;
       font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
-      box-shadow: 0 4px 12px rgba(37,119,232,0.28);
+      box-shadow: 0 4px 12px rgba(124,58,237,0.28);
     }
     .run { margin-left: auto; }
     .run:hover:not(:disabled), .btn:hover:not(:disabled) { background: var(--blue-d); }
@@ -312,7 +315,7 @@
       border-radius: 14px; background: rgba(16,27,42,0.94); color: #fff; font-size: 14px; line-height: 1.4;
       box-shadow: 0 16px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06); animation: rise 0.18s ease-out;
     }
-    .toast::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(37,119,232,0.25); }
+    .toast::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 4px rgba(124,58,237,0.25); }
     .toast[hidden] { display: none; }
     @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
     .modal {
@@ -334,16 +337,18 @@
     .modal-actions .btn { min-width: 110px; }
     .drag > header { cursor: move; user-select: none; }
     body.dragging iframe { pointer-events: none; }
+    .soon strong, .modal-card h2, .panel .bar h2, .chat-win header strong { font-family: "Sora", "Inter", sans-serif; letter-spacing: -0.01em; }
+    button:focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; }
   </style>
 </head>
 <body>
   <main class="soon" id="soon">
     <div class="halo">
       <svg class="monitor" viewBox="0 0 92 78" aria-hidden="true">
-        <rect x="8" y="4" width="76" height="52" rx="8" fill="#eef4fd" stroke="#2577e8" stroke-width="2.6"/>
+        <rect x="8" y="4" width="76" height="52" rx="8" fill="#f3effe" stroke="#7c3aed" stroke-width="2.6"/>
         <circle class="eye a" cx="36" cy="30" r="3.4"/>
         <circle class="eye b" cx="56" cy="30" r="3.4"/>
-        <path d="M38 56h16M46 56v8M32 68h28" fill="none" stroke="#2577e8" stroke-width="2.6" stroke-linecap="round"/>
+        <path d="M38 56h16M46 56v8M32 68h28" fill="none" stroke="#7c3aed" stroke-width="2.6" stroke-linecap="round"/>
       </svg>
     </div>
     <strong>Connecting to the remote device</strong>
@@ -1302,6 +1307,18 @@
       return !!a && !!b && a[0] === b[0] && a[1] === b[1];
     }
 
+    function screenFit() {
+      var ratio = window.devicePixelRatio || 1;
+      var width = Math.round(screen.width * ratio), height = Math.round(screen.height * ratio);
+      var target = width / height;
+      var gap = function (size) { return Math.abs(size[0] / size[1] - target); };
+      var closest = Math.min.apply(null, display.modes.map(gap));
+      var shaped = display.modes.filter(function (size) { return gap(size) - closest < 0.01; });
+      var fits = shaped.filter(function (size) { return size[0] <= width && size[1] <= height; });
+      var pick = fits.length ? fits[0] : shaped[shaped.length - 1];
+      return { size: pick, exact: closest < 0.02 };
+    }
+
     function displayLoad(force) {
       if (display.loading || (display.modes && !force)) return;
       if (!isWindows()) {
@@ -1373,6 +1390,16 @@
         box.appendChild(back);
         box.appendChild(document.createElement("hr"));
       }
+      var fit = screenFit();
+      var match = document.createElement("button");
+      match.type = "button";
+      match.className = "restore";
+      match.textContent = "Match my screen (" + sizeLabel(fit.size) + ")";
+      match.title = fit.exact ? "The largest mode with your monitor's shape" : "This computer has no mode with your monitor's shape; this is the closest";
+      match.disabled = sameSize(fit.size, display.current);
+      match.onclick = function () { displaySet(fit.size); };
+      box.appendChild(match);
+      box.appendChild(document.createElement("hr"));
       display.modes.forEach(function (size) {
         var button = document.createElement("button");
         button.type = "button";

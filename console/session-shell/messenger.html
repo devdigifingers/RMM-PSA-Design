@@ -7,16 +7,18 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 240 240%22%3E%3Cdefs%3E%3ClinearGradient id=%22g%22 x1=%220%22 y1=%22200%22 x2=%22200%22 y2=%220%22 gradientUnits=%22userSpaceOnUse%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3ClinearGradient id=%22gt%22 x1=%220%22 y1=%220%22 x2=%221%22 y2=%220%22 gradientUnits=%22objectBoundingBox%22%3E%3Cstop offset=%220%22 stop-color=%22%2322D3EE%22/%3E%3Cstop offset=%221%22 stop-color=%22%237C3AED%22/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width=%22240%22 height=%22240%22 rx=%2252%22 fill=%22url%28%23g%29%22/%3E%3Cg transform=%22translate%2840,40%29 scale%280.8%29%22%3E%3Cg fill=%22%23FFF%22%3E%3Cpath d=%22M62,30a10,10 0 0 1 10,-10H95A80,80 0 0 1 95,180H72a10,10 0 0 1 -10,-10Z M84,50V150H95A50,50 0 0 0 95,50Z%22 fill-rule=%22evenodd%22/%3E%3Crect x=%2234%22 y=%2272%22 width=%2220%22 height=%22108%22 rx=%2210%22/%3E%3Crect x=%226%22 y=%22118%22 width=%2220%22 height=%2262%22 rx=%2210%22/%3E%3Ccircle cx=%2216%22 cy=%2292%22 r=%2210%22/%3E%3C/g%3E%3Cpath d=%22M3,78A19,19 0 0 1 29,78%22 fill=%22none%22 stroke=%22%23FFF%22 stroke-width=%225%22 stroke-linecap=%22round%22/%3E%3C/g%3E%3C/svg%3E">
   <title>Digital Fingers Support</title>
   <style>
+    @font-face { font-family: "Inter"; src: url("/df-assets/Inter-Variable.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: "Sora"; src: url("/df-assets/Sora-Variable.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
     :root {
-      --blue: #2577e8; --blue-d: #1b63c9; --grad: linear-gradient(135deg, #2577e8 0%, #1a4f7a 100%);
-      --ink: #1c2430; --muted: #5c6d80; --line: #e3e9f1; --soft: #f3f6fa; --field: #d6dee8; --green: #3ddc84;
+      --blue: #7c3aed; --blue-d: #6d28d9; --grad: linear-gradient(120deg, #6d28d9 0%, #4f46e5 50%, #0891b2 100%);
+      --ink: #0f172a; --muted: #475569; --line: #e3e9f1; --soft: #f3f6fa; --field: #d6dee8; --green: #3ddc84;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
       display: grid; place-items: center; padding: 24px; color: var(--ink);
-      font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
-      background: radial-gradient(circle at 20% 10%, #ffffff 0%, #eef4fc 45%, #dfe9f7 100%);
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      background: radial-gradient(circle at 20% 10%, #ffffff 0%, #f2effd 45%, #e6e0f9 100%);
     }
     .card {
       display: flex; flex-direction: column; width: min(560px, 100%); height: min(760px, 100%); overflow: hidden;
@@ -33,7 +35,7 @@
     .badge svg { display: block; width: 100%; height: 100%; }
     .badge::after {
       content: ""; position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%;
-      background: #9fb0c2; border: 2px solid #2164c4; transition: background 0.2s;
+      background: #9fb0c2; border: 2px solid #5b3fd6; transition: background 0.2s;
     }
     .card.live .badge::after { background: var(--green); }
     .who { min-width: 0; }
@@ -69,7 +71,7 @@
       border: 1px solid var(--field); border-radius: 22px; outline: 0; background: var(--soft); color: var(--ink);
       font: inherit; font-size: 15px; line-height: 1.4; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    textarea:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(37,119,232,0.15); }
+    textarea:focus { border-color: var(--blue); background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
     textarea:disabled { opacity: 0.6; }
     form button {
       flex: none; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
@@ -85,6 +87,8 @@
       body { padding: 0; }
       .card { width: 100%; height: 100%; border-radius: 0; }
     }
+    .who strong { font-family: "Sora", "Inter", sans-serif; letter-spacing: -0.01em; }
+    button:focus-visible { outline: 2px solid #7c3aed; outline-offset: 2px; }
   </style>
 </head>
 <body>

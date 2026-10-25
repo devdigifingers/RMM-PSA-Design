@@ -494,7 +494,7 @@ async function ensureTenantMesh(orgId) {
     if (!groupId) {
       const text = await meshControl([
         "AddDeviceGroup", "--name", `${org.name} - Managed`, "--desc", `Digital Fingers tenant ${org.id}`,
-        "--features", "1", "--consent", String(MESH_TENANT_CONSENT),
+        "--consent", String(MESH_TENANT_CONSENT),
       ]);
       groupId = (text.match(/mesh\/\/[A-Za-z0-9@$_-]+/) || [""])[0];
       if (!groupId) throw Object.assign(new Error("The remote service did not create the device group."), { status: 502 });
@@ -549,7 +549,11 @@ async function bindMeshNode(row, org, listed) {
   const online = (node) => ((Number(node?.conn) || 0) & 1) === 1;
   const view = (node) => ({ nodeId: String(node._id), online: online(node), group: String(node.groupname || "") });
   const bound = row.mesh_node_id ? nodes.find((node) => String(node?._id) === row.mesh_node_id) : null;
-  if (bound && bound.meshid === org.mesh_group_id) return view(bound);
+  if (bound && bound.meshid === org.mesh_group_id) {
+    if (online(bound)) return view(bound);
+    const replaced = await rebindReinstalledNode(row, org, nodes);
+    return replaced || view(bound);
+  }
   const own = nodes.filter((node) => node?.meshid === org.mesh_group_id);
   const ownMatch = meshNodeMatch(own, row.hostname, row.display_name);
   if (ownMatch?.hostnameMatch) {
@@ -581,6 +585,26 @@ async function bindMeshNode(row, org, listed) {
   await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [nodeId, row.id]);
   await writeAudit(org.id, null, "device.mesh_bind", "device", String(row.id), { hostname: row.hostname, legacy });
   return { nodeId, online: online(candidate), group: `${org.name} - Managed` };
+}
+
+// A reinstalled Mesh agent comes back as a new node in the shared group while the old one sits offline.
+async function rebindReinstalledNode(row, org, nodes) {
+  const host = String(row.hostname || "").trim().toLowerCase();
+  if (!host) return null;
+  const hits = nodes.filter((node) => node?.groupname === MESH_STAGING_GROUP
+    && ((Number(node.conn) || 0) & 1) === 1 && meshNames(node).includes(host));
+  if (hits.length !== 1) return null;
+  const nodeId = String(hits[0]._id);
+  const others = await pool.query(
+    "SELECT id FROM devices WHERE id <> $1 AND (mesh_node_id = $2 OR lower(hostname) = lower($3))",
+    [row.id, nodeId, row.hostname],
+  );
+  if (others.rows.length) return null;
+  const moved = await meshControl(["MoveToDeviceGroup", "--devid", nodeId, "--id", org.mesh_group_id]);
+  if (!meshOk(moved)) return null;
+  await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [nodeId, row.id]);
+  await writeAudit(org.id, null, "device.mesh_bind", "device", String(row.id), { hostname: row.hostname, reinstalled: true });
+  return { nodeId, online: true, group: `${org.name} - Managed` };
 }
 
 async function resolveMeshNode(row, orgId) {
@@ -3358,6 +3382,17 @@ async function removeSupportGroup(groupId) {
   }
 }
 
+// Deleting the group neither closes the customer's support app nor its open desktop relay.
+async function closeSupportApp(nodeId) {
+  if (!nodeId) return;
+  try {
+    await meshControl(["RunCommand", "--id", nodeId, "--run", "taskkill /F /T /IM DigitalFingersQuickSupport*"]);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  } catch {
+    // The app may already be closed; the group is still removed.
+  }
+}
+
 async function finishSupportSession(row, status, actorId) {
   const done = await pool.query(
     `UPDATE support_sessions SET status = $2, ended_at = now(), ended_by = $3
@@ -3365,6 +3400,7 @@ async function finishSupportSession(row, status, actorId) {
     [row.id, status, actorId || null, SUPPORT_LIVE],
   );
   if (!done.rows[0]) return false;
+  await closeSupportApp(row.mesh_node_id);
   await removeSupportGroup(row.mesh_group_id);
   await writeAudit(row.org_id, actorId || null, `support.${status === "expired" ? "expire" : "end"}`, "support_session",
     String(row.id), { code: row.code, hostname: row.hostname || "" });

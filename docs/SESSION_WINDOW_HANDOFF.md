@@ -327,6 +327,9 @@ Follow the working rules in section 6.
 - New agents still join the shared "Digital Fingers" group. A node is matched only inside the org's group; from the shared group it is moved (`MoveToDeviceGroup`, audited `device.mesh_bind`) only when its stored id or a single hostname hit is unclaimed by any other device in any org. Ambiguous nodes stay put.
 - Sweep `isolateTenantMesh` runs 30 s after API start and every 10 minutes. First run moved all 8 Digital Fingers devices; FED-WIN-001's duplicate node and HNA-KILBARCHANGC-01 (no console device) stay in the shared group.
 - Support sessions: both tenant users are added to each temporary support group.
+- Tenant groups must not have Mesh feature 1 (Auto-Remove): it deletes a device the moment it disconnects. The first tenant group was created with it and lost HNA-THEEWATERSKLF-001 at 2026-10-25 17:12 UTC; fixed with `EditDeviceGroup --flags 0`. A deleted node should return to the shared group when its PC reconnects, and the sweep moves it back.
+- A reinstalled Mesh agent registers as a new node in the shared group. When the bound node is offline in the tenant group and exactly one online shared-group node has the same hostname (and no other device anywhere uses that hostname), the API moves and rebinds it (`device.mesh_bind` with `reinstalled`). The old node stays behind, offline.
+- Ending a support session first runs `taskkill /F /T /IM DigitalFingersQuickSupport*` through the support app's agent, then deletes the group. Deleting the group alone leaves the app and its desktop relay running.
 
 ## Windows agent 1.4.0 (published 2026-10-25)
 

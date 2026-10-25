@@ -27,7 +27,7 @@ export async function login(formData) {
   redirect(body.user?.isPlatformAdmin ? "/control" : "/devices");
 }
 
-const LICENSE_MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
+const LICENSE_MODULES = ["core", "remote_desktop", "remote_support", "ticketing", "monitoring", "patch", "reporting"];
 
 export async function saveLicense(formData) {
   const orgId = String(formData.get("orgId") || "");
@@ -80,6 +80,7 @@ function licenseBody(formData) {
     plan: String(formData.get("plan") || "").trim(),
     seats: Number(formData.get("seats")),
     deviceCap: Number(formData.get("deviceCap")),
+    supportConcurrent: Number(formData.get("supportConcurrent") || 0),
     expiresAt: expiresAt || null,
     modules,
   };
@@ -92,6 +93,7 @@ async function controlError(response, fallback) {
   if (error.includes("slug")) return "slug";
   if (error.includes("email")) return "email";
   if (error.includes("seats") || error.includes("deviceCap")) return "seats";
+  if (error.includes("Support sessions")) return "support";
   if (error.includes("expires")) return "date";
   if (error.includes("modules")) return "modules";
   if (error.includes("8 characters")) return "short";
@@ -204,21 +206,22 @@ export async function createTicketFromAlert(formData) {
   redirect(`/tickets/${body.id}`);
 }
 
-export async function createPatchPolicy(formData) {
-  const response = await authed("/v1/patch-policies", {
-    deviceId: Number(formData.get("deviceId")),
-    name: String(formData.get("name") || ""),
-    mode: String(formData.get("mode") || ""),
+export async function savePatchRules(formData) {
+  const response = await callApi("/v1/patch-rules", {
+    method: "PUT",
+    body: { categories: formData.getAll("category").map(String) },
   });
-  if (!response.ok) redirect("/patches?error=policy");
-  redirect("/patches");
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect("/patches?error=rules");
+  redirect("/patches?saved=rules");
 }
 
-export async function approvePatchDeploy(formData) {
-  const id = String(formData.get("deployId") || "");
-  const response = await authed(`/v1/patch-deploys/${id}/approve`, {});
+export async function approveUrgentUpdates() {
+  const response = await authed("/v1/patches/approve-urgent", {});
+  if (response.status === 401) redirect("/");
   if (!response.ok) redirect("/patches?error=approve");
-  redirect("/patches");
+  const body = await response.json().catch(() => ({}));
+  redirect(`/patches?approved=${Number(body.approved) || 0}`);
 }
 
 export async function createAlertRule(formData) {
@@ -413,6 +416,47 @@ export async function deviceDiagnostics(deviceId, tool) {
   return { ok: true, ...body };
 }
 
+export async function deviceUpdates(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/updates`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "Updates are not available for this computer." };
+  return { ok: true, ...body };
+}
+
+const UPDATE_ACTIONS = new Set(["scan", "approve", "push", "restart"]);
+
+export async function deviceUpdateAction(deviceId, action, input = {}) {
+  if (!UPDATE_ACTIONS.has(action)) return { ok: false, error: "Unknown action." };
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const body = {};
+  if (Array.isArray(input.names)) body.names = input.names.map(String).slice(0, 200);
+  if (action === "push") body.restartMode = ["auto", "ask"].includes(input.restartMode) ? input.restartMode : "later";
+  if (action === "restart") body.mode = input.mode === "ask" ? "ask" : "auto";
+  if (input.confirmServer === true) body.confirmServer = true;
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/updates/${action}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, error: result.error || "The request was not sent.", needsConfirm: result.needsConfirm === true };
+  }
+  return { ok: true, ...result };
+}
+
 export async function setDeviceStartup(deviceId, item) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
@@ -500,6 +544,28 @@ export async function powerDevice(deviceId, action) {
   return { ok: true, error: "" };
 }
 
+export async function findDevices(query) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, devices: [], canRemote: false };
+  const q = String(query || "").trim().slice(0, 80);
+  const response = await fetch(`${apiUrl}/v1/devices?q=${encodeURIComponent(q)}`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, devices: [], canRemote: false };
+  const devices = (body.devices || []).slice(0, 8).map((device) => ({
+    id: device.id,
+    hostname: device.hostname,
+    displayName: device.displayName || "",
+    customerName: device.customerName || "",
+    presence: device.presence,
+    users: device.users || [],
+  }));
+  return { ok: true, devices, canRemote: Boolean(body.canRemote) };
+}
+
 export async function remoteSessions() {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
@@ -565,4 +631,49 @@ export async function runJob(formData) {
   });
   if (!response.ok) redirect(ticketId ? `/tickets/${ticketId}?error=job` : "/devices?error=job");
   redirect(ticketId ? `/tickets/${ticketId}` : "/devices");
+}
+
+async function supportCall(path, method = "GET", body) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}${path}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    cache: "no-store",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "Remote support did not answer." };
+  return { ok: true, ...result };
+}
+
+export async function supportSessions() {
+  return supportCall("/v1/support-sessions");
+}
+
+export async function startSupportSession(input) {
+  return supportCall("/v1/support-sessions", "POST", {
+    topic: String(input?.topic || ""),
+    customerEmail: String(input?.customerEmail || ""),
+    ticketId: String(input?.ticketId || ""),
+  });
+}
+
+export async function endSupportSession(id) {
+  return supportCall(`/v1/support-sessions/${encodeURIComponent(id)}/end`, "POST");
+}
+
+export async function saveSupportSession(id, input) {
+  return supportCall(`/v1/support-sessions/${encodeURIComponent(id)}`, "PUT", {
+    notes: typeof input?.notes === "string" ? input.notes : null,
+    ticketId: String(input?.ticketId || ""),
+  });
+}
+
+export async function startSupportRemote(id) {
+  return supportCall(`/v1/support-sessions/${encodeURIComponent(id)}/remote`, "POST");
 }

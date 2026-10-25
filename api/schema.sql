@@ -250,7 +250,33 @@ ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS detail text;
 ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS finished_at timestamptz;
 ALTER TABLE patch_deploys DROP CONSTRAINT IF EXISTS patch_deploys_status_check;
 ALTER TABLE patch_deploys ADD CONSTRAINT patch_deploys_status_check
-  CHECK (status IN ('waiting', 'queued', 'running', 'succeeded', 'failed'));
+  CHECK (status IN ('waiting', 'approved', 'queued', 'running', 'succeeded', 'failed'));
+ALTER TABLE patch_deploys ALTER COLUMN policy_id DROP NOT NULL;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS kb text;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS severity text;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS approved_at timestamptz;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS pushed_by bigint REFERENCES users (id);
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS pushed_at timestamptz;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS restart_required boolean NOT NULL DEFAULT false;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS restart_mode text;
+ALTER TABLE patch_deploys ADD COLUMN IF NOT EXISTS restart_handled_at timestamptz;
+ALTER TABLE patch_deploys DROP CONSTRAINT IF EXISTS patch_deploys_restart_mode_check;
+ALTER TABLE patch_deploys ADD CONSTRAINT patch_deploys_restart_mode_check
+  CHECK (restart_mode IS NULL OR restart_mode IN ('later', 'auto', 'ask'));
+CREATE INDEX IF NOT EXISTS patch_deploys_device_id_idx ON patch_deploys (device_id, id);
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS reboot_pending boolean NOT NULL DEFAULT false;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS updates_checked_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS update_scan_requested_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS patch_rules (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  category text NOT NULL,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (org_id, category)
+);
 
 CREATE TABLE IF NOT EXISTS report_schedules (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -332,3 +358,31 @@ CREATE TABLE IF NOT EXISTS ribbon_dismissals (
   dismissed_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (notice_id, user_id)
 );
+
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS support_concurrent integer NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS support_sessions (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  code text NOT NULL,
+  status text NOT NULL DEFAULT 'waiting',
+  topic text,
+  customer_email text,
+  ticket_id bigint REFERENCES tickets (id),
+  mesh_group_id text,
+  mesh_node_id text,
+  hostname text,
+  os_name text,
+  notes text,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  joined_at timestamptz,
+  ended_at timestamptz,
+  ended_by bigint REFERENCES users (id),
+  CONSTRAINT support_sessions_status_check CHECK (status IN ('waiting', 'connected', 'ended', 'expired'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS support_sessions_live_code_idx
+  ON support_sessions (code) WHERE status IN ('waiting', 'connected');
+CREATE INDEX IF NOT EXISTS support_sessions_org_id_idx ON support_sessions (org_id, id);

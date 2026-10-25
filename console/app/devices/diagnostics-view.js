@@ -10,6 +10,7 @@ import { TerminalPanel } from "./terminal-panel";
 import { RemoteActions } from "./remote-actions";
 import { TaskManager } from "./tasks-panel";
 import { ServiceList } from "./services-panel";
+import { UpdatesPanel } from "./updates-panel";
 import { OsMark } from "./os-mark";
 
 const LIVE = {
@@ -37,7 +38,7 @@ export function DiagnosticsView({ deviceId, tool, hostname, osName, users, canRe
   useEffect(() => {
     let current = true;
     if (selected.id !== "tasks") setState(null);
-    const load = selected.kind === "files"
+    const load = selected.kind === "files" || selected.kind === "updates"
       ? Promise.resolve({ ok: true, files: true })
       : selected.kind === "software"
       ? deviceSoftware(String(deviceId))
@@ -121,6 +122,7 @@ export function DiagnosticsView({ deviceId, tool, hostname, osName, users, canRe
 function ToolBody({ deviceId, osName, users, canRemote, selected, state, setState, query, reloadKey, onReload }) {
   if (selected.kind === "terminal") return <TerminalPanel deviceId={deviceId} osName={osName} users={users} />;
   if (selected.kind === "files") return <FileManager deviceId={deviceId} />;
+  if (selected.kind === "updates") return <UpdatesPanel deviceId={deviceId} />;
   if (selected.id === "tasks") return <TaskManager deviceId={deviceId} canRemote={canRemote} state={state} query={query} reloadKey={reloadKey} onReload={onReload} />;
   if (selected.id === "services") return <ServiceList deviceId={deviceId} canRemote={canRemote} state={state} query={query} onReload={onReload} />;
   if (selected.kind === "live") return <p className="diag-note">{LIVE[selected.id]}</p>;

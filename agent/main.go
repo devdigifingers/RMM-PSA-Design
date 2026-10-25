@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,7 @@ func run(ctx context.Context) error {
 
 	go collectUpdatesLoop(ctx)
 	go collectAssetLoop(ctx)
+	go installLoop(ctx, api, state)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -126,10 +128,12 @@ func heartbeat(api string, state savedState) error {
 	} else {
 		payload["metrics"] = sample
 	}
-	updates, collected, includeUpdates := pendingUpdates()
+	updates, rebootPending, collected, includeUpdates := pendingUpdates()
 	if includeUpdates {
 		payload["updates"] = updates
+		payload["rebootPending"] = rebootPending
 	}
+	payload["acceptDeploys"] = !installing.Load() && len(deployQueue) == 0
 	assetItem, assetCollected, includeAsset := pendingAsset()
 	if includeAsset {
 		payload["asset"] = assetItem
@@ -145,23 +149,23 @@ func heartbeat(api string, state savedState) error {
 		markAssetSent(assetCollected)
 	}
 	var parsed struct {
-		Jobs    []job    `json:"jobs"`
-		Deploys []deploy `json:"deploys"`
+		Jobs        []job    `json:"jobs"`
+		Deploys     []deploy `json:"deploys"`
+		ScanUpdates string   `json:"scanUpdates"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return err
 	}
+	if parsed.ScanUpdates != "" && parsed.ScanUpdates != lastScanRequest {
+		lastScanRequest = parsed.ScanUpdates
+		requestScan()
+	}
 	for _, item := range parsed.Deploys {
-		ok, detail := installDeploy(item.PackageName)
-		_, err := postJSON(fmt.Sprintf("%s/v1/agent/deploys/%d/result", api, item.ID), state.DeviceToken, map[string]any{
-			"ok":     ok,
-			"detail": detail,
-		})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "deploy result:", err)
-			continue
+		select {
+		case deployQueue <- item:
+		default:
+			fmt.Fprintln(os.Stderr, "deploy queue full, skipping", item.ID)
 		}
-		fmt.Printf("deploy %d finished\n", item.ID)
 	}
 	for _, item := range parsed.Jobs {
 		exitCode, output := runCommand(item.Command)
@@ -211,13 +215,39 @@ type updateItem struct {
 	Name             string `json:"name"`
 	CurrentVersion   string `json:"currentVersion"`
 	AvailableVersion string `json:"availableVersion"`
+	KB               string `json:"kb"`
+	Severity         string `json:"severity"`
+	Category         string `json:"category"`
+	CategoryID       string `json:"categoryId"`
+	SizeBytes        int64  `json:"sizeBytes"`
+	Restart          bool   `json:"restart"`
+}
+
+type updateScan struct {
+	Updates       []updateItem `json:"updates"`
+	RebootPending bool         `json:"rebootPending"`
 }
 
 var updateState struct {
-	mu        sync.Mutex
-	items     []updateItem
-	collected time.Time
-	sent      time.Time
+	mu            sync.Mutex
+	items         []updateItem
+	rebootPending bool
+	collected     time.Time
+	sent          time.Time
+}
+
+var (
+	scanNow         = make(chan struct{}, 1)
+	lastScanRequest string
+	deployQueue     = make(chan deploy, 4)
+	installing      atomic.Bool
+)
+
+func requestScan() {
+	select {
+	case scanNow <- struct{}{}:
+	default:
+	}
 }
 
 func collectUpdatesLoop(ctx context.Context) {
@@ -230,33 +260,91 @@ func collectUpdatesLoop(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
+			case <-scanNow:
+				timer.Stop()
 			}
 		}
-		items, err := collectUpdates()
+		scan, err := collectUpdates()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "updates:", err)
 			wait = time.Minute
 			continue
 		}
 		updateState.mu.Lock()
-		updateState.items = items
+		updateState.items = scan.Updates
+		updateState.rebootPending = scan.RebootPending
 		updateState.collected = time.Now()
 		updateState.mu.Unlock()
 		wait = 15 * time.Minute
 	}
 }
 
-func pendingUpdates() ([]updateItem, time.Time, bool) {
+func pendingUpdates() ([]updateItem, bool, time.Time, bool) {
 	updateState.mu.Lock()
 	defer updateState.mu.Unlock()
 	if updateState.collected.IsZero() || !updateState.collected.After(updateState.sent) {
-		return nil, time.Time{}, false
+		return nil, false, time.Time{}, false
 	}
 	items := append([]updateItem{}, updateState.items...)
 	if items == nil {
 		items = []updateItem{}
 	}
-	return items, updateState.collected, true
+	return items, updateState.rebootPending, updateState.collected, true
+}
+
+func installLoop(ctx context.Context, api string, state savedState) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-deployQueue:
+			installing.Store(true)
+			ok, restart, detail := installDeploy(item.PackageName)
+			_, err := postJSON(fmt.Sprintf("%s/v1/agent/deploys/%d/result", api, item.ID), state.DeviceToken, map[string]any{
+				"ok":              ok,
+				"restartRequired": restart,
+				"detail":          detail,
+			})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "deploy result:", err)
+			} else {
+				fmt.Printf("deploy %d finished\n", item.ID)
+			}
+			installing.Store(false)
+			requestScan()
+		}
+	}
+}
+
+func cleanUpdates(items []updateItem) []updateItem {
+	if len(items) > 200 {
+		items = items[:200]
+	}
+	cleaned := []updateItem{}
+	for _, item := range items {
+		item.Name = clip(strings.TrimSpace(item.Name), 200)
+		item.CurrentVersion = clip(strings.TrimSpace(item.CurrentVersion), 120)
+		item.AvailableVersion = clip(strings.TrimSpace(item.AvailableVersion), 120)
+		item.KB = clip(strings.TrimSpace(item.KB), 20)
+		item.Severity = clip(strings.TrimSpace(item.Severity), 20)
+		item.Category = clip(strings.TrimSpace(item.Category), 60)
+		item.CategoryID = clip(strings.ToLower(strings.TrimSpace(item.CategoryID)), 40)
+		if item.SizeBytes < 0 {
+			item.SizeBytes = 0
+		}
+		if item.Name == "" {
+			continue
+		}
+		cleaned = append(cleaned, item)
+	}
+	return cleaned
+}
+
+func clip(text string, max int) string {
+	if len(text) > max {
+		return text[:max]
+	}
+	return text
 }
 
 func markUpdatesSent(collected time.Time) {
@@ -330,29 +418,35 @@ func markAssetSent(collected time.Time) {
 	assetState.mu.Unlock()
 }
 
-func decodeUpdates(raw []byte) ([]updateItem, error) {
+func decodeScan(raw []byte) (updateScan, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return []updateItem{}, nil
+		return updateScan{Updates: []updateItem{}}, nil
 	}
-	if raw[0] == '[' {
-		var items []updateItem
-		if err := json.Unmarshal(raw, &items); err != nil {
-			return nil, err
+	var shape struct {
+		Updates       json.RawMessage `json:"updates"`
+		RebootPending bool            `json:"rebootPending"`
+	}
+	if err := json.Unmarshal(raw, &shape); err != nil {
+		return updateScan{}, err
+	}
+	scan := updateScan{Updates: []updateItem{}, RebootPending: shape.RebootPending}
+	list := bytes.TrimSpace(shape.Updates)
+	switch {
+	case len(list) == 0 || string(list) == "null":
+	case list[0] == '[':
+		if err := json.Unmarshal(list, &scan.Updates); err != nil {
+			return updateScan{}, err
 		}
-		if items == nil {
-			return []updateItem{}, nil
+	default:
+		var item updateItem
+		if err := json.Unmarshal(list, &item); err != nil {
+			return updateScan{}, err
 		}
-		return items, nil
+		scan.Updates = []updateItem{item}
 	}
-	var item updateItem
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return nil, err
-	}
-	if item.Name == "" {
-		return []updateItem{}, nil
-	}
-	return []updateItem{item}, nil
+	scan.Updates = cleanUpdates(scan.Updates)
+	return scan, nil
 }
 
 type sample struct {

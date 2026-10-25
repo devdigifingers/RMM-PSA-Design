@@ -26,7 +26,7 @@ export default async function DevicesPage({ searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
+      <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
         <h1>Devices</h1>
         <div className="find-row">

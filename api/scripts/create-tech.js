@@ -35,6 +35,16 @@ await pool.query(
 const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
 let userId = existing.rows[0]?.id;
 if (!userId) {
+  const seats = await pool.query(
+    `SELECT l.seats,
+            (SELECT count(*)::int FROM users u WHERE u.org_id = $1 AND u.is_platform_admin = false) AS used
+     FROM licenses l WHERE l.org_id = $1`,
+    [orgId],
+  );
+  if (seats.rows[0] && seats.rows[0].used >= seats.rows[0].seats) {
+    console.error(`All ${seats.rows[0].seats} logins on the license are in use. Raise the seats in the control panel first.`);
+    process.exit(1);
+  }
   const passwordHash = await hashPassword(password);
   const inserted = await pool.query(
     `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin)

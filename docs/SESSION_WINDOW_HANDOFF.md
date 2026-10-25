@@ -32,6 +32,7 @@ The owner wants a modern look everywhere; nothing should look like stock MeshCen
 - **Confirmations:** never `window.confirm`; use `ask(title, text, buttonLabel, danger)` (returns a promise) for the styled dialog.
 - **Logo (Pulse D, from the owner's `concept-1-pulse-d` package):** cyan `#22D3EE` → violet `#7C3AED` gradient "iD" mark. Assets in `console/public/brand/`: `logo-horizontal-dark.svg` (with tagline, login card), `logo-horizontal-dark-notag.svg` (tagline removed and words moved down to centre, top bar), `logo-icon.svg`, `logo-tile.svg` (white mark on gradient tile). Favicons: `console/app/favicon.ico`, `icon.svg`, `apple-icon.png`. The session window rail and the remote chat badge inline the tile SVG and use it as a data-URI favicon (those pages live on the Mesh host). `console/app/mark.js` `Wordmark` renders the image; `tagline` prop picks the login version.
 - **Rail:** Midnight gradient (`#161b3d` → `#0b1020`), logo tile, timer pill with green dot, active item is a violet gradient pill.
+- **Rail icons (session window and console rail):** Lucide outline icons on a 24 grid, 1.9 stroke, round caps and joins; styling comes from CSS. Icons in menus and lists are violet; the main shape has class `solid`, which gets a 22% fill on the active item. The Diagnostic Tools list (`console/app/devices/diagnostic-icons.js`) uses the same treatment. Session window: monitor (View), sliders (Session), toolbox (Tools), folder (Files), chat bubble with dots (Chat), power (End). The menu icons (`.fly`) use the same style at 18px with no SVG attributes.
 - Keys typed in our panels, dialogs or chat are never forwarded to the remote desktop (`sendKey` ignores them).
 
 **The whole console uses it too** (after `5153a15`):
@@ -116,6 +117,99 @@ How the pieces talk:
 - `api/mesh-sessions.cjs` reads `node.sessions` from Mesh `nodes`, then for every viewer sends `endDesktopMultiplex` (desktop) and `msg`/`endtunnel` per protocol (what Mesh's own Sessions dialog does), waits 4 s and re-reads. All technicians share one Mesh account, so this ends every session on that device.
 - Login tokens are deliberately **not** touched: Mesh's `loginTokens` call purges every expired token, which would drop other technicians' older session windows on other devices.
 - Session window: when a connected desktop drops, it restores the original display resolution (the Mesh control channel is still up) and shows "Session ended … It may have been ended from the console." with **Close window**.
+
+### App launcher and separate products
+- Grid button at the far right of the top bar (`console/app/launcher.js`). Clicked, it turns into the logo tile and opens a panel with "Search Applications" and a **Service** section: **Service Desk** (tickets, `/tickets`) and **Remote Desk** (RMM, `/devices`). Apps not on the licence show greyed with a lock; clicking explains it is licensed separately with a Contact us link.
+- Each app has its own menu (`nav-links.js`, `appForPath`): Remote Desk = Devices, Dashboard, Licenses, Alerts, Patches, Audit; Service Desk = Tickets, Audit. Tickets no longer sit in the Remote Desk menu.
+- Layout (owner's "layout two"): the app menu is a narrow icon rail on the left (`.app-rail`, icon + label, 84px; becomes a bottom bar under 720px). Page content is unchanged in the centre.
+- **Search and Connect** (`console/app/search-connect.js`, `findDevices` in `actions.js`): box in the middle of the top bar, Ctrl/Cmd+K focuses it. Lists up to 8 devices; Connect opens the remote session for online devices; clicking a name opens Devices filtered to it. Shown only to users with Remote Desk access. Neutral pages (Account, FAQ, …) keep the last app's menu via the `df_app` cookie; the logo links to that app's home.
+- Licensed today from the single licence: Service Desk = `ticketing`, Remote Desk = `remote_desktop`, both only while the licence is unexpired. Platform admins see both.
+- **Agreed plan (owner, 25 Oct), not built yet:** separate products with their own seats and expiry (Service Desk = agents; Remote Desk = technicians + device cap; Integration = add-on, only effective while both are active). Customers, users and the organisation stay shared (core). Without Integration: Service Desk has manual Assets, ticket device becomes optional, no devices in Service Desk and no tickets in Remote Desk, enforced in the API. With Integration: enrolled devices appear as read-only synced assets, tickets show live device info and Connect (needs Remote Desk access), devices show their tickets, alerts can raise tickets. If Integration lapses, tickets keep a device snapshot; nothing is deleted. Build order: licence split → tickets without devices + Assets → integration features.
+
+### Remote Support, one-on-one (version 1 deployed, 25 Oct)
+- Owner's decisions:
+  - A "Support" item goes above Devices in the Remote Desk rail.
+  - First version: Access Remote Screen (6-digit code and link, optional customer email), Sessions and History, Link to ticket, and "Make managed" (enrol the PC properly; then it counts towards the device cap).
+  - Later: Share My Screen and Schedule.
+  - Licensing: a new "Remote support" module, limited by concurrent sessions; one-off sessions do not use the device cap.
+  - Prove the temporary agent on a test PC with the owner present before building any screens.
+- Groundwork checked on df-a (MeshCentral 1.2.5):
+  - `meshctrl GenerateInviteLink --flags 1` gives an interactive-only link. The customer runs the agent with a Connect button; it is not installed as a service and stops when closed.
+  - `agents/MeshCentralAssistant.exe` is present, and Mesh supports `assistantcustomization` (title, file name, image) for Digital Fingers branding.
+- Proof plan, with the owner at a non-client test PC:
+  1. Create a Mesh device group for one-off support, kept separate from managed devices.
+  2. Generate a 1-hour interactive-only link.
+  3. On the PC, open the link, run it and press Connect.
+  4. Check that no service is installed, the PC appears in the group, and our session window connects with the customer's consent.
+  5. Close the app and check the PC disappears and leaves nothing behind.
+  6. Repeat with MeshCentral Assistant, then choose which one to brand as "Digital Fingers Quick Support".
+
+- **Proof result (25 Oct, FED-WIN-001, user RemoteTest): passed.**
+  - Mesh group "DF Quick Support" was created with consent `127` (notify, plus a consent prompt for desktop, terminal and files, plus a connection toolbar) and flag `1` (auto-remove on disconnect).
+  - A 1-hour `--flags 1` link was used. The download `meshagent64-DFQuickSupport.exe` ran from Downloads as the signed-in user (no admin, no service) and appeared as a separate device in the group. The managed agents were untouched.
+  - The consent prompt appeared and the desktop session worked.
+  - After disconnecting and closing the window, the group was empty and no process was left. Only the downloaded file remains.
+  - Mesh also supports group invite codes (`EditDeviceGroup --invitecodes`), which could back the short session code.
+- **Cleanup noted:** MeshCentral has an old, offline duplicate of the managed FED-WIN-001. Console device 2's stored `mesh_node_id` points at that stale entry, while the live one is a second "Digital Fingers" entry. Connect already picks the live, connected node by hostname and stores it, so this only needs tidying. The proof group "DF Quick Support" can be removed.
+- **Version 1 built and deployed (25 Oct), not yet tested with a customer PC:**
+  - License: module `remote_support` and column `licenses.support_concurrent` (default 1), set from Control ("Remote support" tick box and "Support sessions at once"). Shown on Manage Subscription. The rail shows "Support" above Devices only when the module is on.
+  - Table `support_sessions` (code, status waiting / connected / ended / expired, topic, customer email, ticket, notes, Mesh group and node, hostname, OS, who started and ended it). Mesh IDs are never sent to the browser.
+  - Start (`POST /v1/support-sessions`): checks the concurrent limit, makes a 6-digit code that works for 15 minutes, and creates a Mesh group "Digital Fingers Support <code>" with auto-remove (features 1) and consent 127. It optionally emails the customer the link. Audit `support.start`, `support.join`, `support.remote`, `support.end`, `support.expire`, `support.deny`.
+  - Each session has its own Mesh group, removed when the session ends. Every 15 seconds a sweep marks a session connected when its agent comes online, and ends it when the agent has been gone for two checks or after 8 hours. Waiting sessions expire after 15 minutes.
+  - Hostname matching (`connectedMeshNode`, `meshNodeMatch`) skips support groups, so a customer's temporary agent can never replace a managed device's node.
+  - Public page `https://rmm.digitalfingers.co.za/join` (code entry, then download, run and Allow). The download `/join/download?code=` streams `DigitalFingersQuickSupport.exe` from Mesh's `/meshagents?id=4&meshid=…&installflags=1`, only while the session is waiting. API join lookups are limited to 30 per 10 minutes per address.
+  - `/support` page: Access Remote Screen form (problem, customer email, ticket), "How it works" steps, a Sessions tab (big code, copy link and code, countdown, Connect when joined, notes and ticket, Make managed, End session), and a History tab.
+  - Connect opens `/support/:id/session` and then the same session window in support mode (`supportId` in the payload). Support mode hides Tools, Files and Invite Technician, because those run through managed-device routes. End also ends the support session (`/support/:id/session-end`).
+  - Wrap-up: when the customer closes the app, Mesh removes the device and sends its frame back to the Mesh device list (`xxcurrentView` below 10), which is not a "disconnected" status. The session window now treats that as the session ending: it blanks the frame (so the Mesh device list is never shown) and offers "Wrap up". End in support mode does the same after restoring the resolution. Both end the support session and open `/support?wrap=<id>`, a card for "What was done" and the ticket, with "Save and close off". Tested live on FED-WIN-001 on 25 Oct (joined, connected, consent, closed).
+  - The session window takes over Mesh's `go()` in its frame: once connected, any switch away from the device screen counts as the session ending and is blocked, and the desk is hidden (`.app.ended`) behind a branded background. Re-tested on FED-WIN-001 on 25 Oct: no Mesh device list, Wrap up works.
+  - Leftover groups: one session's `RemoveDeviceGroup` failed silently during testing. The sweep now removes, about once a minute, any "Digital Fingers Support <code>" group whose code is not a waiting or connected session. The proof group "DF Quick Support" was removed.
+  - Make managed is a link to the normal enrolment installer (`/agent/windows`); copy it to the PC during the session and run Install.cmd as an administrator.
+  - Backups on df-a: `server.js.bak-support`, `schema.sql.bak-support`, `/var/lib/df-session/index.html.bak-support` and a `df-pg-dump` run.
+
+### Licenses (25 Oct)
+- The all-tenants "Licenses" page has left the tenant rail. `/licenses` now redirects (platform admin to `/control`, others to `/subscription`), and `GET /v1/license-usage` with its "digital-fingers" slug exception is gone.
+- The Control panel starts with a License usage table: logins and devices used against each tenant's license, with bars, expiry and a status (OK, Near limit, Expires soon, At limit, Expired).
+- Manage Subscription (user menu) shows logins and devices as bars against the license, expiry and days left, what is included, warnings, and a Request a change button (email to admin@digitalfingers.co.za with the tenant and license number). `/v1/account` now returns `license.seatsUsed`.
+- Owners and admins see a strip under the top bar at 90% of logins or devices, at the limit, or within 30 days of expiry (`licenseStatus()` in `account-data.js`).
+- Limits: the device cap was already enforced at agent enrolment. Logins can only be created by tenant creation and `scripts/create-tech.js` / `create-console-admin.js`; both scripts now refuse a new login once the seats are used.
+
+### Patch management (in progress)
+- Owner's decisions (25 Oct):
+  - "Updates" goes in Diagnostic Tools for each device; the Patches page stays as the overview across all PCs.
+  - Updates show Windows severity (Critical / Important / Moderate / Low) and type (Security, Critical, Definition, Driver, Feature, Rollup, …), plus a "Push now" flag for Critical + Security.
+  - Admins approve; technicians push approved updates.
+  - When a restart is needed, show it with a Restart now button.
+- **Agent (built, not yet installed on any PC):**
+  - Collects KB, MsrcSeverity, the classification (by WSUS category ID, so it works on non-English Windows), size and whether each update needs a restart, plus `rebootPending` (Windows `Microsoft.Update.SystemInfo.RebootRequired`; Linux `/var/run/reboot-required`). Linux marks updates from `-security` suites as Security.
+  - Heartbeat sends `rebootPending` and `acceptDeploys`; the reply can carry `scanUpdates` (the time Get updates was pressed), which triggers an immediate check.
+  - Installs run in a background worker, so check-ins continue during long installs. Results include `restartRequired`, and the agent re-checks after each install.
+  - Compiled on df-a in `/tmp/dfagent-check` (the Windows build needs the real `meshagent.exe` next to the source for `go:embed`).
+- **API (live):**
+  - `GET /v1/devices/:id/updates` returns the list with status per update, recent history, `rebootPending`, `scanning` and `online`.
+  - `POST /v1/devices/:id/updates/scan`, `/approve {names}` (owner/admin), `/push {names}` (anyone with the patch licence; only approved updates) and `/restart` (only while `reboot_pending`; queues the normal restart job).
+  - New columns: `patch_deploys` gains `kb`, `severity`, `category`, `approved_at`, `pushed_by`, `pushed_at` and `restart_required`, status `approved` is added, and `policy_id` may now be empty. `devices` gains `reboot_pending`, `updates_checked_at` and `update_scan_requested_at`.
+  - Backups on df-a: `server.js.bak-patches`, `schema.sql.bak-patches` and a `df-pg-dump` run.
+- **Restart options (live):**
+  - Push takes `restartMode`: `auto` (restart when the batch finishes), `ask` (Digital Fingers pop-up on the PC: "Your remote administrator has applied updates to your computer. Please restart it at your earliest convenience.") or `later` (just show Restart needed).
+  - `/restart {mode: "auto" | "ask"}` gives the banner both buttons. Auto restarts in 5 minutes with a warning when a user is logged in, otherwise in 5 seconds (Linux restarts without a warning).
+  - Servers (FS01, DC01) need `confirmServer: true` for an automatic restart; otherwise the API returns 409 `{needsConfirm: true}`.
+  - When the last queued/running update on a device finishes, the batch restart runs once (`restart_mode`, `restart_handled_at` on `patch_deploys`). Audit: `patch.restart`, `patch.restart.ask`, `patch.restart.fail`.
+- **Updates screen (live):** Diagnostic Tools → Updates (`console/app/devices/updates-panel.js`, actions `deviceUpdates` / `deviceUpdateAction`).
+  - Get updates, last-checked time, a "Push now" group first, then groups by type, sorted by severity.
+  - Checkboxes with bulk Approve (admins only) and Push, plus Approve or Push on each row. "After installing" sets the restart choice for the push.
+  - Restart needed banner with Ask user to restart and Restart now (confirms; a second confirmation for servers).
+  - Statuses: Available, Waiting for approval, Approved, Queued, Installing, Installed, Installed (restart needed), Failed. "Recently installed" history underneath.
+  - Refreshes every 10 seconds while checking or installing.
+  - Old agents send no type or severity, so everything shows under "Other updates" until the new agent is installed.
+- **Patches overview (live):** `/patches` replaces the old one-policy-per-device page.
+  - Four stat cards: Push now, Waiting for approval, Approved but not pushed, Restart needed.
+  - A table of every computer sorted by urgency, with online dot, Server tag, counts, restart and last checked. The name opens that computer's Updates screen.
+  - Admin button "Approve all Push now updates" (`POST /v1/patches/approve-urgent`); pushing still happens per computer.
+  - Auto-approve rules per update type for the whole organisation (`PUT /v1/patch-rules`, table `patch_rules`). They are applied whenever a computer reports updates and straight after saving. They only approve; a technician still pushes. Updates installed in the last day are not re-approved.
+  - Approval logic is shared in `approveUpdates()`; the old `patch-policies` API routes still exist but the console no longer uses them.
+  - Backups on df-a: `server.js.bak-overview`, `schema.sql.bak-overview` and a `df-pg-dump` run.
+- Customers are not tenants. Today users belong only to the tenant, and customers are only a grouping (via sites) for tickets and reports. Patching does not need a customer. Customer logins that can see or manage their own computers were deferred by the owner (25 Oct) as later work.
+- Next: then installing the agent on a live PC with the owner present (never restart client PCs as a test).
 
 ---
 

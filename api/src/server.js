@@ -1,17 +1,18 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import Redis from "ioredis";
 import { pool } from "./db.js";
 import { sendMail } from "./mail.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 
-const MODULES = ["core", "remote_desktop", "ticketing", "monitoring", "patch", "reporting"];
+const MODULES = ["core", "remote_desktop", "remote_support", "ticketing", "monitoring", "patch", "reporting"];
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
 const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
@@ -221,7 +222,7 @@ async function connectedMeshNode(hostname) {
   if (!Array.isArray(rows)) return "";
   const wanted = String(hostname || "").toLowerCase();
   for (const row of rows) {
-    if (String(row?.name || "").toLowerCase() !== wanted) continue;
+    if (supportMeshRow(row) || String(row?.name || "").toLowerCase() !== wanted) continue;
     if ((Number(row.conn) || 0) & 1) return String(row._id || "");
   }
   return "";
@@ -242,12 +243,19 @@ function meshJson(text) {
   }
 }
 
+const SUPPORT_GROUP_NAME = "Digital Fingers Support";
+
+function supportMeshRow(row) {
+  return String(row?.groupname || "").startsWith(SUPPORT_GROUP_NAME);
+}
+
 function meshNodeMatch(rows, hostname, displayName) {
   if (!Array.isArray(rows)) return null;
   const host = String(hostname || "").trim().toLowerCase();
   const display = String(displayName || "").trim().toLowerCase();
   let best = null;
   for (const row of rows) {
+    if (supportMeshRow(row)) continue;
     const names = [row?.name, row?.rname, row?.host]
       .map((value) => String(value || "").trim().toLowerCase())
       .filter(Boolean);
@@ -1716,10 +1724,191 @@ function updatesFrom(body) {
     if (!name) continue;
     const currentVersion = typeof raw.currentVersion === "string" ? raw.currentVersion.trim().slice(0, 120) : "";
     const availableVersion = typeof raw.availableVersion === "string" ? raw.availableVersion.trim().slice(0, 120) : "";
-    items.push({ name, currentVersion, availableVersion });
+    const kb = typeof raw.kb === "string" && /^KB\d{1,10}$/i.test(raw.kb.trim()) ? raw.kb.trim().toUpperCase() : "";
+    const category = updateCategory(raw.categoryId, raw.category);
+    const severity = UPDATE_SEVERITIES.includes(raw.severity) ? raw.severity : "";
+    const sizeBytes = Number.isSafeInteger(raw.sizeBytes) && raw.sizeBytes > 0 ? raw.sizeBytes : 0;
+    const restart = raw.restart === true;
+    items.push({ name, currentVersion, availableVersion, kb, category, severity, sizeBytes, restart });
     if (items.length >= 200) break;
   }
   return items;
+}
+
+const UPDATE_SEVERITIES = ["Critical", "Important", "Moderate", "Low"];
+
+const UPDATE_CATEGORY_IDS = {
+  "0fa1201d-4330-4fa8-8ae9-b877473b6441": "Security",
+  "e6cf1350-c01b-414d-a61f-263d14d133b4": "Critical",
+  "e0789628-ce08-4437-be74-2495b842f43b": "Definition",
+  "ebfc1fc5-71a4-4f7b-9aca-3b9a503104a0": "Driver",
+  "b54e7d24-7add-428f-8b75-90a396fa584f": "Feature",
+  "68c5b0a3-d1a6-4553-ae49-01d3a7827828": "Service pack",
+  "b4832bd8-e735-4761-8daf-37f882276dab": "Tool",
+  "28bc880e-0592-4cbf-8f95-c79b17911d5f": "Rollup",
+  "cd5ffd1e-e932-4e3a-bf74-18bf0b1bbd83": "Update",
+  "3689bdc8-b205-4af4-8d4a-a63924c5e9d5": "Upgrade",
+};
+
+const UPDATE_CATEGORY_NAMES = {
+  "security updates": "Security",
+  security: "Security",
+  "critical updates": "Critical",
+  "definition updates": "Definition",
+  drivers: "Driver",
+  "feature packs": "Feature",
+  "service packs": "Service pack",
+  tools: "Tool",
+  "update rollups": "Rollup",
+  updates: "Update",
+  update: "Update",
+  upgrades: "Upgrade",
+};
+
+function updateCategory(id, name) {
+  const byId = typeof id === "string" ? UPDATE_CATEGORY_IDS[id.trim().toLowerCase()] : null;
+  if (byId) return byId;
+  const byName = typeof name === "string" ? UPDATE_CATEGORY_NAMES[name.trim().toLowerCase()] : null;
+  return byName || "Update";
+}
+
+function pushNow(item) {
+  return item?.severity === "Critical" && item?.category === "Security";
+}
+
+const RESTART_WARNING = "Digital Fingers Support installed updates. This computer will restart in 5 minutes. Please save your work.";
+const RESTART_REQUEST = "Your remote administrator has applied updates to your computer. Please restart it at your earliest convenience.";
+
+function isServerOs(osName) {
+  return /server/i.test(osName || "");
+}
+
+function updateRestartCommand(device) {
+  if (!/windows/i.test(device.os_name || "")) return powerCommand("restart", device.os_name, device.hostname);
+  const name = String(device.hostname || "").replace(/[^A-Za-z0-9.-]/g, "") || "localhost";
+  const wait = Array.isArray(device.users) && device.users.length > 0 ? 300 : 5;
+  return `set COMPUTERNAME=${name}& ${LEAVE_SAFE_MODE}shutdown /r /t ${wait} /f /d p:2:17 /c "${RESTART_WARNING}"`;
+}
+
+async function restartAfterUpdates(device, mode, actorId) {
+  if (mode === "ask") {
+    const { nodeId } = await resolveMeshNode(device);
+    if (!nodeId) throw Object.assign(new Error("This computer is not linked to the remote service."), { status: 409 });
+    await meshControl(["DeviceMessage", "--id", nodeId, "--title", "Digital Fingers Support", "--msg", RESTART_REQUEST]);
+    await writeAudit(device.org_id, actorId, "patch.restart.ask", "device", String(device.id), {});
+    return { asked: true };
+  }
+  const command = updateRestartCommand(device);
+  if (!command) throw Object.assign(new Error("This computer cannot be restarted from here."), { status: 400 });
+  const job = await pool.query(
+    `INSERT INTO jobs (org_id, device_id, command, created_by)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id`,
+    [device.org_id, device.id, command, actorId],
+  );
+  await writeAudit(device.org_id, actorId, "patch.restart", "device", String(device.id), {
+    jobId: Number(job.rows[0].id),
+    warned: Array.isArray(device.users) && device.users.length > 0,
+  });
+  return { jobId: Number(job.rows[0].id) };
+}
+
+async function finishUpdateBatch(deviceId) {
+  const busy = await pool.query(
+    "SELECT 1 FROM patch_deploys WHERE device_id = $1 AND status IN ('queued', 'running') LIMIT 1",
+    [deviceId],
+  );
+  if (busy.rows[0]) return;
+  const batch = await pool.query(
+    `UPDATE patch_deploys
+     SET restart_handled_at = now()
+     WHERE device_id = $1 AND status IN ('succeeded', 'failed')
+       AND restart_mode IS NOT NULL AND restart_handled_at IS NULL
+     RETURNING restart_mode, restart_required, pushed_by`,
+    [deviceId],
+  );
+  if (!batch.rows.some((row) => row.restart_required)) return;
+  const modes = new Set(batch.rows.map((row) => row.restart_mode));
+  const mode = modes.has("auto") ? "auto" : modes.has("ask") ? "ask" : "later";
+  if (mode === "later") return;
+  const found = await pool.query(
+    "SELECT id, org_id, hostname, display_name, mesh_node_id, os_name, users FROM devices WHERE id = $1",
+    [deviceId],
+  );
+  if (!found.rows[0]) return;
+  const pusher = batch.rows.find((row) => row.pushed_by != null)?.pushed_by ?? null;
+  try {
+    await restartAfterUpdates(found.rows[0], mode, pusher);
+  } catch (error) {
+    await writeAudit(found.rows[0].org_id, pusher, "patch.restart.fail", "device", String(deviceId), {
+      mode,
+      error: String(error.message || "failed").slice(0, 200),
+    });
+  }
+}
+
+const PATCH_RULE_CATEGORIES = [...new Set(Object.values(UPDATE_CATEGORY_IDS))];
+
+async function approveUpdates(device, items, actorId, { skipRecent = false } = {}) {
+  const approved = [];
+  for (const item of items) {
+    const name = typeof item?.name === "string" ? item.name : "";
+    if (!name) continue;
+    const waiting = await pool.query(
+      `UPDATE patch_deploys
+       SET status = 'approved', approved_by = $1, approved_at = now()
+       WHERE device_id = $2 AND package_name = $3 AND status = 'waiting'
+       RETURNING id`,
+      [actorId, device.id, name],
+    );
+    if (waiting.rows[0]) {
+      approved.push(name);
+      continue;
+    }
+    const inserted = await pool.query(
+      `INSERT INTO patch_deploys (org_id, device_id, package_name, status, created_by, approved_by, approved_at,
+                                  kb, severity, category)
+       SELECT $1, $2, $3, 'approved', $4, $4, now(), $5, $6, $7
+       WHERE NOT EXISTS (
+         SELECT 1 FROM patch_deploys
+         WHERE device_id = $2 AND package_name = $3
+           AND (status IN ('approved', 'queued', 'running')
+                OR ($8 AND status = 'succeeded' AND finished_at > now() - interval '1 day'))
+       )
+       RETURNING id`,
+      [device.org_id, device.id, name, actorId, item.kb || null, item.severity || null, item.category || null, skipRecent],
+    );
+    if (inserted.rows[0]) approved.push(name);
+  }
+  return approved;
+}
+
+async function autoApproveUpdates(device) {
+  const updates = Array.isArray(device.updates) ? device.updates : [];
+  if (updates.length === 0) return;
+  const rules = await pool.query("SELECT category, created_by FROM patch_rules WHERE org_id = $1", [device.org_id]);
+  for (const rule of rules.rows) {
+    const items = updates.filter((item) => item?.category === rule.category);
+    if (items.length === 0) continue;
+    const approved = await approveUpdates(device, items, rule.created_by, { skipRecent: true });
+    if (approved.length) {
+      await writeAudit(device.org_id, rule.created_by, "patch.approve", "device", String(device.id), {
+        rule: rule.category,
+        count: approved.length,
+        names: approved.slice(0, 20),
+      });
+    }
+  }
+}
+
+function deployFields(row) {
+  if (!row) return { status: "available", detail: "", restartRequired: false, finishedAt: null };
+  return {
+    status: row.status,
+    detail: row.detail || "",
+    restartRequired: row.restart_required === true,
+    finishedAt: row.finished_at ? row.finished_at.toISOString() : null,
+  };
 }
 
 function boundedCount(value, max) {
@@ -2557,10 +2746,10 @@ async function createOrg(client, input, actor) {
     [input.name, input.slug],
   );
   const license = await client.query(
-    `INSERT INTO licenses (org_id, plan, seats, device_cap, expires_at, modules)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+    `INSERT INTO licenses (org_id, plan, seats, device_cap, expires_at, modules, support_concurrent)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
      RETURNING plan, seats, device_cap, expires_at, modules`,
-    [org.rows[0].id, input.plan, input.seats, input.deviceCap, input.expiresAt, JSON.stringify(input.modules)],
+    [org.rows[0].id, input.plan, input.seats, input.deviceCap, input.expiresAt, JSON.stringify(input.modules), input.supportConcurrent],
   );
   await client.query(
     "INSERT INTO roles (org_id, name) VALUES ($1, 'owner'), ($1, 'admin'), ($1, 'tech')",
@@ -2609,7 +2798,9 @@ function parseOrgInput(body) {
   }
   const expiry = expiryFrom(body.expiresAt);
   if (expiry.error) return expiry;
-  return { value: { name, slug, plan, seats, deviceCap, expiresAt: expiry.value, modules } };
+  const supportConcurrent = supportConcurrentFrom(body.supportConcurrent);
+  if (supportConcurrent == null) return { error: "Support sessions must be a whole number from 0 to 100." };
+  return { value: { name, slug, plan, seats, deviceCap, supportConcurrent, expiresAt: expiry.value, modules } };
 }
 
 function parseLicenseInput(body) {
@@ -2628,7 +2819,17 @@ function parseLicenseInput(body) {
   }
   const expiry = expiryFrom(body.expiresAt);
   if (expiry.error) return expiry;
-  return { value: { plan, seats: body.seats, deviceCap: body.deviceCap, expiresAt: expiry.value, modules } };
+  const supportConcurrent = supportConcurrentFrom(body.supportConcurrent);
+  if (supportConcurrent == null) return { error: "Support sessions must be a whole number from 0 to 100." };
+  return {
+    value: { plan, seats: body.seats, deviceCap: body.deviceCap, supportConcurrent, expiresAt: expiry.value, modules },
+  };
+}
+
+function supportConcurrentFrom(value) {
+  if (value == null || value === "") return 1;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 && number <= 100 ? number : null;
 }
 
 function expiryFrom(value) {
@@ -2653,6 +2854,185 @@ function parseTenantAdmin(body) {
   }
   if (password.length < 8 || password.length > 200) return { error: "Use at least 8 characters." };
   return { value: { name, email, password } };
+}
+
+const SUPPORT_JOIN_MINUTES = 15;
+const SUPPORT_MAX_HOURS = 8;
+const SUPPORT_LIVE = ["waiting", "connected"];
+const SUPPORT_COLUMNS = `s.id, s.code, s.status, s.topic, s.customer_email, s.ticket_id, s.hostname, s.os_name, s.notes,
+  s.created_at, s.expires_at, s.joined_at, s.ended_at, c.name AS created_by_name, e.name AS ended_by_name`;
+
+function supportView(row) {
+  return {
+    id: String(row.id),
+    code: SUPPORT_LIVE.includes(row.status) ? row.code : "",
+    status: row.status,
+    topic: row.topic || "",
+    customerEmail: row.customer_email || "",
+    ticketId: row.ticket_id ? String(row.ticket_id) : "",
+    hostname: row.hostname || "",
+    osName: row.os_name || "",
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    joinedAt: row.joined_at,
+    endedAt: row.ended_at,
+    createdBy: row.created_by_name || "",
+    endedBy: row.ended_by_name || "",
+  };
+}
+
+function supportReason(row) {
+  if (licenseExpired(row)) return "expired";
+  if (row?.modules?.remote_support !== true) return "module";
+  return null;
+}
+
+async function requireSupport(actor, res, options = {}) {
+  if (!requireActor(actor, res)) return null;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return null;
+  }
+  const license = await pool.query(
+    "SELECT expires_at, modules, support_concurrent FROM licenses WHERE org_id = $1",
+    [actor.org_id],
+  );
+  const reason = supportReason(license.rows[0]);
+  if (reason) {
+    if (options.deny) {
+      await writeAudit(actor.org_id, actor.id, "support.deny", "org", String(actor.org_id), { reason });
+    }
+    send(res, 403, {
+      error: reason === "expired" ? "This license has expired." : "Remote support is not included on this license.",
+    });
+    return null;
+  }
+  return license.rows[0];
+}
+
+function supportGroupShortId(groupId) {
+  const marker = "mesh//";
+  return groupId.startsWith(marker) ? groupId.slice(marker.length) : "";
+}
+
+async function removeSupportGroup(groupId) {
+  if (!groupId) return;
+  try {
+    await meshControl(["RemoveDeviceGroup", "--id", groupId]);
+  } catch {
+    // The group may already be gone; the session still ends.
+  }
+}
+
+async function finishSupportSession(row, status, actorId) {
+  const done = await pool.query(
+    `UPDATE support_sessions SET status = $2, ended_at = now(), ended_by = $3
+     WHERE id = $1 AND status = ANY($4::text[]) RETURNING id`,
+    [row.id, status, actorId || null, SUPPORT_LIVE],
+  );
+  if (!done.rows[0]) return false;
+  await removeSupportGroup(row.mesh_group_id);
+  await writeAudit(row.org_id, actorId || null, `support.${status === "expired" ? "expire" : "end"}`, "support_session",
+    String(row.id), { code: row.code, hostname: row.hostname || "" });
+  return true;
+}
+
+let supportRefreshing = null;
+const supportMisses = new Map();
+
+async function refreshSupportSessions(orgId) {
+  const live = await pool.query(
+    `SELECT id, org_id, code, status, mesh_group_id, mesh_node_id, hostname, expires_at, joined_at, created_at
+     FROM support_sessions WHERE status = ANY($1::text[]) ${orgId ? "AND org_id = $2" : ""}`,
+    orgId ? [SUPPORT_LIVE, orgId] : [SUPPORT_LIVE],
+  );
+  if (!live.rows.length) return;
+  let listed = null;
+  try {
+    listed = meshJson(await meshControl(["ListDevices", "--json"]));
+  } catch {
+    listed = null;
+  }
+  const now = Date.now();
+  for (const row of live.rows) {
+    const nodes = Array.isArray(listed)
+      ? listed.filter((item) => item?.meshid === row.mesh_group_id || item?.groupname === `${SUPPORT_GROUP_NAME} ${row.code}`)
+      : null;
+    const online = nodes ? nodes.find((item) => (Number(item.conn) || 0) & 1) : null;
+    if (row.status === "waiting") {
+      if (online) {
+        const joined = await pool.query(
+          `UPDATE support_sessions SET status = 'connected', joined_at = now(), mesh_node_id = $2, hostname = $3, os_name = $4
+           WHERE id = $1 AND status = 'waiting' RETURNING id`,
+          [row.id, String(online._id || ""), String(online.name || "").slice(0, 120), String(online.osdesc || "").slice(0, 120)],
+        );
+        if (joined.rows[0]) await writeAudit(row.org_id, null, "support.join", "support_session", String(row.id), {
+          code: row.code,
+          hostname: String(online.name || "").slice(0, 120),
+        });
+      } else if (new Date(row.expires_at).getTime() < now) {
+        await finishSupportSession(row, "expired", null);
+      }
+      continue;
+    }
+    const tooLong = new Date(row.joined_at || row.created_at).getTime() + SUPPORT_MAX_HOURS * 3600000 < now;
+    const misses = nodes && !online ? (supportMisses.get(row.id) || 0) + 1 : 0;
+    if (misses) supportMisses.set(row.id, misses);
+    else supportMisses.delete(row.id);
+    if (tooLong || misses >= 2) {
+      supportMisses.delete(row.id);
+      await finishSupportSession(row, "ended", null);
+    }
+  }
+}
+
+let supportOrphanCheckAt = 0;
+
+async function removeSupportOrphans() {
+  if (Date.now() - supportOrphanCheckAt < 60000) return;
+  supportOrphanCheckAt = Date.now();
+  const groups = meshJson(await meshControl(["ListDeviceGroups", "--json"]));
+  if (!Array.isArray(groups)) return;
+  const support = groups.filter((group) => String(group?.name || "").startsWith(`${SUPPORT_GROUP_NAME} `) && group?._id);
+  if (!support.length) return;
+  const live = await pool.query("SELECT code FROM support_sessions WHERE status = ANY($1::text[])", [SUPPORT_LIVE]);
+  const keep = new Set(live.rows.map((row) => `${SUPPORT_GROUP_NAME} ${row.code}`));
+  for (const group of support) {
+    if (!keep.has(String(group.name))) await removeSupportGroup(String(group._id));
+  }
+}
+
+function sweepSupport() {
+  if (supportRefreshing) return supportRefreshing;
+  supportRefreshing = refreshSupportSessions(null)
+    .then(() => removeSupportOrphans())
+    .catch((error) => console.error("support sweep failed", error))
+    .finally(() => {
+      supportRefreshing = null;
+    });
+  return supportRefreshing;
+}
+
+async function supportJoinLimited(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim().toLowerCase();
+  const key = `support-join:${/^[0-9a-f.:]{3,45}$/.test(forwarded) ? forwarded : "unknown"}`;
+  const count = await redis.incr(key);
+  if (count === 1) await redis.expire(key, 600);
+  return count > 30;
+}
+
+async function liveSupportByCode(code) {
+  if (!/^\d{6}$/.test(code)) return null;
+  const found = await pool.query(
+    `SELECT s.id, s.org_id, s.code, s.status, s.topic, s.mesh_group_id, s.expires_at, o.name AS org_name, u.name AS tech_name
+     FROM support_sessions s
+     JOIN orgs o ON o.id = s.org_id
+     LEFT JOIN users u ON u.id = s.created_by
+     WHERE s.code = $1 AND s.status = 'waiting' AND s.expires_at > now()`,
+    [code],
+  );
+  return found.rows[0] || null;
 }
 
 function moduleFlags(modules) {
@@ -2690,15 +3070,201 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    const supportJoinMatch = url.pathname.match(/^\/v1\/support\/join\/([^/]+)(\/download)?$/);
+    if (req.method === "GET" && supportJoinMatch) {
+      if (await supportJoinLimited(req)) {
+        return send(res, 429, { error: "Too many tries. Wait a few minutes and try again." });
+      }
+      const session = await liveSupportByCode(decodeURIComponent(supportJoinMatch[1]));
+      if (!session) return send(res, 404, { error: "That code is not valid or has expired. Ask your technician for a new one." });
+      if (!supportJoinMatch[2]) {
+        return send(res, 200, {
+          org: session.org_name,
+          technician: session.tech_name || "",
+          topic: session.topic || "",
+          expiresAt: session.expires_at,
+        });
+      }
+      const shortId = supportGroupShortId(String(session.mesh_group_id || ""));
+      if (!shortId) return send(res, 409, { error: "This session is not ready. Ask your technician for a new code." });
+      const meshLocal = process.env.MESH_LOCAL_URL || "http://127.0.0.1:4430";
+      const agent = await fetch(
+        `${meshLocal}/meshagents?id=4&meshid=${encodeURIComponent(shortId)}&installflags=1`,
+      ).catch(() => null);
+      if (!agent?.ok || !agent.body) return send(res, 502, { error: "The support app could not be prepared. Try again." });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        ...(agent.headers.get("content-length") ? { "content-length": agent.headers.get("content-length") } : {}),
+        "content-disposition": downloadDisposition("DigitalFingersQuickSupport.exe"),
+        "cache-control": "no-store",
+      });
+      const stream = Readable.fromWeb(agent.body);
+      stream.on("error", () => res.destroy());
+      stream.pipe(res);
+      return;
+    }
+
     const actor = await actorFrom(req);
+
+    if (req.method === "GET" && url.pathname === "/v1/support-sessions") {
+      if (!(await requireSupport(actor, res))) return;
+      await sweepSupport();
+      const [live, history] = await Promise.all([
+        pool.query(
+          `SELECT ${SUPPORT_COLUMNS} FROM support_sessions s
+           LEFT JOIN users c ON c.id = s.created_by LEFT JOIN users e ON e.id = s.ended_by
+           WHERE s.org_id = $1 AND s.status = ANY($2::text[]) ORDER BY s.id DESC`,
+          [actor.org_id, SUPPORT_LIVE],
+        ),
+        pool.query(
+          `SELECT ${SUPPORT_COLUMNS} FROM support_sessions s
+           LEFT JOIN users c ON c.id = s.created_by LEFT JOIN users e ON e.id = s.ended_by
+           WHERE s.org_id = $1 AND NOT (s.status = ANY($2::text[])) ORDER BY s.id DESC LIMIT 100`,
+          [actor.org_id, SUPPORT_LIVE],
+        ),
+      ]);
+      const license = await pool.query("SELECT support_concurrent FROM licenses WHERE org_id = $1", [actor.org_id]);
+      return send(res, 200, {
+        live: live.rows.map(supportView),
+        history: history.rows.map(supportView),
+        limit: license.rows[0]?.support_concurrent ?? 0,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/support-sessions") {
+      const license = await requireSupport(actor, res, { deny: true });
+      if (!license) return;
+      const body = await readJson(req);
+      const topic = typeof body.topic === "string" ? body.topic.trim().slice(0, 200) : "";
+      const email = typeof body.customerEmail === "string" ? body.customerEmail.trim().toLowerCase().slice(0, 200) : "";
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return send(res, 400, { error: "Enter a valid customer email, or leave it blank." });
+      }
+      const ticketId = body.ticketId == null || body.ticketId === "" ? null : Number(body.ticketId);
+      if (ticketId != null) {
+        if (!Number.isInteger(ticketId)) return send(res, 404, { error: "Ticket not found." });
+        const ticket = await pool.query("SELECT id FROM tickets WHERE id = $1 AND org_id = $2", [ticketId, actor.org_id]);
+        if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      }
+      const running = await pool.query(
+        "SELECT count(*)::int AS n FROM support_sessions WHERE org_id = $1 AND status = ANY($2::text[])",
+        [actor.org_id, SUPPORT_LIVE],
+      );
+      if (running.rows[0].n >= (license.support_concurrent ?? 0)) {
+        await writeAudit(actor.org_id, actor.id, "support.deny", "org", String(actor.org_id), { reason: "concurrent" });
+        return send(res, 409, {
+          error: `Your license allows ${license.support_concurrent} support session${license.support_concurrent === 1 ? "" : "s"} at a time. End one first.`,
+        });
+      }
+      let session = null;
+      for (let attempt = 0; attempt < 5 && !session; attempt += 1) {
+        const code = String(randomInt(0, 1000000)).padStart(6, "0");
+        try {
+          const made = await pool.query(
+            `INSERT INTO support_sessions (org_id, code, topic, customer_email, ticket_id, created_by, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(mins => $7))
+             RETURNING id, org_id, code, mesh_group_id`,
+            [actor.org_id, code, topic || null, email || null, ticketId, actor.id, SUPPORT_JOIN_MINUTES],
+          );
+          session = made.rows[0];
+        } catch (error) {
+          if (error.code !== "23505") throw error;
+        }
+      }
+      if (!session) return send(res, 503, { error: "A code could not be made. Try again." });
+      let groupId = "";
+      try {
+        const text = await meshControl([
+          "AddDeviceGroup",
+          "--name",
+          `${SUPPORT_GROUP_NAME} ${session.code}`,
+          "--desc",
+          `One-off support session for org ${actor.org_id}`,
+          "--features",
+          "1",
+          "--consent",
+          "127",
+        ]);
+        groupId = (text.match(/mesh\/\/[A-Za-z0-9@$_-]+/) || [""])[0];
+      } catch {
+        groupId = "";
+      }
+      if (!groupId) {
+        await pool.query("UPDATE support_sessions SET status = 'ended', ended_at = now() WHERE id = $1", [session.id]);
+        return send(res, 502, { error: "The remote service did not create the session. Try again." });
+      }
+      await pool.query("UPDATE support_sessions SET mesh_group_id = $2 WHERE id = $1", [session.id, groupId]);
+      const joinUrl = `https://rmm.digitalfingers.co.za/join?code=${session.code}`;
+      let emailed = false;
+      if (email) {
+        emailed = await sendMail({
+          to: email,
+          subject: `Remote support from ${actor.name || "your technician"}`,
+          text:
+            `${actor.name || "Your technician"} would like to connect to your computer to help you.\n\n` +
+            `1. Open ${joinUrl}\n2. Download and run the support app.\n3. Click Allow when asked.\n\n` +
+            `Your code is ${session.code}. It works for ${SUPPORT_JOIN_MINUTES} minutes.\n` +
+            "The app removes itself when the session ends.\n",
+        }).catch(() => false);
+      }
+      await writeAudit(actor.org_id, actor.id, "support.start", "support_session", String(session.id), {
+        code: session.code,
+        ticketId,
+        emailed,
+      });
+      return send(res, 201, { id: String(session.id), code: session.code, joinUrl, emailed });
+    }
+
+    const supportSessionMatch = url.pathname.match(/^\/v1\/support-sessions\/(\d+)(?:\/(end|remote))?$/);
+    if (supportSessionMatch && (req.method === "POST" || req.method === "PUT")) {
+      const action = supportSessionMatch[2] || "";
+      if ((req.method === "PUT") !== !action) return send(res, 404, { error: "Not found." });
+      if (!(await requireSupport(actor, res, { deny: true }))) return;
+      const found = await pool.query(
+        `SELECT id, org_id, code, status, mesh_group_id, mesh_node_id, hostname, os_name
+         FROM support_sessions WHERE id = $1 AND org_id = $2`,
+        [supportSessionMatch[1], actor.org_id],
+      );
+      const session = found.rows[0];
+      if (!session) return send(res, 404, { error: "Support session not found." });
+      if (action === "end") {
+        await finishSupportSession(session, "ended", actor.id);
+        return send(res, 200, { ok: true });
+      }
+      if (action === "remote") {
+        if (session.status !== "connected" || !session.mesh_node_id) {
+          return send(res, 409, { error: "The customer has not joined yet." });
+        }
+        const remoteUrl = await meshDesktopUrl(session.mesh_node_id, `df-support-${session.id}-${Date.now()}`, session.os_name);
+        await writeAudit(actor.org_id, actor.id, "support.remote", "support_session", String(session.id), {
+          hostname: session.hostname || "",
+        });
+        return send(res, 200, { url: remoteUrl, hostname: session.hostname || "" });
+      }
+      const body = await readJson(req);
+      const notes = typeof body.notes === "string" ? body.notes.slice(0, 4000) : null;
+      const ticketId = body.ticketId == null || body.ticketId === "" ? null : Number(body.ticketId);
+      if (ticketId != null) {
+        if (!Number.isInteger(ticketId)) return send(res, 404, { error: "Ticket not found." });
+        const ticket = await pool.query("SELECT id FROM tickets WHERE id = $1 AND org_id = $2", [ticketId, actor.org_id]);
+        if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
+      }
+      await pool.query(
+        "UPDATE support_sessions SET notes = COALESCE($3, notes), ticket_id = $4 WHERE id = $1 AND org_id = $2",
+        [session.id, actor.org_id, notes, ticketId],
+      );
+      await writeAudit(actor.org_id, actor.id, "support.update", "support_session", String(session.id), { ticketId });
+      return send(res, 200, { ok: true });
+    }
 
     if (req.method === "GET" && url.pathname === "/v1/account") {
       if (!requireActor(actor, res)) return;
       const found = actor.org_id
         ? await pool.query(
             `SELECT o.id, o.name, o.slug, o.created_at,
-                    l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules,
-                    (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
+                    l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules, l.support_concurrent,
+                    (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count,
+                    (SELECT count(*)::int FROM users u WHERE u.org_id = o.id AND u.is_platform_admin = false) AS seats_used
              FROM orgs o
              LEFT JOIN licenses l ON l.org_id = o.id
              WHERE o.id = $1`,
@@ -2716,10 +3282,13 @@ const server = createServer(async (req, res) => {
             number: 900000000 + Number(row.license_id),
             plan: row.plan,
             seats: row.seats,
+            seatsUsed: row.seats_used,
             deviceCap: row.device_cap,
             deviceCount: row.device_count,
             expiresAt: row.expires_at,
             remoteDesktop: row.modules?.remote_desktop === true,
+            remoteSupport: row.modules?.remote_support === true,
+            supportConcurrent: row.support_concurrent,
             ticketing: row.modules?.ticketing === true,
             monitoring: row.modules?.monitoring === true,
             patch: row.modules?.patch === true,
@@ -2919,7 +3488,7 @@ const server = createServer(async (req, res) => {
       if (!requirePlatform(actor, res)) return;
       const orgs = await pool.query(
         `SELECT o.id, o.name, o.slug, o.created_at,
-                l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules,
+                l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules, l.support_concurrent,
                 (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
          FROM orgs o
          JOIN licenses l ON l.org_id = o.id
@@ -2964,6 +3533,7 @@ const server = createServer(async (req, res) => {
             seats: row.seats,
             deviceCap: row.device_cap,
             deviceCount: row.device_count,
+            supportConcurrent: row.support_concurrent,
             expiresAt: row.expires_at,
             modules: moduleFlags(row.modules),
           },
@@ -3095,7 +3665,7 @@ const server = createServer(async (req, res) => {
       if (parsed.error) return send(res, 400, { error: parsed.error });
       const updated = await pool.query(
         `UPDATE licenses
-         SET plan = $2, seats = $3, device_cap = $4, expires_at = $5, modules = $6::jsonb
+         SET plan = $2, seats = $3, device_cap = $4, expires_at = $5, modules = $6::jsonb, support_concurrent = $7
          WHERE org_id = $1
          RETURNING id`,
         [
@@ -3105,6 +3675,7 @@ const server = createServer(async (req, res) => {
           parsed.value.deviceCap,
           parsed.value.expiresAt,
           JSON.stringify(parsed.value.modules),
+          parsed.value.supportConcurrent,
         ],
       );
       if (!updated.rows[0]) return send(res, 404, { error: "Org not found." });
@@ -3112,6 +3683,7 @@ const server = createServer(async (req, res) => {
         plan: parsed.value.plan,
         seats: parsed.value.seats,
         deviceCap: parsed.value.deviceCap,
+        supportConcurrent: parsed.value.supportConcurrent,
         expiresAt: parsed.value.expiresAt,
         modules: parsed.value.modules,
       });
@@ -3245,7 +3817,7 @@ const server = createServer(async (req, res) => {
       const updates = updatesFrom(body);
       const asset = assetFrom(body);
       const users = usersFrom(body);
-      await pool.query(
+      const saved = await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
              hostname = COALESCE(NULLIF($2, ''), hostname),
@@ -3258,8 +3830,11 @@ const server = createServer(async (req, res) => {
              serial = COALESCE(NULLIF($9, ''), serial),
              software = CASE WHEN $10::boolean THEN $11::jsonb ELSE software END,
              ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END,
-             users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END
-         WHERE id = $1`,
+             users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END,
+             updates_checked_at = CASE WHEN $5::boolean THEN now() ELSE updates_checked_at END,
+             reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END
+         WHERE id = $1
+         RETURNING update_scan_requested_at, updates_checked_at`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -3275,8 +3850,16 @@ const server = createServer(async (req, res) => {
           ipv4From(req),
           users != null,
           users ? JSON.stringify(users) : "[]",
+          body.rebootPending === true,
         ],
       );
+      const scanAt = saved.rows[0]?.update_scan_requested_at;
+      const checkedAt = saved.rows[0]?.updates_checked_at;
+      const scanUpdates = scanAt && (!checkedAt || scanAt > checkedAt) ? scanAt.toISOString() : "";
+      if (updates) {
+        autoApproveUpdates({ id: device.id, org_id: device.org_id, updates })
+          .catch(() => console.error("update auto-approve failed"));
+      }
       if (metrics) {
         await evaluateAlerts(device.id);
         await storeHealthSample(device.org_id, device.id, metrics);
@@ -3290,22 +3873,25 @@ const server = createServer(async (req, res) => {
          RETURNING id, command`,
         [device.id],
       );
-      const deploys = await pool.query(
-        `UPDATE patch_deploys
-         SET status = 'running'
-         WHERE id = (
-           SELECT id FROM patch_deploys
-           WHERE device_id = $1 AND status = 'queued'
-           ORDER BY id
-           LIMIT 1
-           FOR UPDATE SKIP LOCKED
-         )
-         RETURNING id, package_name`,
-        [device.id],
-      );
+      const deploys = body.acceptDeploys === false
+        ? { rows: [] }
+        : await pool.query(
+          `UPDATE patch_deploys
+           SET status = 'running'
+           WHERE id = (
+             SELECT id FROM patch_deploys
+             WHERE device_id = $1 AND status = 'queued'
+             ORDER BY id
+             LIMIT 1
+             FOR UPDATE SKIP LOCKED
+           )
+           RETURNING id, package_name`,
+          [device.id],
+        );
       return send(res, 200, {
         jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command })),
         deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
+        scanUpdates,
       });
     }
 
@@ -3333,20 +3919,26 @@ const server = createServer(async (req, res) => {
       if (!device) return send(res, 401, { error: "Device login required." });
       const body = await readJson(req);
       const succeeded = body.ok === true;
+      const restart = succeeded && body.restartRequired === true;
       const detail = typeof body.detail === "string" ? body.detail.trim().slice(0, 2000) : "";
       const updated = await pool.query(
         `UPDATE patch_deploys
-         SET status = $1, detail = $2, finished_at = now()
+         SET status = $1, detail = $2, finished_at = now(), restart_required = $5
          WHERE id = $3 AND device_id = $4 AND status = 'running'
          RETURNING id, package_name`,
-        [succeeded ? "succeeded" : "failed", detail, deployResultMatch[1], device.id],
+        [succeeded ? "succeeded" : "failed", detail, deployResultMatch[1], device.id, restart],
       );
       if (!updated.rows[0]) return send(res, 404, { error: "Deploy not found." });
+      if (restart) {
+        await pool.query("UPDATE devices SET reboot_pending = true WHERE id = $1", [device.id]);
+      }
       await writeAudit(device.org_id, null, "patch.deploy", "patch_deploy", String(updated.rows[0].id), {
         deviceId: Number(device.id),
         packageName: updated.rows[0].package_name,
         status: succeeded ? "succeeded" : "failed",
+        restartRequired: restart,
       });
+      finishUpdateBatch(device.id).catch(() => console.error("update batch finish failed"));
       return send(res, 200, { id: Number(updated.rows[0].id), status: succeeded ? "succeeded" : "failed" });
     }
 
@@ -4498,44 +5090,6 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    if (req.method === "GET" && url.pathname === "/v1/license-usage") {
-      if (!requireActor(actor, res)) return;
-      if (!actor.is_platform_admin) {
-        if (!(await requireReporting(actor, res))) return;
-        const org = await pool.query("SELECT slug FROM orgs WHERE id = $1", [actor.org_id]);
-        if (org.rows[0]?.slug !== "digital-fingers") {
-          return send(res, 403, { error: "License usage is not included on this license." });
-        }
-      }
-      const license = actor.org_id
-        ? await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id])
-        : { rows: [] };
-      const row = license.rows[0];
-      const scopeOrgId = actor.is_platform_admin || canOperate(actor) ? null : actor.org_id;
-      const usage = await pool.query(
-        `SELECT o.id, o.name, l.seats, l.device_cap,
-                (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
-         FROM orgs o
-         JOIN licenses l ON l.org_id = o.id
-         WHERE ($1::bigint IS NULL OR o.id = $1)
-         ORDER BY o.id`,
-        [scopeOrgId],
-      );
-      return send(res, 200, {
-        canTicket: ticketingAllowed(row),
-        canMonitor: monitoringAllowed(row),
-        canPatch: patchAllowed(row),
-        canReport: actor.is_platform_admin || reportingAllowed(row),
-        orgs: usage.rows.map((item) => ({
-          id: Number(item.id),
-          name: item.name,
-          seats: item.seats,
-          deviceCap: item.device_cap,
-          deviceCount: item.device_count,
-        })),
-      });
-    }
-
     if (req.method === "GET" && url.pathname === "/v1/dashboard") {
       if (!(await requireReporting(actor, res))) return;
       const snapshot = await dashboardSnapshot(actor.org_id);
@@ -4584,38 +5138,140 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    const deviceUpdatesMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/updates(?:\/(scan|approve|push|restart))?$/);
+    if (deviceUpdatesMatch && (req.method === "GET" ? !deviceUpdatesMatch[2] : req.method === "POST" && deviceUpdatesMatch[2])) {
+      const action = deviceUpdatesMatch[2] || "list";
+      if (!(await requirePatch(actor, res, { deny: action !== "list" }))) return;
+      const found = await pool.query(
+        `SELECT id, org_id, hostname, display_name, mesh_node_id, os_name, users, updates, reboot_pending,
+                updates_checked_at, update_scan_requested_at, last_seen_at
+         FROM devices WHERE id = $1 AND org_id = $2`,
+        [deviceUpdatesMatch[1], actor.org_id],
+      );
+      const device = found.rows[0];
+      if (!device) return send(res, 404, { error: "Device not found." });
+      const available = Array.isArray(device.updates) ? device.updates : [];
+
+      if (action === "list") {
+        const deploys = await pool.query(
+          `SELECT DISTINCT ON (package_name) id, package_name, status, detail, restart_required,
+                  kb, severity, category, finished_at, created_at
+           FROM patch_deploys
+           WHERE device_id = $1 AND created_at > now() - interval '30 days'
+           ORDER BY package_name, id DESC`,
+          [device.id],
+        );
+        const latest = new Map(deploys.rows.map((row) => [row.package_name, row]));
+        const listed = new Set();
+        const updates = available.map((item) => {
+          listed.add(item.name);
+          const deploy = latest.get(item.name);
+          return {
+            name: item.name,
+            kb: item.kb || "",
+            category: item.category || "Update",
+            severity: item.severity || "",
+            sizeBytes: item.sizeBytes || 0,
+            restart: item.restart === true,
+            pushNow: pushNow(item),
+            ...deployFields(deploy),
+          };
+        });
+        const history = deploys.rows
+          .filter((row) => !listed.has(row.package_name) && ["succeeded", "failed"].includes(row.status))
+          .sort((a, b) => Number(b.id) - Number(a.id))
+          .map((row) => ({
+            name: row.package_name,
+            kb: row.kb || "",
+            category: row.category || "Update",
+            severity: row.severity || "",
+            ...deployFields(row),
+          }));
+        const scanAt = device.update_scan_requested_at;
+        const checkedAt = device.updates_checked_at;
+        return send(res, 200, {
+          hostname: device.hostname,
+          isServer: isServerOs(device.os_name),
+          usersLoggedOn: Array.isArray(device.users) ? device.users.length : 0,
+          canApprove: canOperate(actor),
+          canPush: true,
+          online: Boolean(device.last_seen_at) && Date.now() - device.last_seen_at.getTime() < 60000,
+          rebootPending: device.reboot_pending === true,
+          checkedAt: checkedAt ? checkedAt.toISOString() : null,
+          scanning: Boolean(scanAt) && (!checkedAt || scanAt > checkedAt),
+          updates,
+          history,
+        });
+      }
+
+      if (action === "scan") {
+        await pool.query("UPDATE devices SET update_scan_requested_at = now() WHERE id = $1", [device.id]);
+        await writeAudit(actor.org_id, actor.id, "patch.scan", "device", String(device.id), {});
+        return send(res, 202, { scanning: true });
+      }
+
+      const body = await readJson(req);
+
+      if (action === "restart") {
+        if (!device.reboot_pending) return send(res, 409, { error: "This computer is not waiting for a restart." });
+        const mode = body.mode === "ask" ? "ask" : "auto";
+        if (mode === "auto" && isServerOs(device.os_name) && body.confirmServer !== true) {
+          return send(res, 409, { error: "This is a server. Confirm the restart.", needsConfirm: true });
+        }
+        try {
+          const done = await restartAfterUpdates(device, mode, actor.id);
+          return send(res, mode === "ask" ? 200 : 201, done);
+        } catch (error) {
+          return send(res, error.status || 502, { error: error.message || "The restart could not be sent." });
+        }
+      }
+      const names = Array.isArray(body.names)
+        ? [...new Set(body.names.filter((name) => typeof name === "string").map((name) => name.trim()))].filter(Boolean).slice(0, 200)
+        : [];
+      if (names.length === 0) return send(res, 400, { error: "Choose at least one update." });
+      const byName = new Map(available.map((item) => [item.name, item]));
+
+      if (action === "approve") {
+        if (!canOperate(actor)) {
+          await writeAudit(actor.org_id, actor.id, "patch.deny", "device", String(device.id), { reason: "role" });
+          return send(res, 403, { error: "A technician cannot approve an update." });
+        }
+        const approved = await approveUpdates(device, names.map((name) => byName.get(name)).filter(Boolean), actor.id);
+        if (approved.length) {
+          await writeAudit(actor.org_id, actor.id, "patch.approve", "device", String(device.id), {
+            count: approved.length,
+            names: approved.slice(0, 20),
+          });
+        }
+        return send(res, 200, { approved: approved.length });
+      }
+
+      const restartMode = ["auto", "ask"].includes(body.restartMode) ? body.restartMode : "later";
+      if (restartMode === "auto" && isServerOs(device.os_name) && body.confirmServer !== true) {
+        return send(res, 409, { error: "This is a server. Confirm the automatic restart.", needsConfirm: true });
+      }
+      const pushed = await pool.query(
+        `UPDATE patch_deploys
+         SET status = 'queued', pushed_by = $1, pushed_at = now(), restart_mode = $4, restart_handled_at = NULL
+         WHERE device_id = $2 AND status = 'approved' AND package_name = ANY($3::text[])
+         RETURNING package_name`,
+        [actor.id, device.id, names, restartMode],
+      );
+      if (pushed.rows.length === 0) return send(res, 409, { error: "Approve the updates before pushing them." });
+      await writeAudit(actor.org_id, actor.id, "patch.push", "device", String(device.id), {
+        restartMode,
+        count: pushed.rows.length,
+        names: pushed.rows.slice(0, 20).map((row) => row.package_name),
+      });
+      return send(res, 200, { pushed: pushed.rows.length });
+    }
+
     if (req.method === "GET" && url.pathname === "/v1/patches") {
       if (!(await requirePatch(actor, res))) return;
-      const [policies, deploys, devices, fleet, succeeded, license] = await Promise.all([
+      const [fleet, deploys, rules, license] = await Promise.all([
         pool.query(
-          `SELECT p.id, p.name, p.mode, p.device_id, d.hostname
-           FROM patch_policies p
-           JOIN devices d ON d.id = p.device_id
-           WHERE p.org_id = $1
-           ORDER BY p.id`,
-          [actor.org_id],
-        ),
-        pool.query(
-          `SELECT d.id, d.package_name, d.status, d.detail, d.policy_id, p.name AS policy_name, p.mode, dev.hostname
-           FROM patch_deploys d
-           JOIN patch_policies p ON p.id = d.policy_id
-           JOIN devices dev ON dev.id = d.device_id
-           WHERE d.org_id = $1
-           ORDER BY dev.hostname, d.id`,
-          [actor.org_id],
-        ),
-        pool.query(
-          `SELECT id, hostname
-           FROM devices
-           WHERE org_id = $1
-             AND jsonb_typeof(updates) = 'array'
-             AND jsonb_array_length(updates) > 0
-             AND id NOT IN (SELECT device_id FROM patch_policies WHERE org_id = $1)
-           ORDER BY hostname`,
-          [actor.org_id],
-        ),
-        pool.query(
-          `SELECT d.id, d.hostname, d.updates, d.software, c.id AS customer_id, c.name AS customer_name
+          `SELECT d.id, d.hostname, d.os_name, d.updates, d.reboot_pending, d.updates_checked_at, d.last_seen_at,
+                  c.name AS customer_name
            FROM devices d
            LEFT JOIN sites s ON s.id = d.site_id
            LEFT JOIN customers c ON c.id = s.customer_id
@@ -4624,40 +5280,142 @@ const server = createServer(async (req, res) => {
           [actor.org_id],
         ),
         pool.query(
-          `SELECT device_id, package_name
+          `SELECT DISTINCT ON (device_id, package_name) device_id, package_name, status, finished_at
            FROM patch_deploys
-           WHERE org_id = $1 AND status = 'succeeded'
-           ORDER BY id`,
+           WHERE org_id = $1 AND created_at > now() - interval '30 days'
+           ORDER BY device_id, package_name, id DESC`,
           [actor.org_id],
         ),
+        pool.query("SELECT category FROM patch_rules WHERE org_id = $1 ORDER BY category", [actor.org_id]),
         pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]),
       ]);
+      const latest = new Map(deploys.rows.map((row) => [`${row.device_id}:${row.package_name}`, row]));
+      const lastInstalled = new Map();
+      for (const row of deploys.rows) {
+        if (row.status !== "succeeded" || !row.finished_at) continue;
+        const key = String(row.device_id);
+        if (!lastInstalled.has(key) || row.finished_at > lastInstalled.get(key)) lastInstalled.set(key, row.finished_at);
+      }
+      const devices = fleet.rows.map((row) => {
+        const counts = { updates: 0, pushNow: 0, toApprove: 0, approved: 0, installing: 0, failed: 0 };
+        for (const item of Array.isArray(row.updates) ? row.updates : []) {
+          const status = latest.get(`${row.id}:${item?.name}`)?.status || "available";
+          if (status === "succeeded") continue;
+          counts.updates += 1;
+          if (["available", "waiting", "failed"].includes(status)) counts.toApprove += 1;
+          if (status === "approved") counts.approved += 1;
+          if (status === "queued" || status === "running") counts.installing += 1;
+          if (status === "failed") counts.failed += 1;
+          if (pushNow(item) && status !== "queued" && status !== "running") counts.pushNow += 1;
+        }
+        const installed = lastInstalled.get(String(row.id));
+        return {
+          id: Number(row.id),
+          hostname: row.hostname,
+          customer: row.customer_name || "",
+          osName: row.os_name || "",
+          isServer: isServerOs(row.os_name),
+          online: Boolean(row.last_seen_at) && Date.now() - row.last_seen_at.getTime() < 60000,
+          rebootPending: row.reboot_pending === true,
+          checkedAt: row.updates_checked_at ? row.updates_checked_at.toISOString() : null,
+          lastInstalledAt: installed ? installed.toISOString() : null,
+          ...counts,
+        };
+      });
+      const total = (key) => devices.reduce((sum, device) => sum + device[key], 0);
       return send(res, 200, {
         canTicket: ticketingAllowed(license.rows[0]),
         canMonitor: monitoringAllowed(license.rows[0]),
         canPatch: patchAllowed(license.rows[0]),
         canReport: reportingAllowed(license.rows[0]),
         canOperate: canOperate(actor),
-        policies: policies.rows.map((row) => ({
-          id: Number(row.id),
-          name: row.name,
-          mode: row.mode,
-          deviceId: Number(row.device_id),
-          hostname: row.hostname,
-        })),
-        deploys: deploys.rows.map((row) => ({
-          id: Number(row.id),
-          packageName: row.package_name,
-          status: row.status,
-          detail: row.detail || "",
-          policyId: Number(row.policy_id),
-          policyName: row.policy_name,
-          mode: row.mode,
-          hostname: row.hostname,
-        })),
-        devices: devices.rows.map((row) => ({ id: Number(row.id), hostname: row.hostname })),
-        compliance: complianceFrom(fleet.rows, succeeded.rows),
+        categories: PATCH_RULE_CATEGORIES,
+        rules: rules.rows.map((row) => row.category),
+        summary: {
+          devices: devices.length,
+          behind: devices.filter((device) => device.updates > 0).length,
+          pushNow: total("pushNow"),
+          pushNowDevices: devices.filter((device) => device.pushNow > 0).length,
+          toApprove: total("toApprove"),
+          approved: total("approved"),
+          installing: total("installing"),
+          restart: devices.filter((device) => device.rebootPending).length,
+        },
+        devices,
       });
+    }
+
+    if (req.method === "PUT" && url.pathname === "/v1/patch-rules") {
+      if (!(await requirePatch(actor, res, { deny: true }))) return;
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "patch.deny", "org", String(actor.org_id), { reason: "role" });
+        return send(res, 403, { error: "Only an admin can change auto-approve rules." });
+      }
+      const body = await readJson(req);
+      if (!Array.isArray(body.categories) || body.categories.some((item) => !PATCH_RULE_CATEGORIES.includes(item))) {
+        return send(res, 400, { error: "Choose update types from the list." });
+      }
+      const categories = [...new Set(body.categories)];
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "DELETE FROM patch_rules WHERE org_id = $1 AND NOT (category = ANY($2::text[]))",
+          [actor.org_id, categories],
+        );
+        for (const category of categories) {
+          await client.query(
+            `INSERT INTO patch_rules (org_id, category, created_by)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (org_id, category) DO NOTHING`,
+            [actor.org_id, category, actor.id],
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // The transaction was already closed.
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+      await writeAudit(actor.org_id, actor.id, "patch.rules", "org", String(actor.org_id), { categories });
+      pool.query("SELECT id, org_id, updates FROM devices WHERE org_id = $1", [actor.org_id])
+        .then(async (found) => {
+          for (const device of found.rows) await autoApproveUpdates(device);
+        })
+        .catch(() => console.error("update auto-approve failed"));
+      return send(res, 200, { rules: categories });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/patches/approve-urgent") {
+      if (!(await requirePatch(actor, res, { deny: true }))) return;
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "patch.deny", "org", String(actor.org_id), { reason: "role" });
+        return send(res, 403, { error: "A technician cannot approve an update." });
+      }
+      const found = await pool.query(
+        `SELECT id, org_id, updates FROM devices
+         WHERE org_id = $1 AND jsonb_typeof(updates) = 'array' AND jsonb_array_length(updates) > 0`,
+        [actor.org_id],
+      );
+      let count = 0;
+      const touched = [];
+      for (const device of found.rows) {
+        const approved = await approveUpdates(device, device.updates.filter(pushNow), actor.id, { skipRecent: true });
+        if (approved.length === 0) continue;
+        count += approved.length;
+        touched.push(Number(device.id));
+        await writeAudit(actor.org_id, actor.id, "patch.approve", "device", String(device.id), {
+          urgent: true,
+          count: approved.length,
+          names: approved.slice(0, 20),
+        });
+      }
+      return send(res, 200, { approved: count, devices: touched.length });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/patch-policies") {
@@ -5078,6 +5836,7 @@ server.listen(port, "127.0.0.1", () => {
     runDueExports();
     sweepOffline();
     sweepBreaches();
+    sweepSupport();
   }, 15000);
   runDueExports();
   sweepOffline();

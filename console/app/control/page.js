@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { ConsoleBar } from "../bar";
-import { accountFromSession, dateInputValue, formatWhen } from "../account-data";
+import { accountFromSession, dateInputValue, formatWhen, licenseStatus } from "../account-data";
 import { saveLicense } from "../actions";
 import { PasswordReset, RibbonForm, TenantForm } from "./forms";
 
@@ -10,6 +10,7 @@ const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 const MODULES = [
   ["core", "Device enrollment"],
   ["remote_desktop", "Remote sessions"],
+  ["remote_support", "Remote support"],
   ["ticketing", "Ticketing"],
   ["monitoring", "Monitoring"],
   ["patch", "Patching"],
@@ -39,12 +40,45 @@ export default async function ControlPage({ searchParams }) {
         <p className="org-name">Tenants, the license sold to each one, and the people who sign in there.</p>
         {notice ? <p className={notice.kind}>{notice.text}</p> : null}
         <section className="tenant">
+          <h2>License usage</h2>
+          <p className="org-name">Logins and devices used against each tenant&apos;s license. New devices and logins are blocked once a limit is reached.</p>
+          <div className="usage-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tenant</th>
+                  <th>License</th>
+                  <th>Logins</th>
+                  <th>Devices</th>
+                  <th>Expires</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(body.tenants || []).map((tenant) => {
+                  const status = licenseStatus({ ...tenant.license, seatsUsed: tenant.users.length }, "The");
+                  return (
+                    <tr key={tenant.id}>
+                      <td><a href={`#tenant-${tenant.id}`}>{tenant.name}</a></td>
+                      <td>{tenant.license.plan} · {tenant.license.number}</td>
+                      <td><UsageMeter meter={status.seats} /></td>
+                      <td><UsageMeter meter={status.devices} /></td>
+                      <td>{tenant.license.expiresAt ? formatWhen(tenant.license.expiresAt) : "No expiry"}</td>
+                      <td><UsageState status={status} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section className="tenant">
           <h2>Ribbon notice</h2>
           <p className="org-name">Shows on the yellow bar for every tenant, or only the tenant you select. The people who see it can close it for themselves.</p>
           <RibbonForm tenants={body.tenants || []} ribbons={body.ribbons || []} />
         </section>
         {(body.tenants || []).map((tenant) => (
-          <section className="tenant" key={tenant.id}>
+          <section className="tenant" key={tenant.id} id={`tenant-${tenant.id}`}>
             <h2>{tenant.name}</h2>
             <p className="org-name">
               {tenant.slug} · License {tenant.license.number} · {tenant.license.deviceCount} enrolled · Created {formatWhen(tenant.createdAt)}
@@ -62,6 +96,10 @@ export default async function ControlPage({ searchParams }) {
               <label>
                 Systems that can be monitored
                 <input name="deviceCap" type="number" min="0" step="1" defaultValue={tenant.license.deviceCap} required />
+              </label>
+              <label>
+                Support sessions at once
+                <input name="supportConcurrent" type="number" min="0" max="100" step="1" defaultValue={tenant.license.supportConcurrent ?? 1} required />
               </label>
               <label>
                 Expires
@@ -128,6 +166,7 @@ function noticeFrom(params) {
   if (params?.error === "slug") return { kind: "error", text: "That company code is already in use, or it is not lowercase letters, numbers, and hyphens." };
   if (params?.error === "email") return { kind: "error", text: "That email is already a login." };
   if (params?.error === "seats") return { kind: "error", text: "Seats must be at least 1, and the device cap must be zero or more." };
+  if (params?.error === "support") return { kind: "error", text: "Support sessions at once must be a whole number from 0 to 100." };
   if (params?.error === "fields") return { kind: "error", text: "Enter the company, the company code, and a license type." };
   if (params?.error === "date") return { kind: "error", text: "Enter a valid expiry date, or leave it empty." };
   if (params?.error === "user") return { kind: "error", text: "That login cannot be changed from the control panel." };
@@ -138,6 +177,22 @@ function noticeFrom(params) {
   if (params?.error === "ribbon") return { kind: "error", text: "The ribbon notice was not saved." };
   if (params?.error) return { kind: "error", text: "The change was not saved." };
   return null;
+}
+
+function UsageMeter({ meter }) {
+  return (
+    <div className={`usage-meter is-${meter.level}`} title={`${meter.percent}% used`}>
+      <span>{meter.used} / {meter.total}</span>
+      <div className="sub-bar"><i style={{ width: `${meter.percent}%` }} /></div>
+    </div>
+  );
+}
+
+function UsageState({ status }) {
+  if (status.daysLeft != null && status.daysLeft <= 0) return <span className="usage-state is-full">Expired</span>;
+  if (status.warnings.some((item) => item.level === "full")) return <span className="usage-state is-full">At limit</span>;
+  if (status.warnings.length) return <span className="usage-state is-near">{status.daysLeft != null && status.daysLeft <= 30 ? "Expires soon" : "Near limit"}</span>;
+  return <span className="usage-state">OK</span>;
 }
 
 function roleLabel(role) {

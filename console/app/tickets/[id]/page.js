@@ -24,7 +24,7 @@ export default async function TicketPage({ params, searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
+      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
         <h1>{ticket.subject}</h1>
         <p className="ticket-tags">

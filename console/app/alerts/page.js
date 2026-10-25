@@ -24,7 +24,7 @@ export default async function AlertsPage({ searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets={body.canTicket} showAlerts showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
+      <ConsoleBar showTickets={body.canTicket} showAlerts showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
         <h1>Alerts</h1>
         {params?.error === "ticket" ? <p className="error">That alert could not open a ticket.</p> : null}

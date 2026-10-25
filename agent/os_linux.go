@@ -240,16 +240,21 @@ func installedPackages() ([]softwareItem, error) {
 	return items, nil
 }
 
-func collectUpdates() ([]updateItem, error) {
+func collectUpdates() (updateScan, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	list := exec.CommandContext(ctx, "apt", "list", "--upgradable")
 	list.Env = []string{"LANG=C", "PATH=/usr/bin:/bin"}
 	out, err := list.Output()
 	if err != nil {
-		return nil, fmt.Errorf("apt list: %w", err)
+		return updateScan{}, fmt.Errorf("apt list: %w", err)
 	}
-	return parseAptUpgradable(out), nil
+	return updateScan{Updates: cleanUpdates(parseAptUpgradable(out)), RebootPending: rebootRequired()}, nil
+}
+
+func rebootRequired() bool {
+	_, err := os.Stat("/var/run/reboot-required")
+	return err == nil
 }
 
 func parseAptUpgradable(raw []byte) []updateItem {
@@ -277,7 +282,11 @@ func parseAptUpgradable(raw []byte) []updateItem {
 		if current == "" || available == "" {
 			continue
 		}
-		items = append(items, updateItem{Name: name, CurrentVersion: current, AvailableVersion: available})
+		category := "Update"
+		if strings.Contains(fields[0], "-security") {
+			category = "Security"
+		}
+		items = append(items, updateItem{Name: name, CurrentVersion: current, AvailableVersion: available, Category: category})
 		if len(items) >= 200 {
 			break
 		}
@@ -285,7 +294,12 @@ func parseAptUpgradable(raw []byte) []updateItem {
 	return items
 }
 
-func installDeploy(name string) (bool, string) {
+func installDeploy(name string) (bool, bool, string) {
+	ok, detail := aptInstall(name)
+	return ok, rebootRequired(), detail
+}
+
+func aptInstall(name string) (bool, string) {
 	if !aptPackageName(name) {
 		return false, "That package name cannot be installed."
 	}

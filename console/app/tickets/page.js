@@ -25,7 +25,7 @@ export default async function TicketsPage({ searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
+      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
         <h1>Tickets</h1>
         {params?.error === "sla" ? <p className="error">Those SLA targets could not be saved.</p> : null}

@@ -9,6 +9,7 @@ export const DIAGNOSTIC_TOOLS = [
   { id: "devmgr", label: "Device Manager", kind: "live" },
   { id: "scheduler", label: "Task Scheduler", kind: "live" },
   { id: "software", label: "Software", kind: "software" },
+  { id: "updates", label: "Updates", kind: "updates" },
   { id: "hardware", label: "Hardware", kind: "hardware" },
   { id: "accounts", label: "Users", kind: "list" },
   { id: "printers", label: "Printers", kind: "list" },

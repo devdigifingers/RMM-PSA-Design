@@ -6,6 +6,7 @@ import { createTenant, publishRibbon, removeRibbon, resetTenantPassword } from "
 const MODULES = [
   ["core", "Device enrollment"],
   ["remote_desktop", "Remote sessions"],
+  ["remote_support", "Remote support"],
   ["ticketing", "Ticketing"],
   ["monitoring", "Monitoring"],
   ["patch", "Patching"],
@@ -88,6 +89,10 @@ export function TenantForm() {
       <label>
         Systems that can be monitored
         <input name="deviceCap" type="number" min="0" step="1" defaultValue="25" required />
+      </label>
+      <label>
+        Support sessions at once
+        <input name="supportConcurrent" type="number" min="0" max="100" step="1" defaultValue="1" required />
       </label>
       <label>
         Expires

@@ -27,7 +27,6 @@ export default async function AuditPage() {
         showAlerts={body.canMonitor}
         showPatches={body.canPatch}
         showDashboard={body.canReport}
-        showLicenses={body.canReport}
       />
       <main className="main">
         <h1>Audit</h1>

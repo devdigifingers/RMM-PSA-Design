@@ -597,7 +597,7 @@ func decodePowerShell(out []byte) string {
 	return string(utf16.Decode(units))
 }
 
-func collectUpdates() ([]updateItem, error) {
+func collectUpdates() (updateScan, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	script := `$ErrorActionPreference = 'Stop'
@@ -610,13 +610,30 @@ foreach ($update in $result.Updates) {
   $kb = ''
   $ids = @($update.KBArticleIDs)
   if ($ids.Count -gt 0 -and $ids[0]) { $kb = 'KB' + [string]$ids[0] }
+  $category = ''
+  $categoryId = ''
+  foreach ($item in $update.Categories) {
+    if ([string]$item.Type -eq 'UpdateClassification') { $category = [string]$item.Name; $categoryId = [string]$item.CategoryID; break }
+  }
+  $restart = $false
+  try { $restart = ([int]$update.InstallationBehavior.RebootBehavior) -ne 0 } catch {}
+  $size = [int64]0
+  try { $size = [int64]$update.MaxDownloadSize } catch {}
   $list.Add([PSCustomObject]@{
     name = [string]$update.Title
     currentVersion = ''
     availableVersion = $kb
+    kb = $kb
+    severity = [string]$update.MsrcSeverity
+    category = $category
+    categoryId = $categoryId
+    sizeBytes = $size
+    restart = $restart
   }) | Out-Null
 }
-if ($list.Count -eq 0) { '[]' } else { ConvertTo-Json -Compress -InputObject @($list.ToArray()) }
+$pending = $false
+try { $pending = [bool](New-Object -ComObject Microsoft.Update.SystemInfo).RebootRequired } catch {}
+ConvertTo-Json -Compress -Depth 4 -InputObject ([PSCustomObject]@{ updates = @($list.ToArray()); rebootPending = $pending })
 `
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 	var stdout, stderr bytes.Buffer
@@ -627,35 +644,15 @@ if ($list.Count -eq 0) { '[]' } else { ConvertTo-Json -Compress -InputObject @($
 		if len(text) > 300 {
 			text = text[len(text)-300:]
 		}
-		return nil, fmt.Errorf("windows update: %v %s", err, text)
+		return updateScan{}, fmt.Errorf("windows update: %v %s", err, text)
 	}
-	items, err := decodeUpdates(stdout.Bytes())
-	if err != nil {
-		return nil, err
-	}
-	if len(items) > 200 {
-		items = items[:200]
-	}
-	cleaned := []updateItem{}
-	for _, item := range items {
-		item.Name = strings.TrimSpace(item.Name)
-		item.CurrentVersion = strings.TrimSpace(item.CurrentVersion)
-		item.AvailableVersion = strings.TrimSpace(item.AvailableVersion)
-		if item.Name == "" {
-			continue
-		}
-		if len(item.Name) > 200 {
-			item.Name = item.Name[:200]
-		}
-		cleaned = append(cleaned, item)
-	}
-	return cleaned, nil
+	return decodeScan([]byte(decodePowerShell(stdout.Bytes())))
 }
 
-func installDeploy(name string) (bool, string) {
+func installDeploy(name string) (bool, bool, string) {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 200 {
-		return false, "That update name cannot be installed."
+		return false, false, "That update name cannot be installed."
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
@@ -706,16 +703,17 @@ exit 1
 	if len(detail) > 2000 {
 		detail = detail[len(detail)-2000:]
 	}
+	restart := strings.Contains(detail, "reboot True")
 	if err == nil {
 		if detail == "" {
 			detail = "Installed."
 		}
-		return true, detail
+		return true, restart, detail
 	}
 	if detail == "" {
 		detail = err.Error()
 	}
-	return false, detail
+	return false, restart, detail
 }
 
 func collectUsers() []string {

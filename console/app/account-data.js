@@ -36,8 +36,38 @@ export function navFlags(account) {
     showAlerts: Boolean(license?.monitoring),
     showPatches: Boolean(license?.patch),
     showDashboard: Boolean(license?.reporting),
-    showLicenses: Boolean(license?.reporting),
   };
+}
+
+export function licenseStatus(license, subject = "Your") {
+  if (!license) return { seats: null, devices: null, daysLeft: null, warnings: [] };
+  const seats = meter(license.seatsUsed, license.seats);
+  const devices = meter(license.deviceCount, license.deviceCap);
+  const daysLeft = license.expiresAt ? Math.ceil((new Date(license.expiresAt).getTime() - Date.now()) / 86400000) : null;
+  const warnings = [];
+  if (daysLeft != null && daysLeft <= 0) {
+    warnings.push({ level: "full", text: `${subject} license has expired.` });
+  } else if (daysLeft != null && daysLeft <= 30) {
+    warnings.push({ level: "near", text: `${subject} license expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}.` });
+  }
+  if (devices.level === "full") {
+    warnings.push({ level: "full", text: `All ${devices.total} devices on the license are in use. New devices cannot be enrolled.` });
+  } else if (devices.level === "near") {
+    warnings.push({ level: "near", text: `${devices.used} of ${devices.total} devices on the license are in use.` });
+  }
+  if (seats.level === "full") {
+    warnings.push({ level: "full", text: `All ${seats.total} logins on the license are in use. New logins cannot be added.` });
+  } else if (seats.level === "near") {
+    warnings.push({ level: "near", text: `${seats.used} of ${seats.total} logins on the license are in use.` });
+  }
+  return { seats, devices, daysLeft, warnings };
+}
+
+function meter(used, total) {
+  const count = Number(used) || 0;
+  const limit = Number(total) || 0;
+  const level = count >= limit ? "full" : count >= limit * 0.9 ? "near" : "ok";
+  return { used: count, total: limit, percent: limit > 0 ? Math.min(100, Math.round((count / limit) * 100)) : 100, level };
 }
 
 export function dateInputValue(value) {

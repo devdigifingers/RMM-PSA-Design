@@ -26,7 +26,7 @@ export default async function DiagnosticsPage({ params, searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} showLicenses={body.canReport} />
+      <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main diag-page">
         <DiagnosticsView
           deviceId={device.id}

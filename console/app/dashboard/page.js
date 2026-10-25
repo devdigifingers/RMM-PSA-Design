@@ -35,7 +35,6 @@ export default async function DashboardPage() {
         showAlerts={body.canMonitor}
         showPatches={body.canPatch}
         showDashboard
-        showLicenses
       />
       <main className="main">
         <h1>Dashboard</h1>

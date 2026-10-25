@@ -397,3 +397,7 @@ ALTER TABLE orgs ADD COLUMN IF NOT EXISTS ip_allowlist text[] NOT NULL DEFAULT '
 
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_group_id text;
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_users jsonb;
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_version text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_update_requested_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_update_offered_at timestamptz;

@@ -849,6 +849,10 @@ table {
   gap: 8px;
 }
 
+.agent-version { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.agent-version.agent-old { padding: 2px 8px; border-radius: 999px; background: #fff1e0; color: #a5560f; font-size: 13px; }
+html[data-theme="dark"] .agent-version.agent-old { background: rgba(224, 122, 31, 0.18); color: #f3b46b; }
+
 .os-mark {
   width: 16px;
   height: 16px;

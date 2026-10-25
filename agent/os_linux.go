@@ -19,6 +19,10 @@ import (
 
 func loadPlatformEnv() {}
 
+func updateFilePath() string { return "" }
+
+func launchUpdate(string) error { return fmt.Errorf("self update is not supported on Linux") }
+
 func apiURL() string {
 	return strings.TrimRight(os.Getenv("DF_API_URL"), "/")
 }

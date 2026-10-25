@@ -72,13 +72,14 @@ export default async function DevicesPage({ searchParams }) {
               <th>Operating system</th>
               <th>Active Users</th>
               <th>Last seen</th>
+              <th>Agent</th>
               <th>Remote</th>
             </tr>
           </thead>
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td className="empty" colSpan={9}>No devices enrolled yet.</td>
+                <td className="empty" colSpan={10}>No devices enrolled yet.</td>
               </tr>
             ) : (
               devices.map((device) => (
@@ -104,8 +105,21 @@ export default async function DevicesPage({ searchParams }) {
                   <td>{device.users?.length ? device.users.join(", ") : "—"}</td>
                   <td>{formatSeen(device.lastSeenAt)}</td>
                   <td>
+                    <span className={device.agentOutdated ? "agent-version agent-old" : "agent-version"} title={device.agentOutdated ? `Version ${body.latestAgent} is available` : undefined}>
+                      {device.agentVersion || (device.agentOutdated ? "1.4.0 or older" : "—")}
+                    </span>
+                  </td>
+                  <td>
                     {body.canRemote ? (
-                      <RemoteActions deviceId={device.id} hostname={device.hostname} label={device.displayName || ""} users={device.users || []} />
+                      <RemoteActions
+                        deviceId={device.id}
+                        hostname={device.hostname}
+                        label={device.displayName || ""}
+                        users={device.users || []}
+                        agent={body.canOperate && body.latestAgent && /windows/i.test(device.osName || "")
+                          ? { version: device.agentVersion, latest: body.latestAgent, outdated: device.agentOutdated }
+                          : null}
+                      />
                     ) : (
                       "—"
                     )}
@@ -115,7 +129,7 @@ export default async function DevicesPage({ searchParams }) {
             )}
             {devices.length ? (
               <tr className="no-live">
-                <td className="empty" colSpan={9}>No remote sessions are open right now.</td>
+                <td className="empty" colSpan={10}>No remote sessions are open right now.</td>
               </tr>
             ) : null}
           </tbody>

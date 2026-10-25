@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { endRemoteSessions, powerDevice } from "../actions";
+import { endRemoteSessions, powerDevice, updateAgent } from "../actions";
 import { openRemoteSession } from "./remote-window";
 import { DIAGNOSTIC_TOOLS } from "./diagnostic-tools";
 import { refreshSessions, useDeviceSessions } from "./session-status";
@@ -15,7 +15,7 @@ const POWER = [
   ["lock", "Lock"],
 ];
 
-export function RemoteActions({ deviceId, hostname, label = "", users, connectOnly = false }) {
+export function RemoteActions({ deviceId, hostname, label = "", users, connectOnly = false, agent = null }) {
   const [menu, setMenu] = useState(null);
   const [spot, setSpot] = useState(null);
   const [user, setUser] = useState(users[0] || "");
@@ -80,6 +80,15 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
     setNote(result.ok ? `${label} sent. It runs on the next check-in.` : result.error);
   }
 
+  async function sendAgentUpdate() {
+    setMenu(null);
+    setNote("Sending…");
+    const result = await updateAgent(String(deviceId));
+    if (!result.ok) setNote(result.error);
+    else if (result.status === "current") setNote(`The agent is already on ${result.version}.`);
+    else setNote(`Agent ${result.version} sent. It installs on the next check-in when the PC is idle.`);
+  }
+
   async function endSessions() {
     setMenu(null);
     setEnding(true);
@@ -141,6 +150,13 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
               <Caret />
             </button>
           </li>
+          {agent ? (
+            <li>
+              <button type="button" disabled={!agent.outdated} onClick={() => setMenu("agent")}>
+                {agent.outdated ? `Update agent to ${agent.latest}` : "Agent is up to date"}
+              </button>
+            </li>
+          ) : null}
           <li>
             <button type="button" className="menu-danger" disabled={ending} onClick={() => setMenu("end")}>
               End All Sessions{open ? ` (${open})` : ""}
@@ -158,6 +174,18 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
             </p>
             <button type="button" onClick={() => setMenu(null)}>Cancel</button>
             <button type="button" onClick={endSessions}>End sessions</button>
+          </li>
+        </ul>
+      ) : null}
+      {menu === "agent" && spot && agent ? (
+        <ul className="remote-menu" style={{ top: spot.top, bottom: spot.bottom, left: spot.left, maxHeight: spot.maxHeight }}>
+          <li className="power-confirm">
+            <p>
+              Update the agent on {hostname} from {agent.version || "1.4.0 or older"} to {agent.latest}? The agent restarts
+              briefly. Remote desktop stays connected.
+            </p>
+            <button type="button" onClick={() => setMenu(null)}>Cancel</button>
+            <button type="button" onClick={sendAgentUpdate}>Update</button>
           </li>
         </ul>
       ) : null}

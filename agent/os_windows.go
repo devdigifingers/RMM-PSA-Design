@@ -29,8 +29,6 @@ var meshAgent []byte
 
 const agentDir = `C:\ProgramData\DigitalFingers`
 
-const agentVersion = "1.4.0"
-
 // The Windows agent runs as SYSTEM, so its server address is fixed rather than read from a file.
 func apiURL() string {
 	return "https://api.digitalfingers.co.za"
@@ -127,6 +125,9 @@ func start() error {
 		return err
 	}
 	if !service {
+		if hasArg("update") {
+			return updateInPlace()
+		}
 		if uninstalling() {
 			return uninstallInteractive()
 		}
@@ -182,13 +183,181 @@ func installInteractive() error {
 }
 
 func uninstalling() bool {
+	return hasArg("uninstall")
+}
+
+func hasArg(name string) bool {
 	for _, arg := range os.Args[1:] {
 		switch strings.ToLower(arg) {
-		case "uninstall", "/uninstall", "-uninstall":
+		case name, "/" + name, "-" + name:
 			return true
 		}
 	}
 	return false
+}
+
+func updateFilePath() string {
+	return filepath.Join(agentDir, "df-agent-update.exe")
+}
+
+func launchUpdate(path string) error {
+	cmd := exec.Command(path, "update")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// updateInPlace runs from the downloaded agent. It swaps it in for the installed agent and keeps
+// the remote desktop agent and enrollment as they are. A new agent that will not start is rolled back.
+func updateInPlace() error {
+	if !elevated() {
+		return fmt.Errorf("the agent update must run as an administrator")
+	}
+	logFile, err := os.OpenFile(filepath.Join(agentDir, "df-agent-update.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		defer logFile.Close()
+		os.Stdout = logFile
+		os.Stderr = logFile
+	}
+	say := func(text string) { fmt.Printf("%s %s\n", time.Now().Format(time.RFC3339), text) }
+	say("updating to " + agentVersion)
+	err = swapAgent(say)
+	if err != nil {
+		say("update failed: " + err.Error())
+	} else {
+		say("updated to " + agentVersion)
+	}
+	if exe, exeErr := os.Executable(); exeErr == nil && strings.EqualFold(filepath.Base(exe), "df-agent-update.exe") {
+		cleanup := exec.Command(`C:\Windows\System32\cmd.exe`)
+		cleanup.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow: true,
+			CmdLine:    `C:\Windows\System32\cmd.exe /d /c ping -n 6 127.0.0.1 >nul & del /f /q "` + exe + `"`,
+		}
+		_ = cleanup.Start()
+	}
+	return err
+}
+
+func swapAgent(say func(string)) error {
+	dest := filepath.Join(agentDir, "df-agent.exe")
+	backup := filepath.Join(agentDir, "df-agent.old.exe")
+	src, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(filepath.Clean(src), dest) {
+		return fmt.Errorf("the update must run from a separate file")
+	}
+	manager, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer manager.Disconnect()
+	service, err := manager.OpenService("df-agent")
+	if err != nil {
+		return fmt.Errorf("the agent service is not installed")
+	}
+	defer service.Close()
+	if err := stopService(service); err != nil {
+		return err
+	}
+	say("service stopped")
+	if err := copyFile(dest, backup); err != nil {
+		_ = service.Start()
+		return fmt.Errorf("backup: %w", err)
+	}
+	if err := copyWithRetry(src, dest); err != nil {
+		_ = copyWithRetry(backup, dest)
+		_ = service.Start()
+		return fmt.Errorf("replace: %w", err)
+	}
+	_ = lockAgentDir()
+	_ = service.SetRecoveryActions([]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: 5 * time.Second}}, 86400)
+	_ = service.SetRecoveryActionsOnNonCrashFailures(true)
+	if err := startAndHold(service); err != nil {
+		say("new agent did not stay running, restoring: " + err.Error())
+		_ = stopService(service)
+		if restoreErr := copyWithRetry(backup, dest); restoreErr != nil {
+			return fmt.Errorf("restore: %w", restoreErr)
+		}
+		_ = service.Start()
+		return err
+	}
+	_ = registerProgram(dest)
+	return nil
+}
+
+func stopService(service *mgr.Service) error {
+	status, err := service.Query()
+	if err != nil {
+		return err
+	}
+	if status.State == svc.Stopped {
+		return nil
+	}
+	_, _ = service.Control(svc.Stop)
+	for i := 0; i < 80; i++ {
+		status, err = service.Query()
+		if err == nil && status.State == svc.Stopped {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if status.ProcessId != 0 {
+		if process, openErr := windows.OpenProcess(windows.PROCESS_TERMINATE, false, status.ProcessId); openErr == nil {
+			_ = windows.TerminateProcess(process, 1)
+			windows.CloseHandle(process)
+		}
+	}
+	for i := 0; i < 20; i++ {
+		status, err = service.Query()
+		if err == nil && status.State == svc.Stopped {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("the agent service did not stop")
+}
+
+func startAndHold(service *mgr.Service) error {
+	if err := service.Start(); err != nil {
+		return err
+	}
+	running := false
+	for i := 0; i < 60; i++ {
+		status, err := service.Query()
+		if err == nil && status.State == svc.Running {
+			running = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !running {
+		return fmt.Errorf("the service did not start")
+	}
+	time.Sleep(15 * time.Second)
+	status, err := service.Query()
+	if err != nil || status.State != svc.Running {
+		return fmt.Errorf("the service stopped after starting")
+	}
+	return nil
+}
+
+func copyWithRetry(src, dest string) error {
+	var last error
+	for i := 0; i < 20; i++ {
+		last = copyFile(src, dest)
+		if last == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return last
 }
 
 func uninstallInteractive() error {
@@ -278,8 +447,11 @@ func removeMesh() {
 }
 
 func removeProgramFile() {
-	cmd := exec.Command("cmd.exe", "/c", `timeout /t 2 /nobreak >nul & del /f /q "C:\ProgramData\DigitalFingers\df-agent.exe"`)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd := exec.Command(`C:\Windows\System32\cmd.exe`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+		CmdLine:    `C:\Windows\System32\cmd.exe /d /c ping -n 4 127.0.0.1 >nul & del /f /q "C:\ProgramData\DigitalFingers\df-agent.exe"`,
+	}
 	_ = cmd.Start()
 }
 
@@ -483,7 +655,11 @@ func runCommand(command string) (int, string) {
 		`PATHEXT=.COM;.EXE;.BAT;.CMD`,
 		"COMPUTERNAME=" + computer,
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	// cmd.exe does not understand Go's \" escaping, so the command line is passed through untouched.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+		CmdLine:    `C:\Windows\System32\cmd.exe /d /s /c "` + command + `"`,
+	}
 	var buf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &buf, max: 8000}
 	cmd.Stderr = cmd.Stdout

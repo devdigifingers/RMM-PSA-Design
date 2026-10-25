@@ -597,6 +597,21 @@ export async function powerDevice(deviceId, action) {
   return { ok: true, error: "" };
 }
 
+export async function updateAgent(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  if (!/^\d+$/.test(String(deviceId))) return { ok: false, error: "Device not found." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/agent-update`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The agent update was not sent." };
+  return { ok: true, error: "", status: body.status || "", version: body.version || "" };
+}
+
 export async function findDevices(query) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

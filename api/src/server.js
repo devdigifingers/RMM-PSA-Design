@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { BlockList, isIP } from "node:net";
 import { tmpdir } from "node:os";
@@ -1701,7 +1701,18 @@ function detailSections(device, info, groupName, clock = {}) {
       ],
     },
   ];
+  const outdated = /windows/i.test(device.os_name || "") && olderAgent(device.agent_version, device.latest_agent);
   const right = [
+    {
+      key: "dfagent",
+      title: "Digital Fingers Agent",
+      icon: "agent",
+      rows: [
+        detailLine("Version", device.agent_version || "1.4.0 or older"),
+        detailLine("Latest", device.latest_agent || ""),
+        detailLine("Status", device.latest_agent ? (outdated ? "Update available" : "Up to date") : ""),
+      ],
+    },
     {
       key: "agent",
       title: "Mesh Agent",
@@ -1874,6 +1885,99 @@ async function meshDesktopUrl(nodeId, tokenName, osName, creds) {
   const suffix = nodeId.includes(marker) ? nodeId.slice(nodeId.indexOf(marker) + marker.length) : nodeId;
   // Mesh drops any query value that contains "%". Node ids use "@", which URL.toString() would encode.
   return `${page.origin}${page.pathname}?${page.searchParams.toString()}&gotonode=${suffix}`;
+}
+
+const AGENT_BIN_DIR = process.env.AGENT_BIN_DIR || "/opt/df-console/agent-bin";
+const AGENT_AUTO_UPDATE = process.env.AGENT_AUTO_UPDATE === "on";
+const AGENT_OFFER_GAP_MS = 30 * 60000;
+let agentReleaseCache = { at: 0, value: null };
+
+async function agentRelease() {
+  if (Date.now() - agentReleaseCache.at < 60000) return agentReleaseCache.value;
+  let value = null;
+  try {
+    const raw = JSON.parse(await readFile(join(AGENT_BIN_DIR, "windows.json"), "utf8"));
+    if (versionParts(raw.version) && /^[a-f0-9]{64}$/.test(String(raw.sha256))) {
+      value = { version: raw.version, sha256: raw.sha256 };
+    }
+  } catch {
+    value = null;
+  }
+  agentReleaseCache = { at: Date.now(), value };
+  return value;
+}
+
+function versionParts(version) {
+  return /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(String(version || "")) ? version.split(".").map(Number) : null;
+}
+
+function olderAgent(current, latest) {
+  const want = versionParts(latest);
+  if (!want) return false;
+  const have = versionParts(current);
+  if (!have) return true;
+  for (let i = 0; i < 3; i += 1) {
+    if (have[i] !== want[i]) return have[i] < want[i];
+  }
+  return false;
+}
+
+// Agents before 1.5.0 cannot update themselves, so they get one job that fetches the new agent.
+// The download runs under WMI so it outlives the job and holds none of the agent's pipes.
+// Older agents hand the whole line to cmd.exe as one escaped argument, so it must contain no double quotes.
+function legacyUpdateCommand(token, sha256) {
+  const powershell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+  const link = `https://api.digitalfingers.co.za/v1/agent/update/windows?t=${token}`;
+  const script = [
+    "[Net.ServicePointManager]::SecurityProtocol='Tls12'",
+    "$p='C:\\ProgramData\\DigitalFingers\\df-agent-update.exe'",
+    `Invoke-WebRequest -UseBasicParsing '${link}' -OutFile $p`,
+    `if((Get-FileHash $p -Algorithm SHA256).Hash -eq '${sha256}'){Start-Process $p -ArgumentList 'update'}else{Remove-Item $p}`,
+  ].join(";");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const inner = `${powershell} -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+  return "set USERPROFILE=C:\\Windows\\System32\\config\\systemprofile&set TEMP=C:\\Windows\\Temp&set TMP=C:\\Windows\\Temp&"
+    + "set PSModulePath=C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules&"
+    + `${powershell} -NoProfile -NonInteractive -Command ([wmiclass]'Win32_Process').Create('${inner}').ReturnValue`;
+}
+
+async function offerAgentUpdate(device, row, idle) {
+  if (!/windows/i.test(row.os_name || "")) return null;
+  const release = await agentRelease();
+  if (!release) return null;
+  if (!olderAgent(row.agent_version, release.version)) {
+    if (row.agent_update_requested_at) {
+      await pool.query("UPDATE devices SET agent_update_requested_at = NULL WHERE id = $1", [device.id]);
+    }
+    return null;
+  }
+  const requested = row.agent_update_requested_at != null;
+  const due = !row.agent_update_offered_at || Date.now() - new Date(row.agent_update_offered_at).getTime() > AGENT_OFFER_GAP_MS;
+  if (!requested && !(AGENT_AUTO_UPDATE && due)) return null;
+  if (!idle) return null;
+  const busy = await pool.query(
+    `SELECT 1 FROM patch_deploys WHERE device_id = $1 AND status IN ('queued', 'running')
+     UNION ALL SELECT 1 FROM jobs WHERE device_id = $1 AND status IN ('queued', 'running') LIMIT 1`,
+    [device.id],
+  );
+  if (busy.rows[0]) return null;
+  await pool.query(
+    "UPDATE devices SET agent_update_requested_at = NULL, agent_update_offered_at = now() WHERE id = $1",
+    [device.id],
+  );
+  const from = row.agent_version || "older";
+  if (row.agent_version) {
+    await writeAudit(device.org_id, null, "agent.update.offer", "device", String(device.id), { from, to: release.version });
+    return { version: release.version, sha256: release.sha256 };
+  }
+  const token = randomBytes(24).toString("base64url");
+  await redis.set(`agent-download:${token}`, String(device.id), "EX", 1800);
+  await pool.query(
+    "INSERT INTO jobs (org_id, device_id, command) VALUES ($1, $2, $3)",
+    [device.org_id, device.id, legacyUpdateCommand(token, release.sha256)],
+  );
+  await writeAudit(device.org_id, null, "agent.update.offer", "device", String(device.id), { from, to: release.version, legacy: true });
+  return null;
 }
 
 async function deviceFrom(req) {
@@ -4466,6 +4570,29 @@ const server = createServer(async (req, res) => {
       return send(res, 201, { token, expiresAt: expiresAt.toISOString() });
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/agent/update/windows") {
+      let deviceId = null;
+      const ticket = String(url.searchParams.get("t") || "");
+      if (ticket) {
+        const key = `agent-download:${ticket.slice(0, 64)}`;
+        deviceId = await redis.get(key);
+        if (deviceId) await redis.del(key);
+      } else {
+        deviceId = (await deviceFrom(req))?.id || null;
+      }
+      if (!deviceId) return send(res, 401, { error: "Device login required." });
+      const file = join(AGENT_BIN_DIR, "DigitalFingersAgent.exe");
+      const info = await stat(file).catch(() => null);
+      if (!info?.isFile()) return send(res, 404, { error: "No agent build is published." });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(info.size),
+        "cache-control": "no-store",
+      });
+      createReadStream(file).pipe(res);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/agent/enroll") {
       const body = await readJson(req);
       const token = typeof body.token === "string" ? body.token.trim() : "";
@@ -4562,6 +4689,7 @@ const server = createServer(async (req, res) => {
       const updates = updatesFrom(body);
       const asset = assetFrom(body);
       const users = usersFrom(body);
+      const agentVersion = versionParts(body.agentVersion) ? body.agentVersion : "";
       const saved = await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
@@ -4577,9 +4705,11 @@ const server = createServer(async (req, res) => {
              ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END,
              users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END,
              updates_checked_at = CASE WHEN $5::boolean THEN now() ELSE updates_checked_at END,
-             reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END
+             reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END,
+             agent_version = COALESCE(NULLIF($16, ''), agent_version)
          WHERE id = $1
-         RETURNING update_scan_requested_at, updates_checked_at`,
+         RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
+                   agent_update_requested_at, agent_update_offered_at`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -4596,6 +4726,7 @@ const server = createServer(async (req, res) => {
           users != null,
           users ? JSON.stringify(users) : "[]",
           body.rebootPending === true,
+          agentVersion,
         ],
       );
       const scanAt = saved.rows[0]?.update_scan_requested_at;
@@ -4611,6 +4742,12 @@ const server = createServer(async (req, res) => {
       }
       await clearOfflineTicket(device.id);
       await attachMissingTickets(device.id);
+      let agentUpdate = null;
+      try {
+        agentUpdate = await offerAgentUpdate(device, saved.rows[0] || {}, body.acceptDeploys !== false);
+      } catch (error) {
+        console.error(`agent update offer: ${error.message}`);
+      }
       const jobs = await pool.query(
         `UPDATE jobs
          SET status = 'running'
@@ -4637,6 +4774,7 @@ const server = createServer(async (req, res) => {
         jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command })),
         deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
         scanUpdates,
+        ...(agentUpdate ? { agentUpdate } : {}),
       });
     }
 
@@ -4699,7 +4837,8 @@ const server = createServer(async (req, res) => {
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
       const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const result = await pool.query(
-        `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.users, c.name AS customer_name
+        `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.users, d.agent_version,
+                c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -4709,8 +4848,10 @@ const server = createServer(async (req, res) => {
          ORDER BY d.hostname`,
         [actor.org_id, needle],
       );
+      const release = await agentRelease();
       return send(res, 200, {
         org: org.rows[0] || null,
+        latestAgent: release?.version || null,
         canRemote: access.canRemote,
         canTicket: ticketingAllowed(license.rows[0]),
         canMonitor: monitoringAllowed(license.rows[0]),
@@ -4729,6 +4870,8 @@ const server = createServer(async (req, res) => {
           osName: row.os_name,
           ipv4: row.ipv4 || null,
           lastSeenAt: row.last_seen_at,
+          agentVersion: row.agent_version || null,
+          agentOutdated: /windows/i.test(row.os_name || "") && olderAgent(row.agent_version, release?.version),
         })),
       });
     }
@@ -4743,7 +4886,7 @@ const server = createServer(async (req, res) => {
       );
       const device = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
-                d.serial, d.ipv4, d.users, d.mesh_node_id, c.name AS customer_name
+                d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -4782,6 +4925,7 @@ const server = createServer(async (req, res) => {
       } catch {
         note = "MeshCentral did not answer.";
       }
+      row.latest_agent = (await agentRelease())?.version || "";
       const sections = detailSections(row, meshInfo, groupName, clock);
       const presence = presenceFrom(row.last_seen_at);
       return send(res, 200, {
@@ -5434,6 +5578,37 @@ const server = createServer(async (req, res) => {
         await rm(scratch, { recursive: true, force: true });
       }
       return;
+    }
+
+    const agentUpdateMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/agent-update$/);
+    if (req.method === "POST" && agentUpdateMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "agent.update.deny", "device", agentUpdateMatch[1], { reason: "role" });
+        return send(res, 403, { error: "Only an owner or admin can update the agent." });
+      }
+      const device = await pool.query(
+        "SELECT id, os_name, agent_version FROM devices WHERE id = $1 AND org_id = $2",
+        [agentUpdateMatch[1], actor.org_id],
+      );
+      const row = device.rows[0];
+      if (!row) return send(res, 404, { error: "Device not found." });
+      if (!/windows/i.test(row.os_name || "")) return send(res, 400, { error: "Agent updates are only available for Windows." });
+      const release = await agentRelease();
+      if (!release) return send(res, 503, { error: "No agent build is published yet." });
+      if (!olderAgent(row.agent_version, release.version)) {
+        return send(res, 200, { status: "current", version: row.agent_version });
+      }
+      await pool.query(
+        "UPDATE devices SET agent_update_requested_at = now() WHERE id = $1",
+        [row.id],
+      );
+      await writeAudit(actor.org_id, actor.id, "agent.update.request", "device", String(row.id), {
+        from: row.agent_version || "older",
+        to: release.version,
+      });
+      return send(res, 202, { status: "queued", version: release.version });
     }
 
     const devicePowerMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/power$/);

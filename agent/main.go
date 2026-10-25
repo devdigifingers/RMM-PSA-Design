@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+const agentVersion = "1.5.1"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -141,9 +145,10 @@ func enroll(api, statePath string) (savedState, error) {
 func heartbeat(api string, state savedState) error {
 	hostname, _ := os.Hostname()
 	payload := map[string]any{
-		"hostname": hostname,
-		"osName":   currentOS(),
-		"users":    collectUsers(),
+		"hostname":     hostname,
+		"osName":       currentOS(),
+		"users":        collectUsers(),
+		"agentVersion": agentVersion,
 	}
 	if sample, err := collectMetrics(); err != nil {
 		fmt.Fprintln(os.Stderr, "metrics:", err)
@@ -174,9 +179,18 @@ func heartbeat(api string, state savedState) error {
 		Jobs        []job    `json:"jobs"`
 		Deploys     []deploy `json:"deploys"`
 		ScanUpdates string   `json:"scanUpdates"`
+		AgentUpdate *release `json:"agentUpdate"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return err
+	}
+	if parsed.AgentUpdate != nil && updating.CompareAndSwap(false, true) {
+		go func(next release) {
+			if err := selfUpdate(api, state, next); err != nil {
+				fmt.Fprintln(os.Stderr, "agent update:", err)
+				updating.Store(false)
+			}
+		}(*parsed.AgentUpdate)
 	}
 	if parsed.ScanUpdates != "" && parsed.ScanUpdates != lastScanRequest {
 		lastScanRequest = parsed.ScanUpdates
@@ -197,6 +211,65 @@ func heartbeat(api string, state savedState) error {
 		}
 	}
 	return nil
+}
+
+type release struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+}
+
+var updating atomic.Bool
+
+// selfUpdate downloads the published agent, checks it against the hash the server sent with
+// the offer, and hands over to it. The new agent replaces this one and restarts the service.
+func selfUpdate(api string, state savedState, next release) error {
+	if next.Version == agentVersion {
+		return nil
+	}
+	want := strings.ToLower(strings.TrimSpace(next.SHA256))
+	if len(want) != 64 {
+		return fmt.Errorf("the update has no valid hash")
+	}
+	path := updateFilePath()
+	if path == "" {
+		return fmt.Errorf("self update is not supported on this system")
+	}
+	req, err := http.NewRequest(http.MethodGet, api+"/v1/agent/update/windows", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("authorization", "Device "+state.DeviceToken)
+	client := &http.Client{Timeout: 10 * time.Minute}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("download: HTTP %d", res.StatusCode)
+	}
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
+	if err != nil {
+		return err
+	}
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(out, hash), io.LimitReader(res.Body, 64<<20+1))
+	closeErr := out.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil && size > 64<<20 {
+		err = fmt.Errorf("the download is too large")
+	}
+	if err == nil && hex.EncodeToString(hash.Sum(nil)) != want {
+		err = fmt.Errorf("the download does not match the published hash")
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	fmt.Printf("agent update %s downloaded, handing over\n", next.Version)
+	return launchUpdate(path)
 }
 
 var jobQueue = make(chan job, 32)

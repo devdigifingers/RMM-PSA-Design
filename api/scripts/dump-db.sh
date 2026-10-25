@@ -1,16 +1,15 @@
 #!/bin/bash
-# Dump df_platform onto this host. Does not restore.
+# Dump df_platform, encrypt it, keep it here and send a copy to Contabo B. Does not restore.
 set -euo pipefail
 umask 077
+# shellcheck source=backup-lib.sh
+source "$(dirname "$0")/backup-lib.sh"
 
 dest_dir=/var/backups/df-platform
-keep=7
 env_file=/root/df-platform-db.env
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "root required" >&2
-  exit 1
-fi
+require_root
+require_pass
 
 if [[ -z "${PGHOST:-}" || -z "${PGDATABASE:-}" || -z "${PGUSER:-}" || -z "${PGPASSWORD:-}" ]]; then
   set -a
@@ -22,17 +21,16 @@ fi
 install -d -m 700 "$dest_dir"
 stamp=$(date -u +%Y%m%dT%H%M%S%NZ)
 tmp=$(mktemp "$dest_dir/.df_platform.XXXXXX")
-trap 'rm -f "$tmp"' EXIT
+gpg_home
+trap 'rm -f "$tmp" "$tmp.gpg"; gpg_done' EXIT
 pg_dump --format=custom --no-password --file="$tmp" --dbname="$PGDATABASE"
-chmod 600 "$tmp"
-mv "$tmp" "$dest_dir/df_platform-${stamp}.dump"
-trap - EXIT
+pg_restore --list "$tmp" >/dev/null
+encrypt_to "$tmp.gpg" < "$tmp"
+rm -f "$tmp"
+final="$dest_dir/df_platform-${stamp}.dump.gpg"
+mv "$tmp.gpg" "$final"
+chmod 600 "$final"
 
-mapfile -t ranked < <(find "$dest_dir" -maxdepth 1 -type f -name 'df_platform-*.dump' -printf '%T@\t%p\n' | sort -nr | cut -f2-)
-if ((${#ranked[@]} > keep)); then
-  for ((i = keep; i < ${#ranked[@]}; i++)); do
-    rm -f -- "${ranked[$i]}"
-  done
-fi
-
-echo "dump written; kept ${keep}"
+prune "$dest_dir" 'df_platform-*.dump*'
+send_copy platform "$final"
+echo "dump written, encrypted and copied"

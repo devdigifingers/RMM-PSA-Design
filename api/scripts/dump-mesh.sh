@@ -1,20 +1,23 @@
 #!/bin/bash
-# Copy MeshCentral data to Contabo B. Does not restore and does not stop Mesh.
+# Encrypt MeshCentral data and copy it to Contabo B. Does not restore and does not stop Mesh.
 set -euo pipefail
 umask 077
+# shellcheck source=backup-lib.sh
+source "$(dirname "$0")/backup-lib.sh"
 
 src=/opt/meshcentral/meshcentral-data
-key=/root/.ssh/df-mesh-backup
-target=root@169.58.10.76
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "root required" >&2
-  exit 1
-fi
-if [[ ! -d "$src" || ! -f "$key" ]]; then
+require_root
+require_pass
+if [[ ! -d "$src" || ! -f "$backup_key" ]]; then
   echo "mesh data or backup key missing" >&2
   exit 1
 fi
 
-tar -C /opt/meshcentral -czf - meshcentral-data | ssh -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes "$target"
-echo "mesh archive sent"
+tmp=$(mktemp /var/tmp/.meshcentral.XXXXXX)
+gpg_home
+trap 'rm -f "$tmp"; gpg_done' EXIT
+tar -C /opt/meshcentral -czf - meshcentral-data | encrypt_to "$tmp"
+decrypt_from "$tmp" | tar -tzf - >/dev/null
+send_copy mesh "$tmp"
+echo "mesh archive encrypted and sent"

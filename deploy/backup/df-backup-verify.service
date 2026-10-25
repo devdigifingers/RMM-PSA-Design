@@ -1,0 +1,10 @@
+[Unit]
+Description=Digital Fingers backup check
+After=df-pg-dump.service df-config-dump.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/lib/df-backup/verify-backups.sh
+NoNewPrivileges=true

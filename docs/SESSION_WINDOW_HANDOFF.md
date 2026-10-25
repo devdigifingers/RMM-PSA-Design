@@ -304,3 +304,16 @@ Follow the working rules in section 6.
 - IP restriction checks the sign-in address against the org list; saving requires your own address in the list and signs out everyone else in the org. Platform admins are exempt.
 - MFA secrets are encrypted with `MFA_KEY` from `/root/df-mfa.env` (loaded by `/etc/systemd/system/df-api.service.d/mfa.conf`). Back this file up: without it, every MFA login must be reset.
 - Console depends on `qrcode` (installed on df-a).
+
+## Backups (reworked 2026-10-25)
+
+- Scripts live in `/usr/local/lib/df-backup/` (root-owned; source in `api/scripts/`), units in `deploy/backup/`. `/opt/df-api/scripts` is owned by `dfapi`, so root jobs must not run from there.
+- Daily, all encrypted with GPG AES-256 using `/root/df-backup.pass` on df-a (keep a copy in the password manager; it is not inside any backup):
+  - 03:15 UTC `df-pg-dump`: database dump, kept on df-a and copied to Contabo B (`/var/backups/df-platform`).
+  - 03:30 UTC `df-config-dump`: `/root/df-*.env` (incl. `MFA_KEY`), Caddy, systemd units, Mesh config; kept on df-a and copied to B (`/var/backups/df-config`).
+  - 03:45 UTC `df-mesh-dump`: MeshCentral data, checked then copied to B (`/var/backups/df-mesh`).
+- Retention 14 days, never fewer than the newest 7. Timers are persistent (missed runs catch up).
+- Monday 05:00 UTC `df-backup-verify`: newest dump and config archive must be under 26 hours old and decrypt cleanly.
+- B receives through the restricted `df-mesh-backup` key; `/usr/local/sbin/df-mesh-receive` picks the folder from the requested kind. B cannot decrypt.
+- Restore test 2026-10-25: newest dump restored into a scratch database on B; row counts matched live for all checked tables.
+- Restore a dump: `gpg --decrypt --passphrase-file /root/df-backup.pass FILE.dump.gpg | pg_restore --no-owner -d TARGET`.

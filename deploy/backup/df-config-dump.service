@@ -1,0 +1,11 @@
+[Unit]
+Description=Digital Fingers config and secrets archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/lib/df-backup/dump-config.sh
+NoNewPrivileges=true

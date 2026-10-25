@@ -327,3 +327,13 @@ Follow the working rules in section 6.
 - New agents still join the shared "Digital Fingers" group. A node is matched only inside the org's group; from the shared group it is moved (`MoveToDeviceGroup`, audited `device.mesh_bind`) only when its stored id or a single hostname hit is unclaimed by any other device in any org. Ambiguous nodes stay put.
 - Sweep `isolateTenantMesh` runs 30 s after API start and every 10 minutes. First run moved all 8 Digital Fingers devices; FED-WIN-001's duplicate node and HNA-KILBARCHANGC-01 (no console device) stay in the shared group.
 - Support sessions: both tenant users are added to each temporary support group.
+
+## Windows agent 1.4.0 (published 2026-10-25)
+
+- The elevated installer owns `C:\ProgramData\DigitalFingers`: owner Administrators, only SYSTEM and Administrators, inheritance cut, and every file inside reset (`lockAgentDir`, also run at each service start). `Install.cmd` only runs the exe; the exe copies `df-agent.env` from beside itself and drops a leftover one when the PC is not enrolled.
+- The Windows agent ignores `DF_API_URL` and always uses `https://api.digitalfingers.co.za`; only `DF_ENROLL_TOKEN` is read from the env file. Linux requires an `https://` URL.
+- Jobs run in their own worker (queue of 32), so heartbeats continue during a job. A timed-out job's whole process tree is killed (Job Object on Windows, process group on Linux), and `WaitDelay` stops leftover children holding the output open.
+- Enrolment retries with backoff (30 s up to 10 minutes) instead of stopping the service; recovery also applies to clean stops.
+- The Mesh installer is staged in the locked folder, not `%TEMP%`. The OS name is cached for an hour.
+- Build on df-a: download the Mesh agent for the "Digital Fingers" group with `meshctrl AgentDownload --type 4 --url wss://mesh.digitalfingers.co.za` (the local ws URL cannot download), put it in the build dir as `meshagent.exe`, then `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build`. Publish to `/opt/df-console/agent-bin/DigitalFingersAgent.exe`; the previous build is kept beside it as `.prev-<date>`.
+- Tested on FED-WIN-001: permissions as above, same device record, `ping -t` stopped at 20 s with heartbeats continuing. Other devices still run the old agent until reinstalled.

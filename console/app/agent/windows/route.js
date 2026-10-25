@@ -39,8 +39,6 @@ export async function GET(request) {
   const setup = Buffer.from(
     [
       "@echo off",
-      "mkdir \"%ProgramData%\\DigitalFingers\" 2>nul",
-      "if not exist \"%ProgramData%\\DigitalFingers\\df-agent.env\" copy /Y \"%~dp0df-agent.env\" \"%ProgramData%\\DigitalFingers\\df-agent.env\" >nul",
       "\"%~dp0DigitalFingersAgent.exe\"",
       "",
     ].join("\r\n"),

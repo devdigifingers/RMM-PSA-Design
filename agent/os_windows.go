@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,30 +27,98 @@ import (
 //go:embed meshagent.exe
 var meshAgent []byte
 
+const agentDir = `C:\ProgramData\DigitalFingers`
+
+const agentVersion = "1.4.0"
+
+// The Windows agent runs as SYSTEM, so its server address is fixed rather than read from a file.
+func apiURL() string {
+	return "https://api.digitalfingers.co.za"
+}
+
 func loadPlatformEnv() {
-	if os.Getenv("DF_API_URL") != "" {
-		return
-	}
-	raw, err := os.ReadFile(`C:\ProgramData\DigitalFingers\df-agent.env`)
+	raw, err := os.ReadFile(filepath.Join(agentDir, "df-agent.env"))
 	if err != nil {
 		return
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
-			continue
-		}
-		key, value, _ := strings.Cut(line, "=")
-		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), `"`)
-		if key != "" && os.Getenv(key) == "" {
-			_ = os.Setenv(key, value)
+		key, value, ok := strings.Cut(strings.TrimSpace(strings.TrimRight(line, "\r")), "=")
+		if ok && strings.TrimSpace(key) == "DF_ENROLL_TOKEN" {
+			_ = os.Setenv("DF_ENROLL_TOKEN", strings.Trim(strings.TrimSpace(value), `"`))
 		}
 	}
 }
 
 func defaultStatePath() string {
 	return `C:\ProgramData\DigitalFingers\df-agent\state.json`
+}
+
+// lockAgentDir gives the agent folder to Administrators, allows only SYSTEM and Administrators,
+// and strips owners and explicit permissions from everything inside so nothing keeps user access.
+func lockAgentDir() error {
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		return err
+	}
+	top, err := windows.SecurityDescriptorFromString("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	if err != nil {
+		return err
+	}
+	inner, err := windows.SecurityDescriptorFromString("O:BAD:AI")
+	if err != nil {
+		return err
+	}
+	topOwner, _, err := top.Owner()
+	if err != nil {
+		return err
+	}
+	topDACL, _, err := top.DACL()
+	if err != nil || topDACL == nil {
+		return fmt.Errorf("agent folder permissions could not be built")
+	}
+	innerOwner, _, err := inner.Owner()
+	if err != nil {
+		return err
+	}
+	innerDACL, _, err := inner.DACL()
+	if err != nil || innerDACL == nil {
+		return fmt.Errorf("agent folder permissions could not be built")
+	}
+	err = windows.SetNamedSecurityInfo(agentDir, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		topOwner, nil, topDACL, nil)
+	if err != nil {
+		return fmt.Errorf("agent folder permissions: %w", err)
+	}
+	return filepath.WalkDir(agentDir, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil || path == agentDir {
+			return nil
+		}
+		err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION,
+			innerOwner, nil, innerDACL, nil)
+		if err != nil {
+			return fmt.Errorf("agent file permissions %s: %w", path, err)
+		}
+		return nil
+	})
+}
+
+// placeEnrollFile copies the enrollment file shipped next to the installer. Without one, a file
+// already in the folder is only kept when the PC is enrolled, since anyone could have left it there.
+func placeEnrollFile() error {
+	target := filepath.Join(agentDir, "df-agent.env")
+	if exe, err := os.Executable(); err == nil {
+		source := filepath.Join(filepath.Dir(exe), "df-agent.env")
+		if !strings.EqualFold(source, target) {
+			if raw, err := os.ReadFile(source); err == nil && len(raw) < 4096 {
+				return os.WriteFile(target, raw, 0o600)
+			}
+		}
+	}
+	if _, err := os.Stat(defaultStatePath()); err != nil {
+		_ = os.Remove(target)
+	}
+	return nil
 }
 
 func start() error {
@@ -63,7 +132,7 @@ func start() error {
 		}
 		return installInteractive()
 	}
-	if err := os.MkdirAll(`C:\ProgramData\DigitalFingers`, 0o700); err != nil {
+	if err := lockAgentDir(); err != nil {
 		return err
 	}
 	logFile, err := os.OpenFile(`C:\ProgramData\DigitalFingers\df-agent.log`, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -79,15 +148,21 @@ func installInteractive() error {
 	if !elevated() {
 		return relaunchElevated()
 	}
-	if err := os.MkdirAll(`C:\ProgramData\DigitalFingers`, 0o755); err != nil {
+	if err := lockAgentDir(); err != nil {
 		return tell(err.Error())
 	}
-	dest := `C:\ProgramData\DigitalFingers\df-agent.exe`
+	dest := filepath.Join(agentDir, "df-agent.exe")
 	if err := removeService(); err != nil {
 		return tell(err.Error())
 	}
 	if err := copySelf(dest); err != nil {
 		return tell("The old agent is still running. Close it and run this file again.")
+	}
+	if err := placeEnrollFile(); err != nil {
+		return tell(err.Error())
+	}
+	if err := lockAgentDir(); err != nil {
+		return tell(err.Error())
 	}
 	if err := installService(dest); err != nil {
 		return tell(err.Error())
@@ -98,7 +173,9 @@ func installInteractive() error {
 	if err := registerProgram(dest); err != nil {
 		return tell(err.Error())
 	}
-	if _, err := os.Stat(`C:\ProgramData\DigitalFingers\df-agent.env`); err != nil {
+	_, envErr := os.Stat(filepath.Join(agentDir, "df-agent.env"))
+	_, stateErr := os.Stat(defaultStatePath())
+	if envErr != nil && stateErr != nil {
 		return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
 	}
 	return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC stays enrolled.")
@@ -137,7 +214,7 @@ func registerProgram(dest string) error {
 	defer key.Close()
 	values := []struct{ name, value string }{
 		{"DisplayName", "Digital Fingers Agent"},
-		{"DisplayVersion", "1.3.0"},
+		{"DisplayVersion", agentVersion},
 		{"Publisher", "Digital Fingers"},
 		{"InstallLocation", `C:\ProgramData\DigitalFingers`},
 		{"DisplayIcon", dest},
@@ -164,7 +241,7 @@ func installMesh() error {
 	if len(meshAgent) < 100000 {
 		return fmt.Errorf("the remote desktop agent is missing from this installer")
 	}
-	path := filepath.Join(os.TempDir(), "DigitalFingersMesh.exe")
+	path := filepath.Join(agentDir, "DigitalFingersMesh.exe")
 	if err := os.WriteFile(path, meshAgent, 0o755); err != nil {
 		return err
 	}
@@ -254,6 +331,7 @@ func installService(dest string) error {
 	defer manager.Disconnect()
 	defer service.Close()
 	_ = service.SetRecoveryActions([]mgr.RecoveryAction{{Type: mgr.ServiceRestart, Delay: 5 * time.Second}}, 86400)
+	_ = service.SetRecoveryActionsOnNonCrashFailures(true)
 	return service.Start()
 }
 
@@ -405,10 +483,28 @@ func runCommand(command string) (int, string) {
 		`PATHEXT=.COM;.EXE;.BAT;.CMD`,
 		"COMPUTERNAME=" + computer,
 	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	var buf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &buf, max: 8000}
 	cmd.Stderr = cmd.Stdout
-	err = cmd.Run()
+	cmd.WaitDelay = 5 * time.Second
+	job, jobErr := windows.CreateJobObject(nil, nil)
+	if jobErr == nil {
+		defer windows.CloseHandle(job)
+		cmd.Cancel = func() error {
+			_ = windows.TerminateJobObject(job, 1)
+			return cmd.Process.Kill()
+		}
+	}
+	if err = cmd.Start(); err == nil {
+		if jobErr == nil {
+			if process, openErr := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid)); openErr == nil {
+				_ = windows.AssignProcessToJobObject(job, process)
+				windows.CloseHandle(process)
+			}
+		}
+		err = cmd.Wait()
+	}
 	if err == nil {
 		return 0, buf.String()
 	}

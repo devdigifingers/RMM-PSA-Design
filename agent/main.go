@@ -39,30 +39,24 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	api := strings.TrimRight(os.Getenv("DF_API_URL"), "/")
+	api := apiURL()
 	statePath := os.Getenv("DF_STATE_PATH")
 	if statePath == "" {
 		statePath = defaultStatePath()
 	}
-	if api == "" {
-		return fmt.Errorf("DF_API_URL is required")
+	if !strings.HasPrefix(api, "https://") {
+		return fmt.Errorf("DF_API_URL must be an https:// address")
 	}
 
-	state, err := loadState(statePath)
-	if err != nil {
-		return fmt.Errorf("state: %w", err)
-	}
-	if state.DeviceToken == "" {
-		state, err = enroll(api, statePath)
-		if err != nil {
-			return fmt.Errorf("enroll: %w", err)
-		}
-		fmt.Println("enrolled")
+	state, ok := prepareState(ctx, api, statePath)
+	if !ok {
+		return nil
 	}
 
 	go collectUpdatesLoop(ctx)
 	go collectAssetLoop(ctx)
 	go installLoop(ctx, api, state)
+	go jobLoop(ctx, api, state)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -74,6 +68,34 @@ func run(ctx context.Context) error {
 			timer.Stop()
 			return nil
 		case <-timer.C:
+		}
+	}
+}
+
+func prepareState(ctx context.Context, api, statePath string) (savedState, bool) {
+	wait := 30 * time.Second
+	for {
+		state, err := loadState(statePath)
+		if err == nil && state.DeviceToken == "" {
+			loadPlatformEnv()
+			state, err = enroll(api, statePath)
+			if err == nil {
+				fmt.Println("enrolled")
+			}
+		}
+		if err == nil {
+			return state, true
+		}
+		fmt.Fprintln(os.Stderr, "enroll:", err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return savedState{}, false
+		case <-timer.C:
+		}
+		if wait < 10*time.Minute {
+			wait *= 2
 		}
 	}
 }
@@ -120,7 +142,7 @@ func heartbeat(api string, state savedState) error {
 	hostname, _ := os.Hostname()
 	payload := map[string]any{
 		"hostname": hostname,
-		"osName":   prettyOS(),
+		"osName":   currentOS(),
 		"users":    collectUsers(),
 	}
 	if sample, err := collectMetrics(); err != nil {
@@ -168,18 +190,55 @@ func heartbeat(api string, state savedState) error {
 		}
 	}
 	for _, item := range parsed.Jobs {
-		exitCode, output := runCommand(item.Command)
-		_, err := postJSON(fmt.Sprintf("%s/v1/agent/jobs/%d/result", api, item.ID), state.DeviceToken, map[string]any{
-			"exitCode": exitCode,
-			"output":   output,
-		})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "job result:", err)
-			continue
+		select {
+		case jobQueue <- item:
+		default:
+			postJobResult(api, state, item.ID, 1, "The agent is busy with other jobs. Try again.")
 		}
-		fmt.Printf("job %d finished\n", item.ID)
 	}
 	return nil
+}
+
+var jobQueue = make(chan job, 32)
+
+func jobLoop(ctx context.Context, api string, state savedState) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-jobQueue:
+			exitCode, output := runCommand(item.Command)
+			postJobResult(api, state, item.ID, exitCode, output)
+		}
+	}
+}
+
+func postJobResult(api string, state savedState, id int64, exitCode int, output string) {
+	_, err := postJSON(fmt.Sprintf("%s/v1/agent/jobs/%d/result", api, id), state.DeviceToken, map[string]any{
+		"exitCode": exitCode,
+		"output":   output,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "job result:", err)
+		return
+	}
+	fmt.Printf("job %d finished\n", id)
+}
+
+var osName struct {
+	sync.Mutex
+	value string
+	at    time.Time
+}
+
+func currentOS() string {
+	osName.Lock()
+	defer osName.Unlock()
+	if osName.value == "" || time.Since(osName.at) > time.Hour {
+		osName.value = prettyOS()
+		osName.at = time.Now()
+	}
+	return osName.value
 }
 
 func postJSON(url, deviceToken string, payload any) ([]byte, error) {

@@ -11,12 +11,17 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 func loadPlatformEnv() {}
+
+func apiURL() string {
+	return strings.TrimRight(os.Getenv("DF_API_URL"), "/")
+}
 
 func defaultStatePath() string {
 	return "/var/lib/df-agent/state.json"
@@ -44,6 +49,9 @@ func runCommand(command string) (int, string) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C"}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var buf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &buf, max: 8000}
 	cmd.Stderr = cmd.Stdout

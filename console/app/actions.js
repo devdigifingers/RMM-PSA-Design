@@ -690,3 +690,42 @@ export async function saveSupportSession(id, input) {
 export async function startSupportRemote(id) {
   return supportCall(`/v1/support-sessions/${encodeURIComponent(id)}/remote`, "POST");
 }
+
+const TECH_PATH = "/settings/technicians";
+
+async function technicianError(response) {
+  const body = await response.json().catch(() => ({}));
+  const text = String(body.error || "");
+  if (response.status === 401) redirect("/");
+  if (text.includes("already a login")) return "email";
+  if (text.includes("logins on the licence")) return "seats";
+  if (text.includes("owner or admin")) return response.status === 403 ? "denied" : "managers";
+  if (text.includes("owner")) return "owner";
+  if (text.includes("your own")) return "self";
+  if (text.includes("password")) return "short";
+  if (text.includes("email")) return "bademail";
+  return "save";
+}
+
+export async function addTechnician(formData) {
+  const response = await callApi("/v1/users", {
+    body: {
+      name: String(formData.get("name") || ""),
+      email: String(formData.get("email") || ""),
+      password: String(formData.get("password") || ""),
+      role: String(formData.get("role") || "tech"),
+    },
+  });
+  if (!response.ok) redirect(`${TECH_PATH}?error=${await technicianError(response)}`);
+  redirect(`${TECH_PATH}?saved=added`);
+}
+
+export async function updateTechnician(formData) {
+  const id = String(formData.get("id") || "").replace(/\D/g, "");
+  const body = {};
+  if (formData.has("role")) body.role = String(formData.get("role"));
+  if (formData.has("disabled")) body.disabled = formData.get("disabled") === "1";
+  const response = await callApi(`/v1/users/${id}`, { method: "PUT", body });
+  if (!response.ok) redirect(`${TECH_PATH}?error=${await technicianError(response)}`);
+  redirect(`${TECH_PATH}?saved=${formData.has("disabled") ? (body.disabled ? "disabled" : "enabled") : "role"}`);
+}

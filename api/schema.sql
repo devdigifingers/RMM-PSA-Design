@@ -386,3 +386,5 @@ CREATE TABLE IF NOT EXISTS support_sessions (
 CREATE UNIQUE INDEX IF NOT EXISTS support_sessions_live_code_idx
   ON support_sessions (code) WHERE status IN ('waiting', 'connected');
 CREATE INDEX IF NOT EXISTS support_sessions_org_id_idx ON support_sessions (org_id, id);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at timestamptz;

@@ -7,6 +7,7 @@ import { Wordmark } from "./mark";
 import { NavLinks } from "./nav-links";
 import { Ribbon, SystemNotices } from "./notices";
 import { SearchConnect } from "./search-connect";
+import { SettingsMenu } from "./settings-menu";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -28,6 +29,16 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
         {!platform && allowed.remote ? <SearchConnect /> : <span className="topbar-spacer" />}
         {account?.user ? (
           <div className="top-tools">
+            <SettingsMenu
+              platform={account.user.isPlatformAdmin === true}
+              manage={(account.user.roles || []).some((role) => role === "owner" || role === "admin")}
+              allowed={allowed}
+              flags={{
+                alerts: account.license?.monitoring === true,
+                patches: account.license?.patch === true,
+                dashboard: account.license?.reporting === true,
+              }}
+            />
             <SystemNotices items={notices.devices || []} showOrg={account.user.isPlatformAdmin === true} />
             <AccountMenu user={account.user} />
             <AppLauncher allowed={allowed} lastApp={lastApp} />

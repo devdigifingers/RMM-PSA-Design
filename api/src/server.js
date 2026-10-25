@@ -171,7 +171,7 @@ async function actorFrom(req) {
   if (!raw) return null;
   const session = JSON.parse(raw);
   const result = await pool.query(
-    "SELECT id, email, name, org_id, is_platform_admin, account_number FROM users WHERE id = $1",
+    "SELECT id, email, name, org_id, is_platform_admin, account_number FROM users WHERE id = $1 AND disabled_at IS NULL",
     [session.userId],
   );
   const actor = result.rows[0];
@@ -2890,6 +2890,78 @@ function parseTenantAdmin(body) {
   return { value: { name, email, password } };
 }
 
+const USER_ROLES = ["owner", "admin", "tech"];
+
+function parseUserInput(body) {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  const role = typeof body.role === "string" ? body.role : "";
+  if (!name || name.length > 120) return { error: "Enter the technician's full name." };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return { error: "Enter a valid email address." };
+  if (password.length < 8 || password.length > 200) return { error: "Use at least 8 characters for the password." };
+  if (!USER_ROLES.includes(role)) return { error: "Choose a role." };
+  return { value: { name, email, password, role } };
+}
+
+async function orgUsers(orgId) {
+  const result = await pool.query(
+    `SELECT u.id, u.name, u.email, u.account_number, u.created_at, u.disabled_at,
+            COALESCE(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
+     FROM users u
+     LEFT JOIN user_roles ur ON ur.user_id = u.id
+     LEFT JOIN roles r ON r.id = ur.role_id
+     WHERE u.org_id = $1 AND u.is_platform_admin = false
+     GROUP BY u.id
+     ORDER BY u.disabled_at IS NOT NULL, u.name`,
+    [orgId],
+  );
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    name: row.name,
+    email: row.email,
+    accountNumber: Number(row.account_number || 900000000 + Number(row.id)),
+    role: USER_ROLES.find((role) => row.roles.includes(role)) || "tech",
+    createdAt: row.created_at,
+    disabledAt: row.disabled_at,
+  }));
+}
+
+async function seatsLeft(client, orgId) {
+  const result = await client.query(
+    `SELECT l.seats,
+            (SELECT count(*)::int FROM users u WHERE u.org_id = $1 AND u.is_platform_admin = false AND u.disabled_at IS NULL) AS used
+     FROM licenses l WHERE l.org_id = $1`,
+    [orgId],
+  );
+  const row = result.rows[0];
+  return row ? row.seats - row.used : 0;
+}
+
+async function setUserRole(client, orgId, userId, role) {
+  await client.query(
+    "DELETE FROM user_roles WHERE user_id = $1 AND role_id IN (SELECT id FROM roles WHERE org_id = $2)",
+    [userId, orgId],
+  );
+  await client.query(
+    `INSERT INTO user_roles (user_id, role_id)
+     SELECT $1, id FROM roles WHERE org_id = $2 AND name = $3`,
+    [userId, orgId, role],
+  );
+}
+
+async function managersLeft(client, orgId) {
+  const result = await client.query(
+    `SELECT count(DISTINCT u.id)::int AS count
+     FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN roles r ON r.id = ur.role_id AND r.name IN ('owner', 'admin')
+     WHERE u.org_id = $1 AND u.disabled_at IS NULL`,
+    [orgId],
+  );
+  return result.rows[0].count;
+}
+
 const SUPPORT_JOIN_MINUTES = 15;
 const SUPPORT_MAX_HOURS = 8;
 const SUPPORT_LIVE = ["waiting", "connected"];
@@ -3124,12 +3196,12 @@ const server = createServer(async (req, res) => {
         return send(res, 429, { error: "Too many sign-in attempts. Wait 15 minutes and try again." });
       }
       const found = await pool.query(
-        "SELECT id, email, name, password_hash, is_platform_admin FROM users WHERE email = $1",
+        "SELECT id, email, name, password_hash, is_platform_admin, disabled_at FROM users WHERE email = $1",
         [email],
       );
       const user = found.rows[0];
       const valid = await verifyPassword(password, user ? user.password_hash : await dummyPasswordHash());
-      if (!user || !valid) {
+      if (!user || !valid || user.disabled_at) {
         await redis.multi()
           .incr(limits.ip).expire(limits.ip, LOGIN_WINDOW_SECONDS)
           .incr(limits.email).expire(limits.email, LOGIN_WINDOW_SECONDS)
@@ -3350,7 +3422,7 @@ const server = createServer(async (req, res) => {
             `SELECT o.id, o.name, o.slug, o.created_at,
                     l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules, l.support_concurrent,
                     (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count,
-                    (SELECT count(*)::int FROM users u WHERE u.org_id = o.id AND u.is_platform_admin = false) AS seats_used
+                    (SELECT count(*)::int FROM users u WHERE u.org_id = o.id AND u.is_platform_admin = false AND u.disabled_at IS NULL) AS seats_used
              FROM orgs o
              LEFT JOIN licenses l ON l.org_id = o.id
              WHERE o.id = $1`,
@@ -3482,6 +3554,102 @@ const server = createServer(async (req, res) => {
         [ribbonDismissMatch[1], actor.id],
       );
       return send(res, 200, { ok: true });
+    }
+
+    if (url.pathname === "/v1/users" || /^\/v1\/users\/\d+$/.test(url.pathname)) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 400, { error: "This login is not linked to an organisation." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "user.deny", "user", null, { method: req.method });
+        return send(res, 403, { error: "Only an owner or admin can manage technicians." });
+      }
+      const isOwner = actor.roles.includes("owner");
+      if (req.method === "GET" && url.pathname === "/v1/users") {
+        const client = await pool.connect();
+        try {
+          return send(res, 200, { users: await orgUsers(actor.org_id), seatsLeft: await seatsLeft(client, actor.org_id) });
+        } finally {
+          client.release();
+        }
+      }
+      if (req.method === "POST" && url.pathname === "/v1/users") {
+        const parsed = parseUserInput(await readJson(req));
+        if (parsed.error) return send(res, 400, { error: parsed.error });
+        if (parsed.value.role === "owner" && !isOwner) return send(res, 403, { error: "Only an owner can add another owner." });
+        const passwordHash = await hashPassword(parsed.value.password);
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT id FROM licenses WHERE org_id = $1 FOR UPDATE", [actor.org_id]);
+          if ((await seatsLeft(client, actor.org_id)) < 1) {
+            await client.query("ROLLBACK");
+            return send(res, 409, { error: "All logins on the licence are in use. Disable a technician or add seats first." });
+          }
+          const user = await client.query(
+            `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin)
+             VALUES ($1, $2, $3, $4, false) RETURNING id`,
+            [actor.org_id, parsed.value.email, parsed.value.name, passwordHash],
+          );
+          await setUserRole(client, actor.org_id, user.rows[0].id, parsed.value.role);
+          await client.query(
+            `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+             VALUES ($1, $2, 'user.create', 'user', $3, $4::jsonb)`,
+            [actor.org_id, actor.id, String(user.rows[0].id), JSON.stringify({ role: parsed.value.role, email: parsed.value.email })],
+          );
+          await client.query("COMMIT");
+          return send(res, 201, { id: Number(user.rows[0].id) });
+        } catch (error) {
+          await client.query("ROLLBACK");
+          if (error.code === "23505") return send(res, 409, { error: "That email is already a login." });
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+      const userId = Number(url.pathname.split("/").pop());
+      if (req.method === "PUT" && userId) {
+        const body = await readJson(req);
+        if (userId === Number(actor.id)) return send(res, 400, { error: "You cannot change your own access here." });
+        const target = (await orgUsers(actor.org_id)).find((user) => user.id === userId);
+        if (!target) return send(res, 404, { error: "That technician is not in this organisation." });
+        if (target.role === "owner" && !isOwner) return send(res, 403, { error: "Only an owner can change an owner." });
+        const role = body.role === undefined ? target.role : body.role;
+        if (!USER_ROLES.includes(role)) return send(res, 400, { error: "Choose a role." });
+        if (role === "owner" && !isOwner) return send(res, 403, { error: "Only an owner can make someone an owner." });
+        const disabled = body.disabled === undefined ? Boolean(target.disabledAt) : body.disabled === true;
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT id FROM licenses WHERE org_id = $1 FOR UPDATE", [actor.org_id]);
+          if (target.disabledAt && !disabled && (await seatsLeft(client, actor.org_id)) < 1) {
+            await client.query("ROLLBACK");
+            return send(res, 409, { error: "All logins on the licence are in use. Disable someone else or add seats first." });
+          }
+          await setUserRole(client, actor.org_id, userId, role);
+          await client.query(
+            "UPDATE users SET disabled_at = CASE WHEN $2 THEN COALESCE(disabled_at, now()) ELSE NULL END WHERE id = $1",
+            [userId, disabled],
+          );
+          if ((await managersLeft(client, actor.org_id)) < 1) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "The organisation needs at least one active owner or admin." });
+          }
+          await client.query(
+            `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
+             VALUES ($1, $2, 'user.update', 'user', $3, $4::jsonb)`,
+            [actor.org_id, actor.id, String(userId), JSON.stringify({ role, disabled })],
+          );
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+        if (disabled || role !== target.role) await revokeUserSessions(userId, null);
+        return send(res, 200, { ok: true });
+      }
+      return send(res, 405, { error: "Method not allowed." });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/account/password") {

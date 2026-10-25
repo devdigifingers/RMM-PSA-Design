@@ -131,6 +131,38 @@ function readJson(req) {
   });
 }
 
+const LOGIN_WINDOW_SECONDS = 15 * 60;
+const LOGIN_IP_LIMIT = 20;
+const LOGIN_EMAIL_LIMIT = 8;
+let dummyHash = null;
+
+function dummyPasswordHash() {
+  if (!dummyHash) dummyHash = hashPassword(randomBytes(16).toString("base64url"));
+  return dummyHash;
+}
+
+function clientAddress(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim().toLowerCase();
+  return /^[0-9a-f.:]{3,45}$/.test(forwarded) ? forwarded : "unknown";
+}
+
+function loginLimitKeys(req, email) {
+  return {
+    ip: `login-fail-ip:${clientAddress(req)}`,
+    email: `login-fail-email:${createHash("sha256").update(email).digest("hex")}`,
+  };
+}
+
+async function revokeUserSessions(userId, keepToken) {
+  const key = `user-sessions:${userId}`;
+  const tokens = await redis.smembers(key);
+  const drop = tokens.filter((token) => token !== keepToken);
+  const batch = redis.multi();
+  for (const token of drop) batch.del(`session:${token}`);
+  if (drop.length) batch.srem(key, ...drop);
+  await batch.exec();
+}
+
 async function actorFrom(req) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
@@ -144,6 +176,7 @@ async function actorFrom(req) {
   );
   const actor = result.rows[0];
   if (!actor) return null;
+  actor.session_token = token;
   const roles = await pool.query(
     `SELECT r.name
      FROM user_roles ur
@@ -2476,7 +2509,8 @@ const TICKET_CLOCK_SQL = `
   ) AS resolved_at`;
 
 function csvCell(value) {
-  const text = String(value ?? "");
+  const raw = String(value ?? "");
+  const text = /^[=+\-@\t\r]/.test(raw) && !/^-?\d+(\.\d+)?$/.test(raw) ? `'${raw}` : raw;
   if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
   return text;
 }
@@ -2862,6 +2896,11 @@ const SUPPORT_LIVE = ["waiting", "connected"];
 const SUPPORT_COLUMNS = `s.id, s.code, s.status, s.topic, s.customer_email, s.ticket_id, s.hostname, s.os_name, s.notes,
   s.created_at, s.expires_at, s.joined_at, s.ended_at, c.name AS created_by_name, e.name AS ended_by_name`;
 
+function cleanHostname(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 255);
+}
+
 function supportView(row) {
   return {
     id: String(row.id),
@@ -2909,6 +2948,32 @@ async function requireSupport(actor, res, options = {}) {
     return null;
   }
   return license.rows[0];
+}
+
+const REMOTE_OPERATE_LABELS = {
+  terminal: "open a terminal",
+  upload: "upload files",
+  folder: "create folders",
+  service: "change services",
+  startup: "change startup items",
+  process: "end processes",
+};
+
+async function requireRemote(actor, res, deviceId, operation) {
+  const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+  const access = remoteAccess(license.rows[0]);
+  if (!access.canRemote) {
+    send(res, 403, {
+      error: access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.",
+    });
+    return false;
+  }
+  if (operation && !canOperate(actor)) {
+    await writeAudit(actor.org_id, actor.id, `${operation}.deny`, "device", String(deviceId), { reason: "role" });
+    send(res, 403, { error: `A technician cannot ${REMOTE_OPERATE_LABELS[operation]}.` });
+    return false;
+  }
+  return true;
 }
 
 function supportGroupShortId(groupId) {
@@ -3015,8 +3080,7 @@ function sweepSupport() {
 }
 
 async function supportJoinLimited(req) {
-  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim().toLowerCase();
-  const key = `support-join:${/^[0-9a-f.:]{3,45}$/.test(forwarded) ? forwarded : "unknown"}`;
+  const key = `support-join:${clientAddress(req)}`;
   const count = await redis.incr(key);
   if (count === 1) await redis.expire(key, 600);
   return count > 30;
@@ -3054,16 +3118,31 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req);
       const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
       const password = typeof body.password === "string" ? body.password : "";
+      const limits = loginLimitKeys(req, email);
+      const [ipFails, emailFails] = await redis.mget(limits.ip, limits.email);
+      if (Number(ipFails) >= LOGIN_IP_LIMIT || Number(emailFails) >= LOGIN_EMAIL_LIMIT) {
+        return send(res, 429, { error: "Too many sign-in attempts. Wait 15 minutes and try again." });
+      }
       const found = await pool.query(
         "SELECT id, email, name, password_hash, is_platform_admin FROM users WHERE email = $1",
         [email],
       );
       const user = found.rows[0];
-      if (!user || !(await verifyPassword(password, user.password_hash))) {
+      const valid = await verifyPassword(password, user ? user.password_hash : await dummyPasswordHash());
+      if (!user || !valid) {
+        await redis.multi()
+          .incr(limits.ip).expire(limits.ip, LOGIN_WINDOW_SECONDS)
+          .incr(limits.email).expire(limits.email, LOGIN_WINDOW_SECONDS)
+          .exec();
         return send(res, 401, { error: "Invalid email or password." });
       }
+      await redis.del(limits.email);
       const token = randomBytes(32).toString("base64url");
-      await redis.set(`session:${token}`, JSON.stringify({ userId: user.id }), "EX", SESSION_TTL_SECONDS);
+      await redis.multi()
+        .set(`session:${token}`, JSON.stringify({ userId: user.id }), "EX", SESSION_TTL_SECONDS)
+        .sadd(`user-sessions:${user.id}`, token)
+        .expire(`user-sessions:${user.id}`, SESSION_TTL_SECONDS)
+        .exec();
       return send(res, 200, {
         token,
         user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: user.is_platform_admin },
@@ -3105,6 +3184,13 @@ const server = createServer(async (req, res) => {
     }
 
     const actor = await actorFrom(req);
+
+    if (req.method === "POST" && url.pathname === "/v1/logout") {
+      if (actor) {
+        await redis.multi().del(`session:${actor.session_token}`).srem(`user-sessions:${actor.id}`, actor.session_token).exec();
+      }
+      return send(res, 200, { ok: true });
+    }
 
     if (req.method === "GET" && url.pathname === "/v1/support-sessions") {
       if (!(await requireSupport(actor, res))) return;
@@ -3412,6 +3498,7 @@ const server = createServer(async (req, res) => {
       }
       const passwordHash = await hashPassword(password);
       await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, actor.id]);
+      await revokeUserSessions(actor.id, actor.session_token);
       await writeAudit(actor.org_id, actor.id, "user.password", "user", String(actor.id), {});
       return send(res, 200, { ok: true });
     }
@@ -3704,6 +3791,7 @@ const server = createServer(async (req, res) => {
       if (!person || person.is_platform_admin || !person.org_id) return send(res, 404, { error: "Login not found." });
       const passwordHash = await hashPassword(password);
       await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, person.id]);
+      await revokeUserSessions(person.id, null);
       await writeAudit(person.org_id, actor.id, "user.password", "user", String(person.id), {});
       return send(res, 200, { ok: true });
     }
@@ -3711,6 +3799,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/v1/enroll-tokens") {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "enroll.deny", "org", String(actor.org_id), { reason: "role" });
+        return send(res, 403, { error: "Only an owner or admin can add computers." });
+      }
       const token = randomBytes(32).toString("base64url");
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
       await pool.query(
@@ -3724,7 +3816,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/v1/agent/enroll") {
       const body = await readJson(req);
       const token = typeof body.token === "string" ? body.token.trim() : "";
-      const hostname = typeof body.hostname === "string" ? body.hostname.trim() : "";
+      const hostname = cleanHostname(body.hostname);
       const osName = typeof body.osName === "string" ? body.osName.trim() : "";
       if (!token || !hostname || hostname.length > 200 || osName.length > 200) {
         return send(res, 400, { error: "Hostname and enroll token are required." });
@@ -3811,7 +3903,7 @@ const server = createServer(async (req, res) => {
       const device = await deviceFrom(req);
       if (!device) return send(res, 401, { error: "Device login required." });
       const body = await readJson(req);
-      const hostname = typeof body.hostname === "string" ? body.hostname.trim() : "";
+      const hostname = cleanHostname(body.hostname);
       const osName = typeof body.osName === "string" ? body.osName.trim() : "";
       const metrics = metricsFrom(body);
       const updates = updatesFrom(body);
@@ -4176,6 +4268,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceStartupMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceStartupMatch[1], "startup"))) return;
       const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
@@ -4220,6 +4313,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceServiceMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceServiceMatch[1], "service"))) return;
       const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
@@ -4270,6 +4364,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "DELETE" && deviceProcessMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceProcessMatch[1], "process"))) return;
       const pid = deviceProcessMatch[2];
       if (!/^[1-9]\d{0,9}$/.test(pid) || Number(pid) > 2147483647) {
         return send(res, 400, { error: "That process is not available." });
@@ -4308,6 +4403,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && deviceFilesMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceFilesMatch[1]))) return;
       const folder = filePathValue(url.searchParams.get("path") || "");
       if (folder == null) return send(res, 400, { error: "That folder is not available." });
       const device = await pool.query(
@@ -4331,6 +4427,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceFolderMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceFolderMatch[1], "folder"))) return;
       const body = await readJson(req);
       const folder = filePathValue(body.path || "");
       const name = fileNameValue(body.name);
@@ -4358,6 +4455,7 @@ const server = createServer(async (req, res) => {
     if (deviceTerminalMatch || deviceTerminalSessionMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, (deviceTerminalMatch || deviceTerminalSessionMatch)[1], "terminal"))) return;
       const deviceId = (deviceTerminalMatch || deviceTerminalSessionMatch)[1];
       const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
       const access = remoteAccess(license.rows[0]);
@@ -4493,6 +4591,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceDownloadMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceDownloadMatch[1]))) return;
       const body = await readJson(req);
       const folder = filePathValue(body.path || "");
       const name = fileNameValue(body.name);
@@ -4577,6 +4676,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceUploadMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceUploadMatch[1], "upload"))) return;
       let folderHeader = "";
       let nameHeader = "";
       try {
@@ -4793,6 +4893,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceSessionsEndMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceSessionsEndMatch[1]))) return;
       const device = await pool.query(
         "SELECT id, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
         [deviceSessionsEndMatch[1], actor.org_id],
@@ -5427,6 +5528,10 @@ const server = createServer(async (req, res) => {
       if (!Number.isInteger(deviceId)) return send(res, 400, { error: "Choose a device." });
       if (!name || name.length > 80) return send(res, 400, { error: "Enter a policy name." });
       if (!mode) return send(res, 400, { error: "Choose a policy." });
+      if (mode === "auto" && !canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "patch.deny", "device", String(deviceId), { reason: "role" });
+        return send(res, 403, { error: "Only an owner or admin can approve updates automatically." });
+      }
       const device = await pool.query(
         "SELECT id, updates FROM devices WHERE id = $1 AND org_id = $2",
         [deviceId, actor.org_id],

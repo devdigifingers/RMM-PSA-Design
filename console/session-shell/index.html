@@ -1224,6 +1224,10 @@
     var deviceId = "";
     var supportId = "";
     var consoleOrigin = "";
+    var CONSOLE_ORIGINS = ["https://rmm.digitalfingers.co.za"];
+    function sameOrigin(url) {
+      try { return new URL(url).origin === location.origin; } catch (e) { return false; }
+    }
     var waiting = {};
     var toastTimer = null;
     var LAUNCH = {
@@ -2276,7 +2280,7 @@
       if (!text) return null;
       try {
         var data = JSON.parse(text);
-        if (data && typeof data.url === "string" && data.url.indexOf("https://") === 0) return data;
+        if (data && typeof data.url === "string" && sameOrigin(data.url)) return data;
       } catch (e) {}
       return null;
     }
@@ -2303,7 +2307,7 @@
       person = typeof data.user === "string" ? data.user : "";
       deviceId = typeof data.deviceId === "string" && /^\d+$/.test(data.deviceId) ? data.deviceId : "";
       supportId = !deviceId && typeof data.supportId === "string" && /^\d+$/.test(data.supportId) ? data.supportId : "";
-      consoleOrigin = typeof data.console === "string" && /^https:\/\/[a-z0-9.-]+$/i.test(data.console) ? data.console : "";
+      consoleOrigin = CONSOLE_ORIGINS.indexOf(data.console) >= 0 ? data.console : "";
       var host = typeof data.host === "string" ? data.host : "";
       var label = typeof data.label === "string" ? data.label : "";
       title = label && host && label !== host ? (label + "  " + host) : (label || host || "Remote session");

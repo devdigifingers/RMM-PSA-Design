@@ -1,10 +1,12 @@
 import { cookies } from "next/headers";
+import { fromConsole, refused } from "../../../../request-guard";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request, { params }) {
+export async function GET(request, { params }) {
+  if (!fromConsole(request, { navigation: true })) return refused();
   const { id, ticket } = await params;
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

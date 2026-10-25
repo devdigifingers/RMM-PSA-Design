@@ -3,3 +3,6 @@ node_modules/
 *.env
 !api/.env.example
 agent/meshagent.exe
+.next/
+*.log
+agent-bin/

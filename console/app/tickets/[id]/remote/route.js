@@ -1,9 +1,12 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { fromConsole, refused } from "../../../request-guard";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
+const meshOrigin = process.env.MESH_ORIGIN || "https://mesh.digitalfingers.co.za";
 
-export async function GET(_request, { params }) {
+export async function GET(request, { params }) {
+  if (!fromConsole(request, { navigation: true })) return refused();
   const { id } = await params;
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
@@ -30,6 +33,13 @@ export async function GET(_request, { params }) {
   });
   if (response.status === 401) redirect("/");
   if (!response.ok) redirect(`/tickets/${id}?error=remote`);
-  const body = await response.json();
-  redirect(body.url);
+  const body = await response.json().catch(() => ({}));
+  let target = null;
+  try {
+    target = new URL(body.url);
+  } catch {
+    target = null;
+  }
+  if (!target || target.origin !== meshOrigin) redirect(`/tickets/${id}?error=remote`);
+  redirect(target.toString());
 }

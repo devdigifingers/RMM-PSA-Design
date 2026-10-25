@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { fromConsole, refused } from "../../request-guard";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 const agentApiUrl = "https://api.digitalfingers.co.za";
 
-export async function GET() {
+export async function GET(request) {
+  if (!fromConsole(request, { navigation: true })) return refused();
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");

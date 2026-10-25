@@ -1,6 +1,6 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -8,12 +8,17 @@ const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 export async function login(formData) {
   const email = String(formData.get("email") || "").trim();
   const password = String(formData.get("password") || "");
+  const incoming = await headers();
   const response = await fetch(`${apiUrl}/v1/login`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": incoming.get("x-forwarded-for") || "",
+    },
     body: JSON.stringify({ email, password }),
     cache: "no-store",
   });
+  if (response.status === 429) redirect("/?error=locked");
   if (!response.ok) redirect("/?error=invalid");
   const body = await response.json();
   const jar = await cookies();
@@ -167,6 +172,14 @@ export async function removeRibbon(formData) {
 
 export async function logout() {
   const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (token) {
+    await fetch(`${apiUrl}/v1/logout`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      cache: "no-store",
+    }).catch(() => {});
+  }
   jar.delete("df_session");
   redirect("/");
 }

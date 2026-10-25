@@ -20,6 +20,7 @@ export default async function LoginPage({ searchParams }) {
   }
   const params = await searchParams;
   const invalid = params?.error === "invalid";
+  const locked = params?.error === "locked";
 
   return (
     <main className="login-shell">
@@ -42,6 +43,7 @@ export default async function LoginPage({ searchParams }) {
           <button type="submit">Log on</button>
         </form>
         {invalid ? <p className="error">That email or password is not valid.</p> : null}
+        {locked ? <p className="error">Too many sign-in attempts. Wait 15 minutes and try again.</p> : null}
       </section>
     </main>
   );

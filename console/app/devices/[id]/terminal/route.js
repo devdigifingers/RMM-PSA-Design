@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { fromConsole, refused } from "../../../request-guard";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -27,6 +28,7 @@ async function forward(request, path, method) {
 }
 
 export async function POST(request, { params }) {
+  if (!fromConsole(request)) return refused();
   const { id } = await params;
   return forward(request, `/v1/devices/${id}/terminal`, "POST");
 }

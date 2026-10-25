@@ -287,3 +287,12 @@ docs/SESSION_WINDOW_HANDOFF.md (and docs/CHAT_HANDOFF.md for the platform).
 All work in it is deployed to df-a and committed/pushed as 5153a15.
 Follow the working rules in section 6.
 ```
+
+## Security batch 1 (deployed 2026-10-25)
+
+- API: remote file/terminal/service/process/startup routes check the remote-access licence; write operations also need owner/admin (`requireRemote`, audited as `<op>.deny`). Enrol tokens and auto patch policies need owner/admin.
+- Login: failure limits per IP (20) and per email (8) in 15 minutes, answered with 429; the console shows a "too many attempts" message. Unknown emails still run a password check. `POST /v1/logout` deletes the session; password changes revoke other sessions.
+- Hostnames are cleaned at enrol and heartbeat; CSV exports neutralise formula cells; SMTP has timeouts, header checks and dot-stuffing.
+- Console: route handlers refuse cross-site requests (`app/request-guard.js`). Security headers in `next.config.mjs`: `frame-ancestors 'self'` everywhere except the file-manager and file-transfer pages, plus nosniff, Referrer-Policy, HSTS and Permissions-Policy. The ticket remote redirect only goes to the Mesh origin. The unused `devices/[id]/remote` route is removed.
+- Session window: the payload URL must be on the Mesh origin and the console origin must be `https://rmm.digitalfingers.co.za`.
+- Server backups of the previous files: `*.bak-batch1` next to `server.js`, `mail.js`, `next.config.mjs` and the session `index.html`.

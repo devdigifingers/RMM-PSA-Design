@@ -303,8 +303,8 @@ export async function saveSla(formData) {
     }),
     cache: "no-store",
   });
-  if (!response.ok) redirect("/tickets?error=sla");
-  redirect("/tickets");
+  if (!response.ok) redirect("/tickets/setup?error=sla");
+  redirect("/tickets/setup?saved=sla");
 }
 
 export async function saveContact(formData) {
@@ -324,14 +324,14 @@ export async function saveContact(formData) {
     }),
     cache: "no-store",
   });
-  if (!response.ok) redirect("/tickets?error=contact");
-  redirect("/tickets");
+  if (!response.ok) redirect("/tickets/setup?error=contact");
+  redirect("/tickets/setup?saved=contact");
 }
 
 export async function createCustomer(formData) {
   const response = await authed("/v1/customers", { name: String(formData.get("name") || "") });
-  if (!response.ok) redirect("/tickets?error=customer");
-  redirect("/tickets");
+  if (!response.ok) redirect("/tickets/setup?error=customer");
+  redirect("/tickets/setup?saved=customer");
 }
 
 export async function createTicket(formData) {
@@ -344,9 +344,23 @@ export async function createTicket(formData) {
     priority: String(formData.get("priority") || "normal"),
     comment: String(formData.get("comment") || ""),
   });
-  if (!response.ok) redirect("/tickets?error=ticket");
+  if (!response.ok) redirect("/tickets/new?error=ticket");
   const body = await response.json();
   redirect(`/tickets/${body.id}`);
+}
+
+export async function bulkUpdateTickets(ids, changes) {
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
+  if (list.length === 0) return { ok: false, error: "Choose at least one ticket." };
+  const body = { ids: list };
+  if (changes?.status) body.status = String(changes.status);
+  if (changes && Object.hasOwn(changes, "assigneeUserId")) {
+    body.assigneeUserId = changes.assigneeUserId ? Number(changes.assigneeUserId) : null;
+  }
+  const response = await authed("/v1/tickets/bulk", body);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "Those tickets could not be updated." };
+  return { ok: true, error: "", updated: result.updated || 0 };
 }
 
 export async function updateTicket(formData) {

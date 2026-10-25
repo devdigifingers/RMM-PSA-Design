@@ -1,9 +1,19 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { createCustomer, createTicket, saveContact, saveSla } from "../actions";
 import { ConsoleBar } from "../bar";
+import { TicketTable } from "./ticket-table";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
+
+const VIEWS = [
+  { id: "all", label: "All Tickets", match: () => true },
+  { id: "mine", label: "My Open Tickets", match: (ticket, me) => ticket.assignee?.id === me && ticket.status !== "resolved" },
+  { id: "unassigned", label: "Unassigned Open Tickets", match: (ticket) => !ticket.assignee && ticket.status !== "resolved" },
+  { id: "open", label: "Open Tickets", match: (ticket) => ticket.status === "open" },
+  { id: "pending", label: "Pending Tickets", match: (ticket) => ticket.status === "pending" },
+  { id: "overdue", label: "Overdue Tickets", match: (ticket) => ticket.overdue },
+  { id: "resolved", label: "Resolved Tickets", match: (ticket) => ticket.status === "resolved" },
+];
 
 export default async function TicketsPage({ searchParams }) {
   const params = await searchParams;
@@ -18,160 +28,75 @@ export default async function TicketsPage({ searchParams }) {
   if (response.status === 401) redirect("/");
   if (response.status === 403) redirect("/devices?error=ticket");
   const body = await response.json();
-  const customers = body.customers || [];
-  const devices = body.devices || [];
-  const users = body.users || [];
-  const tickets = body.tickets || [];
+  const all = body.tickets || [];
+  const me = body.me;
+  const view = VIEWS.find((item) => item.id === params?.view) || VIEWS[0];
+  const q = typeof params?.q === "string" ? params.q.trim().slice(0, 100) : "";
+  const needle = q.toLowerCase().replace(/^#/, "");
+  const tickets = all
+    .filter((ticket) => view.match(ticket, me))
+    .filter((ticket) => !needle || [
+      String(ticket.id),
+      ticket.subject,
+      ticket.customer?.name,
+      ticket.customer?.contactName,
+      ticket.device?.hostname,
+      ticket.assignee?.name,
+    ].some((value) => String(value || "").toLowerCase().includes(needle)));
 
   return (
     <div className="console">
       <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
-      <main className="main">
-        <h1>Tickets</h1>
-        {params?.error === "sla" ? <p className="error">Those SLA targets could not be saved.</p> : null}
-        {params?.error === "contact" ? <p className="error">That contact could not be saved.</p> : null}
-        {params?.error && params.error !== "sla" && params.error !== "contact" ? <p className="error">That ticket could not be saved.</p> : null}
-        <table className="ticket-list">
-          <thead>
-            <tr>
-              <th>Subject</th>
-              <th>Customer</th>
-              <th>Device</th>
-              <th>Status</th>
-              <th>Priority</th>
-              <th>Assignee</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tickets.length === 0 ? (
-              <tr>
-                <td className="empty" colSpan={6}>No tickets yet.</td>
-              </tr>
-            ) : (
-              tickets.map((ticket) => (
-                <tr key={ticket.id}>
-                  <td><a href={`/tickets/${ticket.id}`}>{ticket.subject}</a></td>
-                  <td>{ticket.customer.name}</td>
-                  <td>{ticket.device.hostname}</td>
-                  <td><span className={`chip status-${ticket.status}`}>{ticket.status}</span></td>
-                  <td><span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span></td>
-                  <td>{ticket.assignee?.name || "—"}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-        <div className="ticket-forms">
-        <section className="job">
-          <h2>SLA</h2>
-          <form action={saveSla}>
-            <label>
-              Response minutes
-              <input name="responseMinutes" type="number" min="1" max="43200" required defaultValue={body.sla?.responseMinutes || ""} />
-            </label>
-            <label>
-              Resolve minutes
-              <input name="resolveMinutes" type="number" min="1" max="43200" required defaultValue={body.sla?.resolveMinutes || ""} />
-            </label>
-            <button type="submit">Save SLA</button>
-          </form>
-        </section>
-        <section className="job">
-          <h2>Customer</h2>
-          <form action={createCustomer}>
-            <label>
-              Name
-              <input name="name" required />
-            </label>
-            <button type="submit">Add customer</button>
-          </form>
-          {customers.map((customer) => (
-            <p className="org-name" key={customer.id}>
-              {customer.contactName
-                ? `${customer.name}: ${customer.contactName} · ${customer.contactEmail}`
-                : `${customer.name}: no contact yet`}
-            </p>
-          ))}
-          {customers.length > 0 ? (
-            <form action={saveContact}>
-              <label>
-                Customer
-                <select name="customerId" required defaultValue={customers[0].id}>
-                  {customers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>{customer.name}</option>
-                  ))}
-                </select>
+      <main className="main desk">
+        <aside className="desk-views" aria-label="Ticket views">
+          <p className="desk-views-title">Views</p>
+          <nav>
+            {VIEWS.map((item) => (
+              <a
+                key={item.id}
+                href={item.id === "all" ? "/tickets" : `/tickets?view=${item.id}`}
+                className={item.id === view.id ? "is-active" : undefined}
+                aria-current={item.id === view.id ? "page" : undefined}
+              >
+                <span>{item.label}</span>
+                <span className="desk-count">{all.filter((ticket) => item.match(ticket, me)).length}</span>
+              </a>
+            ))}
+          </nav>
+          <p className="desk-views-title">Desk</p>
+          <nav>
+            <a href="/tickets/setup"><span>SLA, Customers &amp; Contacts</span></a>
+          </nav>
+        </aside>
+        <section className="desk-list">
+          <header className="desk-head">
+            <h1>
+              {view.label} <span className="desk-total">({tickets.length})</span>
+            </h1>
+            <form className="find desk-find" method="get">
+              {view.id !== "all" ? <input type="hidden" name="view" value={view.id} /> : null}
+              <label className="search">
+                <svg className="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                  <path d="M16.2 16.2L21 21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                <input name="q" placeholder="Search tickets" defaultValue={q} aria-label="Search tickets" />
               </label>
-              <label>
-                Contact name
-                <input name="contactName" required defaultValue={customers[0].contactName || ""} />
-              </label>
-              <label>
-                Contact email
-                <input name="contactEmail" type="email" required defaultValue={customers[0].contactEmail || ""} />
-              </label>
-              <button type="submit">Save contact</button>
             </form>
+            <a className="desk-new" href="/tickets/new">
+              <span aria-hidden="true">+</span> New Ticket
+            </a>
+          </header>
+          {!body.sla ? (
+            <p className="org-name">Due dates appear once SLA targets are set in <a href="/tickets/setup">SLA, Customers &amp; Contacts</a>.</p>
           ) : null}
+          <TicketTable
+            tickets={tickets}
+            users={body.users || []}
+            me={me}
+            empty={q ? "No tickets match that search." : "No tickets in this view."}
+          />
         </section>
-        {customers.length > 0 && devices.length > 0 ? (
-          <section className="job">
-            <h2>New ticket</h2>
-            <form className="stack" action={createTicket}>
-              <label>
-                Subject
-                <input name="subject" required />
-              </label>
-              <label>
-                Customer
-                <select name="customerId" required defaultValue={customers[0].id}>
-                  {customers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>{customer.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Device
-                <select name="deviceId" required defaultValue={devices[0].id}>
-                  {devices.map((device) => (
-                    <option key={device.id} value={device.id}>{device.customerName ? `${device.hostname} · ${device.customerName}` : device.hostname}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Status
-                <select name="status" defaultValue="open">
-                  <option value="open">Open</option>
-                  <option value="pending">Pending</option>
-                  <option value="resolved">Resolved</option>
-                </select>
-              </label>
-              <label>
-                Priority
-                <select name="priority" defaultValue="high">
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-              </label>
-              <label>
-                Assignee
-                <select name="assigneeUserId" required defaultValue={users[0]?.id || ""}>
-                  {users.map((user) => (
-                    <option key={user.id} value={user.id}>{user.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Comment
-                <textarea name="comment" />
-              </label>
-              <button type="submit">Create ticket</button>
-            </form>
-          </section>
-        ) : null}
-        </div>
       </main>
     </div>
   );

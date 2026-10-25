@@ -6429,15 +6429,24 @@ const server = createServer(async (req, res) => {
       const [tickets, customers, devices, users] = await Promise.all([
         pool.query(
           `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+                  c.contact_name, c.contact_email,
                   t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
                   u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
-                  (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count
+                  (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count,
+                  GREATEST(t.updated_at, (SELECT max(tc.created_at) FROM ticket_comments tc WHERE tc.ticket_id = t.id)) AS last_activity_at,
+                  CASE
+                    WHEN EXISTS (SELECT 1 FROM alerts a WHERE a.ticket_id = t.id) THEN 'alert'
+                    WHEN EXISTS (SELECT 1 FROM support_sessions ss WHERE ss.ticket_id = t.id) THEN 'support'
+                    WHEN t.created_by IS NULL THEN 'automatic'
+                    ELSE 'console'
+                  END AS channel
            FROM tickets t
            JOIN customers c ON c.id = t.customer_id
            JOIN devices d ON d.id = t.device_id
            LEFT JOIN users u ON u.id = t.assignee_user_id
            WHERE t.org_id = $1
-           ORDER BY t.id DESC`,
+           ORDER BY t.id DESC
+           LIMIT 2000`,
           [actor.org_id],
         ),
         pool.query(
@@ -6455,8 +6464,22 @@ const server = createServer(async (req, res) => {
         ),
         pool.query("SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name", [actor.org_id]),
       ]);
+      const sla = await orgSla(actor.org_id);
       return send(res, 200, {
-        tickets: tickets.rows.map((row) => ({ ...ticketView(row), commentCount: row.comment_count })),
+        me: Number(actor.id),
+        tickets: tickets.rows.map((row) => {
+          const due = sla && row.status !== "resolved"
+            ? new Date(new Date(row.created_at).getTime() + sla.resolveMinutes * 60000)
+            : null;
+          return {
+            ...ticketView(row),
+            commentCount: row.comment_count,
+            lastActivityAt: row.last_activity_at || row.updated_at,
+            dueAt: due ? due.toISOString() : null,
+            overdue: due ? due.getTime() < Date.now() : false,
+            channel: row.channel,
+          };
+        }),
         customers: customers.rows.map((row) => ({
           id: Number(row.id),
           name: row.name,
@@ -6470,7 +6493,7 @@ const server = createServer(async (req, res) => {
           customerName: row.customer_name || null,
         })),
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
-        sla: await orgSla(actor.org_id),
+        sla,
         canPatch: patchAllowed((await pool.query(
           "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
           [actor.org_id],
@@ -6561,6 +6584,40 @@ const server = createServer(async (req, res) => {
       } finally {
         client.release();
       }
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/tickets/bulk") {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number))].filter(Number.isInteger) : [];
+      if (ids.length === 0 || ids.length > 200) return send(res, 400, { error: "Choose up to 200 tickets." });
+      const status = body.status == null || body.status === "" ? null : body.status;
+      const assign = Object.hasOwn(body, "assigneeUserId");
+      const assigneeUserId = !assign || body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
+      if (status !== null && !TICKET_STATUSES.has(status)) return send(res, 400, { error: "Choose a status." });
+      if (status === null && !assign) return send(res, 400, { error: "Choose a change." });
+      if (assigneeUserId != null) {
+        const assignee = await pool.query("SELECT id FROM users WHERE id = $1 AND org_id = $2", [assigneeUserId, actor.org_id]);
+        if (!assignee.rows[0]) return send(res, 400, { error: "Choose an assignee in this organisation." });
+      }
+      const updated = await pool.query(
+        `UPDATE tickets
+         SET status = COALESCE($1, status),
+             assignee_user_id = CASE WHEN $2::boolean THEN $3::bigint ELSE assignee_user_id END,
+             updated_at = now()
+         WHERE org_id = $4 AND id = ANY($5::bigint[])
+         RETURNING id, status, priority, assignee_user_id`,
+        [status, assign, assigneeUserId, actor.org_id, ids],
+      );
+      for (const row of updated.rows) {
+        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(row.id), {
+          status: row.status,
+          priority: row.priority,
+          assigneeUserId: row.assignee_user_id == null ? null : Number(row.assignee_user_id),
+          bulk: true,
+        });
+      }
+      return send(res, 200, { updated: updated.rows.length });
     }
 
     const ticketCommentMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/comments$/);

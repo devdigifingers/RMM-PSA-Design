@@ -26,7 +26,8 @@ export default async function TicketPage({ params, searchParams }) {
     <div className="console">
       <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
-        <h1>{ticket.subject}</h1>
+        <p className="desk-back"><a href="/tickets">← All Tickets</a></p>
+        <h1><span className="desk-id">#{ticket.id}</span> {ticket.subject}</h1>
         <p className="ticket-tags">
           <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
           <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
@@ -89,8 +90,9 @@ export default async function TicketPage({ params, searchParams }) {
               </select>
             </label>
             <label>
-              Assignee
+              Ticket owner
               <select name="assigneeUserId" defaultValue={ticket.assignee?.id || ""}>
+                <option value="">Unassigned</option>
                 {users.map((user) => (
                   <option key={user.id} value={user.id}>{user.name}</option>
                 ))}

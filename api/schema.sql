@@ -394,3 +394,6 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled_at timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery jsonb;
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS require_mfa boolean NOT NULL DEFAULT false;
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS ip_allowlist text[] NOT NULL DEFAULT '{}';
+
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_group_id text;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_users jsonb;

@@ -359,9 +359,11 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function meshControl(args) {
+function meshControl(args, creds) {
   const meshUrl = String(process.env.MESH_URL || "").replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-  if (!meshUrl || !process.env.MESH_USER || !process.env.MESH_PASSWORD) {
+  const loginUser = creds?.user || process.env.MESH_USER;
+  const loginPass = creds?.pass || process.env.MESH_PASSWORD;
+  if (!meshUrl || !loginUser || !loginPass) {
     throw Object.assign(new Error("Remote service is not configured."), { status: 500 });
   }
   return new Promise((resolve, reject) => {
@@ -373,9 +375,9 @@ function meshControl(args) {
         "--url",
         meshUrl,
         "--loginuser",
-        process.env.MESH_USER,
+        loginUser,
         "--loginpass",
-        process.env.MESH_PASSWORD,
+        loginPass,
       ],
       { cwd: "/opt/meshcentral" },
     );
@@ -409,18 +411,6 @@ function meshControl(args) {
 
 function remoteView(osName) {
   return /windows/i.test(osName || "") ? "11" : "12";
-}
-
-async function connectedMeshNode(hostname) {
-  const text = await meshControl(["ListDevices", "--json"]);
-  const rows = JSON.parse(text);
-  if (!Array.isArray(rows)) return "";
-  const wanted = String(hostname || "").toLowerCase();
-  for (const row of rows) {
-    if (supportMeshRow(row) || String(row?.name || "").toLowerCase() !== wanted) continue;
-    if ((Number(row.conn) || 0) & 1) return String(row._id || "");
-  }
-  return "";
 }
 
 function meshJson(text) {
@@ -473,14 +463,156 @@ function meshNodeMatch(rows, hostname, displayName) {
   return best;
 }
 
-async function resolveMeshNode(row) {
-  const listed = meshJson(await meshControl(["ListDevices", "--json"]));
-  const match = meshNodeMatch(listed, row.hostname, row.display_name);
-  const nodeId = match?.id || row.mesh_node_id || "";
-  if (match?.hostnameMatch && match.id && match.id !== row.mesh_node_id) {
-    await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
+const MESH_STAGING_GROUP = "Digital Fingers";
+const MESH_TENANT_CONSENT = 71;
+const MESH_SITE_RIGHTS = "nonewgroups,locksettings,nonewdevices";
+const MESH_GROUP_RIGHTS = {
+  admin: ["--managedevices", "--remotecontrol", "--agentconsole", "--wakedevices", "--notes", "--chatnotify"],
+  tech: ["--remotecontrol", "--chatnotify", "--noterminal", "--nofiles", "--noregistry", "--nosoftware", "--noamt", "--limitedevents"],
+};
+
+function meshOk(text) {
+  return /(^|\n)\s*ok\b/i.test(String(text || ""));
+}
+
+function meshLinked(text) {
+  return /Added user /.test(String(text || ""));
+}
+
+async function ensureTenantMesh(orgId) {
+  const load = async () => (await pool.query("SELECT id, name, slug, mesh_group_id, mesh_users FROM orgs WHERE id = $1", [orgId])).rows[0];
+  let org = await load();
+  if (!org) throw Object.assign(new Error("Organisation not found."), { status: 404 });
+  if (org.mesh_group_id && org.mesh_users?.admin && org.mesh_users?.tech) return org;
+  const lock = `mesh-tenant-lock:${orgId}`;
+  if ((await redis.set(lock, "1", "EX", 120, "NX")) !== "OK") {
+    throw Object.assign(new Error("The remote service is being prepared for this organisation. Try again in a moment."), { status: 503 });
   }
-  return { nodeId, online: match ? match.online : null };
+  try {
+    org = await load();
+    let groupId = org.mesh_group_id;
+    if (!groupId) {
+      const text = await meshControl([
+        "AddDeviceGroup", "--name", `${org.name} - Managed`, "--desc", `Digital Fingers tenant ${org.id}`,
+        "--features", "1", "--consent", String(MESH_TENANT_CONSENT),
+      ]);
+      groupId = (text.match(/mesh\/\/[A-Za-z0-9@$_-]+/) || [""])[0];
+      if (!groupId) throw Object.assign(new Error("The remote service did not create the device group."), { status: 502 });
+      await pool.query("UPDATE orgs SET mesh_group_id = $2 WHERE id = $1", [org.id, groupId]);
+    }
+    const users = { ...(org.mesh_users || {}) };
+    for (const role of ["admin", "tech"]) {
+      if (users[role]) continue;
+      const name = `df-t${org.id}-${role}-${randomBytes(3).toString("hex")}`;
+      const pass = randomBytes(24).toString("base64url");
+      const added = await meshControl([
+        "AddUser", "--user", name, "--pass", pass,
+        "--realname", `${org.name} ${role === "admin" ? "admin" : "technician"}`, "--rights", MESH_SITE_RIGHTS,
+      ]);
+      if (!meshOk(added)) throw Object.assign(new Error("The remote service did not create the tenant login."), { status: 502 });
+      const linked = await meshControl(["AddUserToDeviceGroup", "--id", groupId, "--userid", `user//${name}`, ...MESH_GROUP_RIGHTS[role]]);
+      if (!meshLinked(linked)) throw Object.assign(new Error("The remote service did not give the tenant login its rights."), { status: 502 });
+      users[role] = { user: name, pass: sealSecret(pass) };
+      await pool.query("UPDATE orgs SET mesh_users = $2::jsonb WHERE id = $1", [org.id, JSON.stringify(users)]);
+    }
+    return { ...org, mesh_group_id: groupId, mesh_users: users };
+  } finally {
+    await redis.del(lock);
+  }
+}
+
+function tenantMeshCreds(org, role) {
+  const entry = org.mesh_users?.[role];
+  if (!entry) throw Object.assign(new Error("The remote service is not ready for this organisation."), { status: 503 });
+  return { user: entry.user, pass: openSecret(entry.pass) };
+}
+
+async function tenantDesktopUrl(orgId, actor, nodeId, tokenName, osName) {
+  const org = await ensureTenantMesh(orgId);
+  return meshDesktopUrl(nodeId, tokenName, osName, tenantMeshCreds(org, canOperate(actor) ? "admin" : "tech"));
+}
+
+async function shareSupportGroup(orgId, groupId) {
+  const org = await ensureTenantMesh(orgId);
+  for (const role of ["admin", "tech"]) {
+    const linked = await meshControl(["AddUserToDeviceGroup", "--id", groupId, "--userid", `user//${org.mesh_users[role].user}`, ...MESH_GROUP_RIGHTS[role]]);
+    if (!meshLinked(linked)) throw Object.assign(new Error("The remote service did not share the support session."), { status: 502 });
+  }
+}
+
+function meshNames(node) {
+  return [node?.name, node?.rname, node?.host].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+}
+
+async function bindMeshNode(row, org, listed) {
+  const nodes = Array.isArray(listed) ? listed : [];
+  const online = (node) => ((Number(node?.conn) || 0) & 1) === 1;
+  const view = (node) => ({ nodeId: String(node._id), online: online(node), group: String(node.groupname || "") });
+  const bound = row.mesh_node_id ? nodes.find((node) => String(node?._id) === row.mesh_node_id) : null;
+  if (bound && bound.meshid === org.mesh_group_id) return view(bound);
+  const own = nodes.filter((node) => node?.meshid === org.mesh_group_id);
+  const ownMatch = meshNodeMatch(own, row.hostname, row.display_name);
+  if (ownMatch?.hostnameMatch) {
+    await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [ownMatch.id, row.id]);
+    return { nodeId: ownMatch.id, online: ownMatch.online, group: ownMatch.group };
+  }
+  let candidate = null;
+  let legacy = false;
+  if (bound && bound.groupname === MESH_STAGING_GROUP) {
+    candidate = bound;
+    legacy = true;
+  } else {
+    const host = String(row.hostname || "").trim().toLowerCase();
+    const hits = host ? nodes.filter((node) => node?.groupname === MESH_STAGING_GROUP && meshNames(node).includes(host)) : [];
+    if (hits.length === 1) candidate = hits[0];
+  }
+  if (!candidate) return { nodeId: "", online: null, group: "" };
+  const nodeId = String(candidate._id);
+  const claims = await pool.query(
+    legacy
+      ? "SELECT id FROM devices WHERE id <> $1 AND mesh_node_id = $2"
+      : `SELECT id FROM devices WHERE id <> $1
+           AND (mesh_node_id = $2 OR (lower(hostname) = lower($3) AND COALESCE(mesh_node_id, '') = ''))`,
+    legacy ? [row.id, nodeId] : [row.id, nodeId, row.hostname],
+  );
+  if (claims.rows.length) return { nodeId: "", online: null, group: "" };
+  const moved = await meshControl(["MoveToDeviceGroup", "--devid", nodeId, "--id", org.mesh_group_id]);
+  if (!meshOk(moved)) return { nodeId: "", online: null, group: "" };
+  await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [nodeId, row.id]);
+  await writeAudit(org.id, null, "device.mesh_bind", "device", String(row.id), { hostname: row.hostname, legacy });
+  return { nodeId, online: online(candidate), group: `${org.name} - Managed` };
+}
+
+async function resolveMeshNode(row, orgId) {
+  const org = await ensureTenantMesh(orgId);
+  const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+  return bindMeshNode(row, org, listed);
+}
+
+let meshIsolateRunning = false;
+
+async function isolateTenantMesh() {
+  if (meshIsolateRunning) return;
+  meshIsolateRunning = true;
+  try {
+    const orgs = await pool.query("SELECT DISTINCT org_id FROM devices");
+    if (!orgs.rows.length) return;
+    const listed = meshJson(await meshControl(["ListDevices", "--json"]));
+    if (!Array.isArray(listed)) return;
+    for (const { org_id: orgId } of orgs.rows) {
+      try {
+        const org = await ensureTenantMesh(orgId);
+        const devices = await pool.query("SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE org_id = $1", [orgId]);
+        for (const row of devices.rows) await bindMeshNode(row, org, listed);
+      } catch (error) {
+        console.error(`mesh isolate org ${orgId}: ${error.message}`);
+      }
+    }
+  } catch (error) {
+    console.error(`mesh isolate: ${error.message}`);
+  } finally {
+    meshIsolateRunning = false;
+  }
 }
 
 function meshSoftware(nodeId) {
@@ -1694,8 +1826,9 @@ function deviceOverview(device, info, raw) {
   };
 }
 
-async function meshDesktopUrl(nodeId, tokenName, osName) {
-  const text = await meshControl(["LoginTokens", "--add", tokenName, "--expire", "10"]);
+async function meshDesktopUrl(nodeId, tokenName, osName, creds) {
+  if (!creds) throw Object.assign(new Error("Remote links need a tenant login."), { status: 500 });
+  const text = await meshControl(["LoginTokens", "--add", tokenName, "--expire", "10"], creds);
   let user = "";
   let pass = "";
   for (const line of text.split("\n")) {
@@ -1987,7 +2120,7 @@ function updateRestartCommand(device) {
 
 async function restartAfterUpdates(device, mode, actorId) {
   if (mode === "ask") {
-    const { nodeId } = await resolveMeshNode(device);
+    const { nodeId } = await resolveMeshNode(device, device.org_id);
     if (!nodeId) throw Object.assign(new Error("This computer is not linked to the remote service."), { status: 409 });
     await meshControl(["DeviceMessage", "--id", nodeId, "--title", "Digital Fingers Support", "--msg", RESTART_REQUEST]);
     await writeAudit(device.org_id, actorId, "patch.restart.ask", "device", String(device.id), {});
@@ -3548,7 +3681,9 @@ const server = createServer(async (req, res) => {
           "127",
         ]);
         groupId = (text.match(/mesh\/\/[A-Za-z0-9@$_-]+/) || [""])[0];
+        if (groupId) await shareSupportGroup(actor.org_id, groupId);
       } catch {
+        if (groupId) await removeSupportGroup(groupId).catch(() => {});
         groupId = "";
       }
       if (!groupId) {
@@ -3597,7 +3732,7 @@ const server = createServer(async (req, res) => {
         if (session.status !== "connected" || !session.mesh_node_id) {
           return send(res, 409, { error: "The customer has not joined yet." });
         }
-        const remoteUrl = await meshDesktopUrl(session.mesh_node_id, `df-support-${session.id}-${Date.now()}`, session.os_name);
+        const remoteUrl = await tenantDesktopUrl(actor.org_id, actor, session.mesh_node_id, `df-support-${session.id}-${Date.now()}`, session.os_name);
         await writeAudit(actor.org_id, actor.id, "support.remote", "support_session", String(session.id), {
           hostname: session.hostname || "",
         });
@@ -4587,13 +4722,9 @@ const server = createServer(async (req, res) => {
       let note = "";
       let clock = {};
       try {
-        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
-        const match = meshNodeMatch(listed, row.hostname, row.display_name);
-        const nodeId = match?.id || row.mesh_node_id || "";
-        groupName = match?.group || "";
-        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
-          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
-        }
+        const node = await resolveMeshNode(row, actor.org_id);
+        const nodeId = node.nodeId;
+        groupName = node.group;
         if (nodeId) {
           try {
             meshInfo = meshJson(await meshControl(["DeviceInfo", "--id", nodeId, "--json"]));
@@ -4647,9 +4778,7 @@ const server = createServer(async (req, res) => {
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       const row = device.rows[0];
       try {
-        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
-        const match = meshNodeMatch(listed, row.hostname, row.display_name);
-        const nodeId = match?.id || row.mesh_node_id || "";
+        const { nodeId } = await resolveMeshNode(row, actor.org_id);
         if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
         const parsed = meshJson(await meshRename(nodeId, name));
         if (!parsed?.ok) return send(res, 502, { error: parsed?.error || "MeshCentral did not rename this computer." });
@@ -4674,12 +4803,8 @@ const server = createServer(async (req, res) => {
       let note = "";
       let apps = [];
       try {
-        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
-        const match = meshNodeMatch(listed, row.hostname, row.display_name);
-        const nodeId = match?.id || row.mesh_node_id || "";
-        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
-          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
-        }
+        const match = await resolveMeshNode(row, actor.org_id);
+        const nodeId = match.nodeId;
         if (!nodeId) {
           note = "MeshCentral has not reported this computer yet.";
         } else if (match && match.online === false) {
@@ -4716,12 +4841,8 @@ const server = createServer(async (req, res) => {
       let note = "";
       let table = { columns: [], rows: [] };
       try {
-        const listed = meshJson(await meshControl(["ListDevices", "--json"]));
-        const match = meshNodeMatch(listed, row.hostname, row.display_name);
-        const nodeId = match?.id || row.mesh_node_id || "";
-        if (match?.hostnameMatch && match.id !== row.mesh_node_id) {
-          await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [match.id, row.id]);
-        }
+        const match = await resolveMeshNode(row, actor.org_id);
+        const nodeId = match.nodeId;
         if (!nodeId) {
           note = "MeshCentral has not reported this computer yet.";
         } else if (match && match.online === false) {
@@ -4770,7 +4891,7 @@ const server = createServer(async (req, res) => {
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       try {
-        const node = await resolveMeshNode(device.rows[0]);
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
         if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
         if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this startup item cannot be changed." });
         const listed = meshJson(await meshQuery(node.nodeId, "startup"));
@@ -4814,7 +4935,7 @@ const server = createServer(async (req, res) => {
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       try {
-        const node = await resolveMeshNode(device.rows[0]);
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
         if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
         if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this service cannot be changed." });
         const listed = meshJson(await meshQuery(node.nodeId, "services"));
@@ -4863,7 +4984,7 @@ const server = createServer(async (req, res) => {
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       try {
-        const node = await resolveMeshNode(device.rows[0]);
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
         if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
         if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline, so this process cannot be ended." });
         const listed = meshJson(await meshQuery(node.nodeId, "processes", "list"));
@@ -4894,7 +5015,7 @@ const server = createServer(async (req, res) => {
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       try {
-        const node = await resolveMeshNode(device.rows[0]);
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
         if (!node.nodeId) return send(res, 200, { path: folder, entries: [], note: "MeshCentral has not reported this computer yet." });
         if (node.online === false) return send(res, 200, { path: folder, entries: [], note: "The Mesh agent is offline, so files cannot be read." });
         const parsed = meshJson(await meshFiles(node.nodeId, "ls", folder));
@@ -4921,7 +5042,7 @@ const server = createServer(async (req, res) => {
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
       try {
-        const node = await resolveMeshNode(device.rows[0]);
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
         if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
         const parsed = meshJson(await meshFiles(node.nodeId, "mkdir", folder, name));
         if (parsed?.error) return send(res, 502, { error: parsed.error });
@@ -4962,7 +5083,7 @@ const server = createServer(async (req, res) => {
         const rows = Math.min(80, Math.max(10, Number(body.rows) || 30));
         let nodeId = device.rows[0].mesh_node_id || "";
         if (!nodeId) {
-          const node = await resolveMeshNode(device.rows[0]);
+          const node = await resolveMeshNode(device.rows[0], actor.org_id);
           nodeId = node.nodeId || "";
         }
         if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
@@ -5093,7 +5214,7 @@ const server = createServer(async (req, res) => {
       try {
         let nodeId = device.rows[0].mesh_node_id || "";
         if (!nodeId) {
-          const node = await resolveMeshNode(device.rows[0]);
+          const node = await resolveMeshNode(device.rows[0], actor.org_id);
           nodeId = node.nodeId || "";
         }
         if (!nodeId) {
@@ -5241,7 +5362,7 @@ const server = createServer(async (req, res) => {
       try {
         let nodeId = device.rows[0].mesh_node_id || "";
         if (!nodeId) {
-          const node = await resolveMeshNode(device.rows[0]);
+          const node = await resolveMeshNode(device.rows[0], actor.org_id);
           nodeId = node.nodeId || "";
         }
         if (!nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
@@ -5416,20 +5537,12 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: message });
       }
       const device = await pool.query(
-        "SELECT id, hostname, mesh_node_id, os_name, users FROM devices WHERE id = $1 AND org_id = $2",
+        "SELECT id, hostname, display_name, mesh_node_id, os_name, users FROM devices WHERE id = $1 AND org_id = $2",
         [deviceRemoteMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
-      let liveNode = "";
-      try {
-        liveNode = await connectedMeshNode(device.rows[0].hostname);
-      } catch {
-        liveNode = "";
-      }
-      if (liveNode && liveNode !== device.rows[0].mesh_node_id) {
-        await pool.query("UPDATE devices SET mesh_node_id = $1 WHERE id = $2", [liveNode, device.rows[0].id]);
-        device.rows[0].mesh_node_id = liveNode;
-      }
+      const node = await resolveMeshNode(device.rows[0], actor.org_id);
+      device.rows[0].mesh_node_id = node.nodeId;
       if (!device.rows[0].mesh_node_id) {
         return send(res, 409, { error: "This device has no remote agent yet." });
       }
@@ -5446,7 +5559,9 @@ const server = createServer(async (req, res) => {
         );
         if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
       }
-      const url = await meshDesktopUrl(
+      const url = await tenantDesktopUrl(
+        actor.org_id,
+        actor,
         device.rows[0].mesh_node_id,
         `df-${device.rows[0].id}-${Date.now()}`,
         device.rows[0].os_name,
@@ -6428,4 +6543,6 @@ server.listen(port, "127.0.0.1", () => {
   runDueExports();
   sweepOffline();
   sweepBreaches();
+  setTimeout(isolateTenantMesh, 30000);
+  setInterval(isolateTenantMesh, 600000);
 });

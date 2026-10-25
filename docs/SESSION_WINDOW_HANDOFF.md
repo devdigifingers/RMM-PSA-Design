@@ -317,3 +317,13 @@ Follow the working rules in section 6.
 - B receives through the restricted `df-mesh-backup` key; `/usr/local/sbin/df-mesh-receive` picks the folder from the requested kind. B cannot decrypt.
 - Restore test 2026-10-25: newest dump restored into a scratch database on B; row counts matched live for all checked tables.
 - Restore a dump: `gpg --decrypt --passphrase-file /root/df-backup.pass FILE.dump.gpg | pg_restore --no-owner -d TARGET`.
+
+## Tenant isolation in MeshCentral (deployed 2026-10-25)
+
+- Each org gets its own Mesh device group ("<org name> - Managed", `orgs.mesh_group_id`) and two Mesh users, `df-t<org>-admin-*` and `df-t<org>-tech-*` (`orgs.mesh_users`, passwords sealed with `MFA_KEY`). Created on first need by `ensureTenantMesh`.
+- Site rights `nonewgroups,locksettings,nonewdevices`. Do not add `notools`: Mesh then refuses meshctrl logins and remote links fail.
+- Group rights: admin user = manage devices, remote control, console, wake, notes, chat; tech user = remote control and chat, no terminal/files/registry/software/AMT, limited events.
+- Remote links (`tenantDesktopUrl`) are login tokens for the tenant user: owner/admin get the admin user, techs the tech user. The site admin is only used server-side.
+- New agents still join the shared "Digital Fingers" group. A node is matched only inside the org's group; from the shared group it is moved (`MoveToDeviceGroup`, audited `device.mesh_bind`) only when its stored id or a single hostname hit is unclaimed by any other device in any org. Ambiguous nodes stay put.
+- Sweep `isolateTenantMesh` runs 30 s after API start and every 10 minutes. First run moved all 8 Digital Fingers devices; FED-WIN-001's duplicate node and HNA-KILBARCHANGC-01 (no console device) stay in the shared group.
+- Support sessions: both tenant users are added to each temporary support group.

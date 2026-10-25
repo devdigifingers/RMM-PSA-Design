@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { BlockList, isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -146,6 +147,163 @@ function clientAddress(req) {
   return /^[0-9a-f.:]{3,45}$/.test(forwarded) ? forwarded : "unknown";
 }
 
+const MFA_ISSUER = "Digital Fingers RMM";
+const MFA_PENDING_SECONDS = 300;
+const MFA_MAX_TRIES = 5;
+const MFA_SETUP_PATHS = new Set(["/v1/account", "/v1/logout", "/v1/account/mfa/setup", "/v1/account/mfa/enable"]);
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function base32Encode(buffer) {
+  let bits = "";
+  for (const byte of buffer) bits += byte.toString(2).padStart(8, "0");
+  let out = "";
+  for (let i = 0; i < bits.length; i += 5) out += BASE32[parseInt(bits.slice(i, i + 5).padEnd(5, "0"), 2)];
+  return out;
+}
+
+function base32Decode(text) {
+  let bits = "";
+  for (const char of text.replace(/=+$/, "").toUpperCase()) {
+    const index = BASE32.indexOf(char);
+    if (index < 0) throw new Error("Bad base32");
+    bits += index.toString(2).padStart(5, "0");
+  }
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return Buffer.from(bytes);
+}
+
+function totpCode(secret, step) {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const digest = createHmac("sha1", base32Decode(secret)).update(counter).digest();
+  const offset = digest[digest.length - 1] & 0xf;
+  const value = (digest.readUInt32BE(offset) & 0x7fffffff) % 1000000;
+  return String(value).padStart(6, "0");
+}
+
+function mfaKey() {
+  if (!process.env.MFA_KEY) throw Object.assign(new Error("MFA is not configured on the server."), { status: 500 });
+  return createHash("sha256").update(process.env.MFA_KEY).digest();
+}
+
+function sealSecret(text) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", mfaKey(), iv);
+  const body = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  return ["v1", iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), body.toString("base64url")].join(":");
+}
+
+function openSecret(sealed) {
+  const [version, iv, tag, body] = String(sealed || "").split(":");
+  if (version !== "v1") throw new Error("Unknown MFA secret format");
+  const decipher = createDecipheriv("aes-256-gcm", mfaKey(), Buffer.from(iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(tag, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(body, "base64url")), decipher.final()]).toString("utf8");
+}
+
+function sameText(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+async function totpValid(userId, secret, code) {
+  const clean = String(code || "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(clean)) return false;
+  const now = Math.floor(Date.now() / 30000);
+  for (const step of [now - 1, now, now + 1]) {
+    if (!sameText(totpCode(secret, step), clean)) continue;
+    const fresh = await redis.set(`mfa-used:${userId}:${step}`, "1", "EX", 120, "NX");
+    return fresh === "OK";
+  }
+  return false;
+}
+
+function recoveryHash(code) {
+  return createHash("sha256").update(String(code).toLowerCase().replace(/[^a-z0-9]/g, "")).digest("hex");
+}
+
+function newRecoveryCodes() {
+  const codes = Array.from({ length: 8 }, () => {
+    const raw = randomBytes(5).toString("hex");
+    return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+  });
+  return { codes, hashes: codes.map(recoveryHash) };
+}
+
+async function mfaCheck(user, code) {
+  if (await totpValid(user.id, openSecret(user.mfa_secret), code)) return { ok: true };
+  const hash = recoveryHash(code);
+  const left = Array.isArray(user.mfa_recovery) ? user.mfa_recovery : [];
+  if (String(code || "").replace(/[^a-z0-9]/gi, "").length === 10 && left.includes(hash)) {
+    await pool.query("UPDATE users SET mfa_recovery = $2::jsonb WHERE id = $1", [user.id, JSON.stringify(left.filter((item) => item !== hash))]);
+    return { ok: true, recovery: true };
+  }
+  return { ok: false };
+}
+
+function normaliseAddress(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return text.startsWith("::ffff:") && isIP(text.slice(7)) === 4 ? text.slice(7) : text;
+}
+
+function parseAllowlist(value) {
+  const lines = (Array.isArray(value) ? value : String(value || "").split(/[\s,]+/)).map((item) => String(item).trim()).filter(Boolean);
+  if (lines.length > 50) return { error: "Use at most 50 addresses or ranges." };
+  const out = [];
+  for (const line of lines) {
+    const [address, prefixText] = line.split("/");
+    const family = isIP(address);
+    const max = family === 4 ? 32 : 128;
+    const prefix = prefixText === undefined ? max : Number(prefixText);
+    if (!family || !Number.isInteger(prefix) || prefix < (family === 4 ? 8 : 16) || prefix > max) {
+      return { error: `"${line.slice(0, 60)}" is not a valid IP address or range.` };
+    }
+    out.push(prefix === max ? address.toLowerCase() : `${address.toLowerCase()}/${prefix}`);
+  }
+  return { value: [...new Set(out)] };
+}
+
+function addressAllowed(address, list) {
+  if (!list || list.length === 0) return true;
+  const ip = normaliseAddress(address);
+  const family = isIP(ip);
+  if (!family) return false;
+  const block = new BlockList();
+  for (const entry of list) {
+    const [net, prefix] = entry.split("/");
+    const type = isIP(net) === 4 ? "ipv4" : "ipv6";
+    if (prefix === undefined) block.addAddress(net, type);
+    else block.addSubnet(net, Number(prefix), type);
+  }
+  return block.check(ip, family === 4 ? "ipv4" : "ipv6");
+}
+
+async function issueSession(res, user) {
+  const token = randomBytes(32).toString("base64url");
+  await redis.multi()
+    .set(`session:${token}`, JSON.stringify({ userId: user.id }), "EX", SESSION_TTL_SECONDS)
+    .sadd(`user-sessions:${user.id}`, token)
+    .expire(`user-sessions:${user.id}`, SESSION_TTL_SECONDS)
+    .exec();
+  return send(res, 200, {
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isPlatformAdmin: user.is_platform_admin,
+      mfaSetupRequired: Boolean(user.require_mfa && !user.mfa_enabled_at && !user.is_platform_admin),
+    },
+  });
+}
+
+async function revokeOrgSessions(orgId, keepUserId) {
+  const users = await pool.query("SELECT id FROM users WHERE org_id = $1 AND id <> $2", [orgId, keepUserId]);
+  for (const row of users.rows) await revokeUserSessions(row.id, null);
+}
+
 function loginLimitKeys(req, email) {
   return {
     ip: `login-fail-ip:${clientAddress(req)}`,
@@ -171,12 +329,16 @@ async function actorFrom(req) {
   if (!raw) return null;
   const session = JSON.parse(raw);
   const result = await pool.query(
-    "SELECT id, email, name, org_id, is_platform_admin, account_number FROM users WHERE id = $1 AND disabled_at IS NULL",
+    `SELECT u.id, u.email, u.name, u.org_id, u.is_platform_admin, u.account_number, u.mfa_enabled_at,
+            COALESCE(o.require_mfa, false) AS require_mfa
+     FROM users u LEFT JOIN orgs o ON o.id = u.org_id
+     WHERE u.id = $1 AND u.disabled_at IS NULL`,
     [session.userId],
   );
   const actor = result.rows[0];
   if (!actor) return null;
   actor.session_token = token;
+  actor.mfa_setup_required = actor.require_mfa && !actor.mfa_enabled_at && !actor.is_platform_admin;
   const roles = await pool.query(
     `SELECT r.name
      FROM user_roles ur
@@ -2906,7 +3068,7 @@ function parseUserInput(body) {
 
 async function orgUsers(orgId) {
   const result = await pool.query(
-    `SELECT u.id, u.name, u.email, u.account_number, u.created_at, u.disabled_at,
+    `SELECT u.id, u.name, u.email, u.account_number, u.created_at, u.disabled_at, u.mfa_enabled_at,
             COALESCE(array_agg(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
      FROM users u
      LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -2924,6 +3086,7 @@ async function orgUsers(orgId) {
     role: USER_ROLES.find((role) => row.roles.includes(role)) || "tech",
     createdAt: row.created_at,
     disabledAt: row.disabled_at,
+    mfaEnabled: Boolean(row.mfa_enabled_at),
   }));
 }
 
@@ -3196,7 +3359,10 @@ const server = createServer(async (req, res) => {
         return send(res, 429, { error: "Too many sign-in attempts. Wait 15 minutes and try again." });
       }
       const found = await pool.query(
-        "SELECT id, email, name, password_hash, is_platform_admin, disabled_at FROM users WHERE email = $1",
+        `SELECT u.id, u.email, u.name, u.password_hash, u.is_platform_admin, u.disabled_at, u.org_id, u.mfa_enabled_at,
+                COALESCE(o.require_mfa, false) AS require_mfa, COALESCE(o.ip_allowlist, '{}') AS ip_allowlist
+         FROM users u LEFT JOIN orgs o ON o.id = u.org_id
+         WHERE u.email = $1`,
         [email],
       );
       const user = found.rows[0];
@@ -3209,16 +3375,51 @@ const server = createServer(async (req, res) => {
         return send(res, 401, { error: "Invalid email or password." });
       }
       await redis.del(limits.email);
-      const token = randomBytes(32).toString("base64url");
-      await redis.multi()
-        .set(`session:${token}`, JSON.stringify({ userId: user.id }), "EX", SESSION_TTL_SECONDS)
-        .sadd(`user-sessions:${user.id}`, token)
-        .expire(`user-sessions:${user.id}`, SESSION_TTL_SECONDS)
-        .exec();
-      return send(res, 200, {
-        token,
-        user: { id: user.id, email: user.email, name: user.name, isPlatformAdmin: user.is_platform_admin },
-      });
+      if (!user.is_platform_admin && !addressAllowed(clientAddress(req), user.ip_allowlist)) {
+        await writeAudit(user.org_id, user.id, "login.ip_deny", "user", String(user.id), { address: clientAddress(req) });
+        return send(res, 403, { error: "ip" });
+      }
+      if (user.mfa_enabled_at) {
+        const mfaToken = randomBytes(32).toString("base64url");
+        await redis.set(`mfa-pending:${mfaToken}`, JSON.stringify({ userId: user.id, tries: 0 }), "EX", MFA_PENDING_SECONDS);
+        return send(res, 200, { mfaRequired: true, mfaToken });
+      }
+      return issueSession(res, user);
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/login/mfa") {
+      const body = await readJson(req);
+      const mfaToken = typeof body.mfaToken === "string" ? body.mfaToken : "";
+      const key = `mfa-pending:${mfaToken}`;
+      const raw = mfaToken ? await redis.get(key) : null;
+      if (!raw) return send(res, 401, { error: "expired" });
+      const pending = JSON.parse(raw);
+      if (pending.tries >= MFA_MAX_TRIES) {
+        await redis.del(key);
+        return send(res, 401, { error: "expired" });
+      }
+      const found = await pool.query(
+        `SELECT u.id, u.email, u.name, u.is_platform_admin, u.org_id, u.mfa_secret, u.mfa_recovery, u.mfa_enabled_at,
+                COALESCE(o.require_mfa, false) AS require_mfa
+         FROM users u LEFT JOIN orgs o ON o.id = u.org_id
+         WHERE u.id = $1 AND u.disabled_at IS NULL`,
+        [pending.userId],
+      );
+      const user = found.rows[0];
+      if (!user?.mfa_enabled_at) {
+        await redis.del(key);
+        return send(res, 401, { error: "expired" });
+      }
+      const check = await mfaCheck(user, body.code);
+      if (!check.ok) {
+        pending.tries += 1;
+        await redis.set(key, JSON.stringify(pending), "KEEPTTL");
+        await writeAudit(user.org_id, user.id, "login.mfa_fail", "user", String(user.id), {});
+        return send(res, 401, { error: "code" });
+      }
+      await redis.del(key);
+      if (check.recovery) await writeAudit(user.org_id, user.id, "login.mfa_recovery", "user", String(user.id), {});
+      return issueSession(res, user);
     }
 
     const supportJoinMatch = url.pathname.match(/^\/v1\/support\/join\/([^/]+)(\/download)?$/);
@@ -3256,6 +3457,9 @@ const server = createServer(async (req, res) => {
     }
 
     const actor = await actorFrom(req);
+    if (actor?.mfa_setup_required && !MFA_SETUP_PATHS.has(url.pathname)) {
+      return send(res, 403, { error: "mfa_setup" });
+    }
 
     if (req.method === "POST" && url.pathname === "/v1/logout") {
       if (actor) {
@@ -3419,7 +3623,7 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       const found = actor.org_id
         ? await pool.query(
-            `SELECT o.id, o.name, o.slug, o.created_at,
+            `SELECT o.id, o.name, o.slug, o.created_at, o.require_mfa, o.ip_allowlist,
                     l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules, l.support_concurrent,
                     (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count,
                     (SELECT count(*)::int FROM users u WHERE u.org_id = o.id AND u.is_platform_admin = false AND u.disabled_at IS NULL) AS seats_used
@@ -3431,7 +3635,14 @@ const server = createServer(async (req, res) => {
         : { rows: [] };
       const row = found.rows[0];
       const org = row
-        ? { id: Number(row.id), name: row.name, slug: row.slug, createdAt: row.created_at }
+        ? {
+            id: Number(row.id),
+            name: row.name,
+            slug: row.slug,
+            createdAt: row.created_at,
+            requireMfa: row.require_mfa === true,
+            ipRestricted: (row.ip_allowlist || []).length > 0,
+          }
         : null;
       const license = row?.license_id == null
         ? null
@@ -3460,6 +3671,8 @@ const server = createServer(async (req, res) => {
           email: actor.email,
           roles: actor.roles,
           isPlatformAdmin: actor.is_platform_admin === true,
+          mfaEnabled: Boolean(actor.mfa_enabled_at),
+          mfaSetupRequired: actor.mfa_setup_required === true,
         },
         org,
         license,
@@ -3613,6 +3826,12 @@ const server = createServer(async (req, res) => {
         const target = (await orgUsers(actor.org_id)).find((user) => user.id === userId);
         if (!target) return send(res, 404, { error: "That technician is not in this organisation." });
         if (target.role === "owner" && !isOwner) return send(res, 403, { error: "Only an owner can change an owner." });
+        if (body.resetMfa === true) {
+          await pool.query("UPDATE users SET mfa_secret = NULL, mfa_enabled_at = NULL, mfa_recovery = NULL WHERE id = $1", [userId]);
+          await revokeUserSessions(userId, null);
+          await writeAudit(actor.org_id, actor.id, "user.mfa_reset", "user", String(userId), {});
+          return send(res, 200, { ok: true });
+        }
         const role = body.role === undefined ? target.role : body.role;
         if (!USER_ROLES.includes(role)) return send(res, 400, { error: "Choose a role." });
         if (role === "owner" && !isOwner) return send(res, 403, { error: "Only an owner can make someone an owner." });
@@ -3650,6 +3869,101 @@ const server = createServer(async (req, res) => {
         return send(res, 200, { ok: true });
       }
       return send(res, 405, { error: "Method not allowed." });
+    }
+
+    if (url.pathname.startsWith("/v1/account/mfa/") && req.method === "POST") {
+      if (!requireActor(actor, res)) return;
+      const action = url.pathname.slice("/v1/account/mfa/".length);
+      const setupKey = `mfa-setup:${actor.id}`;
+      if (action === "setup") {
+        if (actor.mfa_enabled_at) return send(res, 409, { error: "MFA is already on for this login." });
+        mfaKey();
+        const secret = base32Encode(randomBytes(20));
+        await redis.set(setupKey, secret, "EX", 900);
+        const label = encodeURIComponent(`${MFA_ISSUER}:${actor.email}`);
+        const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(MFA_ISSUER)}&algorithm=SHA1&digits=6&period=30`;
+        return send(res, 200, { secret, uri });
+      }
+      if (action === "enable") {
+        if (actor.mfa_enabled_at) return send(res, 409, { error: "MFA is already on for this login." });
+        const secret = await redis.get(setupKey);
+        if (!secret) return send(res, 400, { error: "The setup expired. Start again." });
+        const body = await readJson(req);
+        if (!(await totpValid(actor.id, secret, body.code))) return send(res, 400, { error: "That code is not right. Check the time on your phone and try the newest code." });
+        const recovery = newRecoveryCodes();
+        await pool.query(
+          "UPDATE users SET mfa_secret = $2, mfa_enabled_at = now(), mfa_recovery = $3::jsonb WHERE id = $1",
+          [actor.id, sealSecret(secret), JSON.stringify(recovery.hashes)],
+        );
+        await redis.del(setupKey);
+        await revokeUserSessions(actor.id, actor.session_token);
+        await writeAudit(actor.org_id, actor.id, "user.mfa_enable", "user", String(actor.id), {});
+        return send(res, 200, { recoveryCodes: recovery.codes });
+      }
+      if (action === "disable" || action === "recovery") {
+        if (!actor.mfa_enabled_at) return send(res, 400, { error: "MFA is not on for this login." });
+        if (action === "disable" && actor.require_mfa) return send(res, 400, { error: "Your organisation requires MFA, so it cannot be turned off." });
+        const body = await readJson(req);
+        const found = await pool.query("SELECT id, mfa_secret, mfa_recovery FROM users WHERE id = $1", [actor.id]);
+        const check = await mfaCheck(found.rows[0], body.code);
+        if (!check.ok) return send(res, 400, { error: "That code is not right." });
+        if (action === "disable") {
+          await pool.query("UPDATE users SET mfa_secret = NULL, mfa_enabled_at = NULL, mfa_recovery = NULL WHERE id = $1", [actor.id]);
+          await writeAudit(actor.org_id, actor.id, "user.mfa_disable", "user", String(actor.id), {});
+          return send(res, 200, { ok: true });
+        }
+        const recovery = newRecoveryCodes();
+        await pool.query("UPDATE users SET mfa_recovery = $2::jsonb WHERE id = $1", [actor.id, JSON.stringify(recovery.hashes)]);
+        await writeAudit(actor.org_id, actor.id, "user.mfa_recovery_new", "user", String(actor.id), {});
+        return send(res, 200, { recoveryCodes: recovery.codes });
+      }
+      return send(res, 404, { error: "Not found." });
+    }
+
+    if (url.pathname === "/v1/org/security") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 400, { error: "This login is not linked to an organisation." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "security.deny", "org", String(actor.org_id), {});
+        return send(res, 403, { error: "Only an owner or admin can change security settings." });
+      }
+      const current = await pool.query("SELECT require_mfa, ip_allowlist FROM orgs WHERE id = $1", [actor.org_id]);
+      const yourAddress = normaliseAddress(clientAddress(req));
+      if (req.method === "GET") {
+        const counts = await pool.query(
+          `SELECT count(*) FILTER (WHERE mfa_enabled_at IS NOT NULL)::int AS on, count(*)::int AS total
+           FROM users WHERE org_id = $1 AND is_platform_admin = false AND disabled_at IS NULL`,
+          [actor.org_id],
+        );
+        return send(res, 200, {
+          requireMfa: current.rows[0].require_mfa,
+          ipAllowlist: current.rows[0].ip_allowlist,
+          yourAddress,
+          mfaUsers: counts.rows[0].on,
+          activeUsers: counts.rows[0].total,
+        });
+      }
+      if (req.method !== "PUT") return send(res, 405, { error: "Method not allowed." });
+      const body = await readJson(req);
+      let requireMfa = current.rows[0].require_mfa;
+      let allowlist = current.rows[0].ip_allowlist;
+      if (body.requireMfa !== undefined) {
+        requireMfa = body.requireMfa === true;
+        if (requireMfa && !actor.mfa_enabled_at) return send(res, 400, { error: "Turn on MFA for your own login first." });
+      }
+      if (body.ipAllowlist !== undefined) {
+        const parsed = parseAllowlist(body.ipAllowlist);
+        if (parsed.error) return send(res, 400, { error: parsed.error });
+        if (parsed.value.length && !addressAllowed(yourAddress, parsed.value)) {
+          return send(res, 400, { error: `Your current address (${yourAddress}) is not in the list, so saving it would lock you out. Add it first.` });
+        }
+        allowlist = parsed.value;
+      }
+      await pool.query("UPDATE orgs SET require_mfa = $2, ip_allowlist = $3 WHERE id = $1", [actor.org_id, requireMfa, allowlist]);
+      await writeAudit(actor.org_id, actor.id, "security.update", "org", String(actor.org_id), { requireMfa, ipAllowlist: allowlist });
+      const listChanged = JSON.stringify(allowlist) !== JSON.stringify(current.rows[0].ip_allowlist);
+      if (listChanged && allowlist.length) await revokeOrgSessions(actor.org_id, actor.id);
+      return send(res, 200, { ok: true, requireMfa, ipAllowlist: allowlist });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/account/password") {

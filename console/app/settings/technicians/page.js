@@ -13,6 +13,7 @@ const NOTICES = {
   role: ["saved", "Role changed. They need to sign in again."],
   disabled: ["saved", "Login disabled and signed out. The seat is free again."],
   enabled: ["saved", "Login enabled."],
+  mfareset: ["saved", "MFA reset and signed out. They set up MFA again at their next sign-in if it is required."],
   email: ["error", "That email is already a login."],
   bademail: ["error", "Enter a valid email address."],
   short: ["error", "Use at least 8 characters for the password."],
@@ -65,7 +66,7 @@ export default async function TechniciansPage({ searchParams }) {
                     <th>Role</th>
                     <th>Added</th>
                     <th>Status</th>
-                    <th aria-label="Actions" />
+                    <th>MFA</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -88,17 +89,25 @@ export default async function TechniciansPage({ searchParams }) {
                           )}
                         </td>
                         <td className="tech-nowrap">{formatWhen(user.createdAt)}</td>
-                        <td>{user.disabledAt ? <span className="tech-state off">Disabled</span> : <span className="tech-state on">Active</span>}</td>
-                        <td>
+                        <td className="tech-nowrap">
+                          {user.disabledAt ? <span className="tech-state off">Disabled</span> : <span className="tech-state on">Active</span>}
                           {locked ? null : (
-                            <form action={updateTechnician}>
+                            <form action={updateTechnician} className="tech-inline">
                               <input type="hidden" name="id" value={user.id} />
                               <input type="hidden" name="disabled" value={user.disabledAt ? "0" : "1"} />
-                              <button type="submit" className={user.disabledAt ? "secondary" : "danger"}>
-                                {user.disabledAt ? "Enable" : "Disable"}
-                              </button>
+                              <button type="submit" className={user.disabledAt ? "link-button" : "link-button is-danger"}>{user.disabledAt ? "Enable" : "Disable"}</button>
                             </form>
                           )}
+                        </td>
+                        <td className="tech-nowrap">
+                          {user.mfaEnabled ? <span className="tech-state on">On</span> : <span className="tech-state off">Off</span>}
+                          {user.mfaEnabled && !locked ? (
+                            <form action={updateTechnician} className="tech-inline">
+                              <input type="hidden" name="id" value={user.id} />
+                              <input type="hidden" name="resetMfa" value="1" />
+                              <button type="submit" className="link-button">Reset</button>
+                            </form>
+                          ) : null}
                         </td>
                       </tr>
                     );

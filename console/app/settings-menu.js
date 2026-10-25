@@ -6,7 +6,7 @@ function sectionsFor({ platform, manage, allowed, flags }) {
   if (platform) {
     return [
       { title: "Platform", icon: <OrgIcon />, items: [["Tenants and licences", "/control"], ["Action Log Viewer", "/audit"]] },
-      { title: "My Login", icon: <ShieldIcon />, items: [["My Account", "/account"], ["Password", "/account"]] },
+      { title: "My Login", icon: <ShieldIcon />, items: [["My Account", "/account"], ["Password", "/account"], ["Multi-Factor Authentication (MFA)", "/settings/mfa"]] },
     ];
   }
   return [
@@ -63,8 +63,8 @@ function sectionsFor({ platform, manage, allowed, flags }) {
       items: [
         ["Action Log Viewer", "/audit"],
         ["Password", "/account"],
-        ["Multi-Factor Authentication (MFA)", null],
-        ["IP Based Restriction", null],
+        ["Multi-Factor Authentication (MFA)", "/settings/mfa"],
+        manage ? ["IP Based Restriction", "/settings/ip-restriction"] : null,
         ["Data Cleanup", null],
       ],
     },

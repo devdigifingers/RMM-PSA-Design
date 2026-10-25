@@ -5628,3 +5628,35 @@ html[data-theme="dark"] .sup-end:hover:not(:disabled) { background: rgba(217, 58
 .deploy-download { display: inline-block; padding: 10px 18px; border-radius: 10px; background: var(--button); color: var(--button-text); font-weight: 600; text-decoration: none; }
 .deploy-download:hover { background: var(--blue-d); }
 html[data-theme="dark"] .tech-seats span, html[data-theme="dark"] .tech-state.on { color: var(--green); }
+
+.mfa-card { max-width: 860px; margin-top: 22px; padding: 22px; border-radius: 16px; background: var(--card); box-shadow: var(--card-shadow); }
+.mfa-card h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 18px; }
+.mfa-card > button, .mfa-policy > button[type="submit"] { width: auto; margin-top: 14px; align-self: flex-start; justify-self: start; }
+.mfa-card button.secondary { background: transparent; color: var(--blue); border: 1px solid var(--blue); box-shadow: none; }
+.mfa-card button.danger { background: transparent; color: var(--red); border: 1px solid var(--red); box-shadow: none; }
+.mfa-setup { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; margin-top: 12px; }
+.mfa-setup img { border-radius: 12px; background: #fff; padding: 6px; border: 1px solid var(--line); }
+.mfa-setup > div { flex: 1 1 280px; }
+.mfa-setup ol { margin: 0 0 14px; padding-left: 20px; line-height: 1.7; }
+.mfa-key { display: inline-block; margin-top: 4px; padding: 3px 8px; border-radius: 6px; background: var(--soft); font-size: 13px; letter-spacing: 0.04em; word-break: break-all; }
+.mfa-inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; }
+.mfa-inline input { width: 160px; letter-spacing: 0.12em; }
+.mfa-inline button { width: auto; }
+.mfa-manage { display: grid; gap: 4px; margin-top: 8px; }
+.mfa-codes { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 14px 0; padding: 0; list-style: none; }
+.mfa-codes code { display: block; padding: 8px 10px; border-radius: 8px; background: var(--soft); text-align: center; font-size: 14px; letter-spacing: 0.06em; }
+.mfa-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.mfa-actions button { width: auto; }
+.mfa-required { max-width: 640px; }
+.mfa-required h1 { margin: 18px 0 4px; font-size: 22px; }
+.mfa-required .mfa-card { box-shadow: none; padding: 16px 0 0; }
+.mfa-login-lede, .mfa-login-hint { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+.mfa-login-hint { margin: 12px 0 0; font-size: 13px; }
+.mfa-login input[name="code"] { letter-spacing: 0.2em; font-size: 18px; text-align: center; }
+.login-card button.mfa-login-back { width: 100%; margin-top: 10px; background: transparent; color: var(--muted); border: 0; box-shadow: none; }
+.login-card button.mfa-login-back:hover { color: var(--blue); background: transparent; }
+.tech-inline { display: inline; margin-left: 6px; }
+.tech-table form > button.link-button { height: auto; padding: 0; border: 0; background: none; color: var(--blue); box-shadow: none; font-size: 13px; text-decoration: underline; }
+.ip-form textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+.ip-form > button[type="submit"] { width: auto; margin-top: 12px; align-self: flex-start; justify-self: start; }
+.tech-table form > button.link-button.is-danger { color: var(--red); }

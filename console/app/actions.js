@@ -2,6 +2,7 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import QRCode from "qrcode";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -19,8 +20,18 @@ export async function login(formData) {
     cache: "no-store",
   });
   if (response.status === 429) redirect("/?error=locked");
+  if (response.status === 403) redirect("/?error=ip");
   if (!response.ok) redirect("/?error=invalid");
   const body = await response.json();
+  const jar = await cookies();
+  if (body.mfaRequired) {
+    jar.set("df_mfa", body.mfaToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 300 });
+    redirect("/?step=mfa");
+  }
+  await startSession(body);
+}
+
+async function startSession(body) {
   const jar = await cookies();
   jar.set("df_session", body.token, {
     httpOnly: true,
@@ -29,7 +40,34 @@ export async function login(formData) {
     path: "/",
     maxAge: 60 * 60 * 12,
   });
+  if (body.user?.mfaSetupRequired) redirect("/settings/mfa");
   redirect(body.user?.isPlatformAdmin ? "/control" : "/devices");
+}
+
+export async function verifyLoginCode(formData) {
+  const jar = await cookies();
+  const mfaToken = jar.get("df_mfa")?.value;
+  if (!mfaToken) redirect("/?error=expired");
+  const response = await fetch(`${apiUrl}/v1/login/mfa`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mfaToken, code: String(formData.get("code") || "") }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (body.error === "code") redirect("/?step=mfa&error=code");
+    jar.delete("df_mfa");
+    redirect("/?error=expired");
+  }
+  jar.delete("df_mfa");
+  await startSession(body);
+}
+
+export async function cancelLoginCode() {
+  const jar = await cookies();
+  jar.delete("df_mfa");
+  redirect("/");
 }
 
 const LICENSE_MODULES = ["core", "remote_desktop", "remote_support", "ticketing", "monitoring", "patch", "reporting"];
@@ -192,11 +230,13 @@ async function callApi(path, { method = "POST", body } = {}) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
+  const incoming = await headers();
   return fetch(`${apiUrl}${path}`, {
     method,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
+      "x-forwarded-for": incoming.get("x-forwarded-for") || "",
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
@@ -725,7 +765,55 @@ export async function updateTechnician(formData) {
   const body = {};
   if (formData.has("role")) body.role = String(formData.get("role"));
   if (formData.has("disabled")) body.disabled = formData.get("disabled") === "1";
+  if (formData.get("resetMfa") === "1") body.resetMfa = true;
   const response = await callApi(`/v1/users/${id}`, { method: "PUT", body });
   if (!response.ok) redirect(`${TECH_PATH}?error=${await technicianError(response)}`);
-  redirect(`${TECH_PATH}?saved=${formData.has("disabled") ? (body.disabled ? "disabled" : "enabled") : "role"}`);
+  const saved = body.resetMfa ? "mfareset" : formData.has("disabled") ? (body.disabled ? "disabled" : "enabled") : "role";
+  redirect(`${TECH_PATH}?saved=${saved}`);
+}
+
+async function mfaCall(path, body) {
+  const response = await callApi(path, { body: body || {} });
+  if (response.status === 401) redirect("/");
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) return { error: data.error || "That did not work. Try again." };
+  return data;
+}
+
+export async function startMfaSetup() {
+  const data = await mfaCall("/v1/account/mfa/setup");
+  if (data.error) return data;
+  return { secret: data.secret, qr: await QRCode.toDataURL(data.uri, { margin: 1, width: 208 }) };
+}
+
+export async function enableMfa(code) {
+  return mfaCall("/v1/account/mfa/enable", { code: String(code || "") });
+}
+
+export async function disableMfa(code) {
+  return mfaCall("/v1/account/mfa/disable", { code: String(code || "") });
+}
+
+export async function newRecoveryCodes(code) {
+  return mfaCall("/v1/account/mfa/recovery", { code: String(code || "") });
+}
+
+async function securityError(path, response) {
+  if (response.status === 401) redirect("/");
+  const data = await response.json().catch(() => ({}));
+  const jar = await cookies();
+  jar.set("df_flash", String(data.error || "That change was not saved.").slice(0, 300), { httpOnly: true, secure: true, sameSite: "lax", path, maxAge: 30 });
+  redirect(`${path}?error=1`);
+}
+
+export async function saveRequireMfa(formData) {
+  const response = await callApi("/v1/org/security", { method: "PUT", body: { requireMfa: formData.get("requireMfa") === "1" } });
+  if (!response.ok) await securityError("/settings/mfa", response);
+  redirect("/settings/mfa?saved=org");
+}
+
+export async function saveIpAllowlist(formData) {
+  const response = await callApi("/v1/org/security", { method: "PUT", body: { ipAllowlist: String(formData.get("ipAllowlist") || "") } });
+  if (!response.ok) await securityError("/settings/ip-restriction", response);
+  redirect("/settings/ip-restriction?saved=1");
 }

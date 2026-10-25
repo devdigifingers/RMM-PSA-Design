@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
-export async function accountFromSession() {
+export async function accountFromSession({ allowMfaSetup = false } = {}) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
@@ -13,7 +13,9 @@ export async function accountFromSession() {
   });
   if (response.status === 401) redirect("/");
   if (!response.ok) return null;
-  return response.json();
+  const account = await response.json();
+  if (account.user?.mfaSetupRequired && !allowMfaSetup) redirect("/settings/mfa");
+  return account;
 }
 
 export function formatWhen(value) {

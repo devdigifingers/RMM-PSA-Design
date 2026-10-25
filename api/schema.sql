@@ -388,3 +388,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS support_sessions_live_code_idx
 CREATE INDEX IF NOT EXISTS support_sessions_org_id_idx ON support_sessions (org_id, id);
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_at timestamptz;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery jsonb;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS require_mfa boolean NOT NULL DEFAULT false;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS ip_allowlist text[] NOT NULL DEFAULT '{}';

@@ -296,3 +296,11 @@ Follow the working rules in section 6.
 - Console: route handlers refuse cross-site requests (`app/request-guard.js`). Security headers in `next.config.mjs`: `frame-ancestors 'self'` everywhere except the file-manager and file-transfer pages, plus nosniff, Referrer-Policy, HSTS and Permissions-Policy. The ticket remote redirect only goes to the Mesh origin. The unused `devices/[id]/remote` route is removed.
 - Session window: the payload URL must be on the Mesh origin and the console origin must be `https://rmm.digitalfingers.co.za`.
 - Server backups of the previous files: `*.bak-batch1` next to `server.js`, `mail.js`, `next.config.mjs` and the session `index.html`.
+
+## Settings: MFA and IP restriction (deployed 2026-10-25)
+
+- Pages: `/settings/mfa` (every user; admins also get "Require MFA for everyone") and `/settings/ip-restriction` (owner/admin). Manage Technicians shows MFA on/off with Reset.
+- Sign-in: password, then a 6-digit authenticator code or a one-time recovery code (`/v1/login/mfa`, 5 tries per 5-minute attempt, codes cannot be reused). When the org requires MFA, logins without it can only reach `/settings/mfa` until they set it up (API answers `mfa_setup` elsewhere).
+- IP restriction checks the sign-in address against the org list; saving requires your own address in the list and signs out everyone else in the org. Platform admins are exempt.
+- MFA secrets are encrypted with `MFA_KEY` from `/root/df-mfa.env` (loaded by `/etc/systemd/system/df-api.service.d/mfa.conf`). Back this file up: without it, every MFA login must be reset.
+- Console depends on `qrcode` (installed on df-a).

@@ -14,6 +14,7 @@ import {
 } from "../actions";
 import { ConsoleBar } from "../bar";
 import { RemoteActions } from "../devices/remote-actions";
+import { workTime } from "../tickets/format";
 import {
   AccountFields,
   apiGet,
@@ -59,6 +60,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
   if (response.status === 404) notFound();
   const body = await response.json();
   const { account, contacts = [], tickets = [], devices = [], linkable = [], sessions = [], report, sla, crossLink } = body;
+  const time = body.time || { totalMinutes: 0, billableMinutes: 0, entries: [] };
   const readOnly = body.readOnly === true;
   const manage = body.canOperate && !readOnly;
   const remote = app === "remote";
@@ -73,6 +75,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
     : [
       ["overview", "Overview", null],
       ["tickets", "Tickets", tickets.length],
+      ["time", "Time Entry", time.entries.length],
       ["contacts", "Contacts", contacts.length],
       ["sla", "SLA / contract", null],
       ["notes", "Notes", null],
@@ -111,6 +114,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
             <div className="cust-head-actions">
               {remote ? (
                 <>
+                  {readOnly ? null : <a className="cust-action" href={`${href("contacts")}#add-contact`}>Add contact</a>}
                   {body.canRemote && connectable.length === 1 ? (
                     <RemoteActions
                       deviceId={connectable[0].id}
@@ -402,12 +406,54 @@ export async function CustomerRecord({ app, params, searchParams }) {
             </div>
           ) : null}
 
+          {tab === "time" && !remote ? <TimeTab time={time} /> : null}
+
           {tab === "sla" && !remote && sla ? (
             <SlaTab account={account} sla={sla} report={report} readOnly={readOnly} />
           ) : null}
         </section>
       </main>
     </div>
+  );
+}
+
+function TimeTab({ time }) {
+  return (
+    <>
+      <p className="ticket-tags">
+        <span className="dash-chip">{`Total ${workTime(time.totalMinutes)}`}</span>
+        <span className="dash-chip">{`Billable ${workTime(time.billableMinutes)}`}</span>
+        <span className="dash-chip">{`Not billable ${workTime(time.totalMinutes - time.billableMinutes)}`}</span>
+      </p>
+      <div className="systems desk-table cust-tickets">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Ticket</th>
+              <th>Logged by</th>
+              <th>Time</th>
+              <th>Billable</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {time.entries.length === 0 ? (
+              <tr><td className="empty" colSpan={6}>No time logged for this customer yet. Log time from a ticket.</td></tr>
+            ) : time.entries.map((entry) => (
+              <tr key={entry.id}>
+                <td>{formatWhen(entry.createdAt)}</td>
+                <td className="desk-subject"><a href={`/tickets/${entry.ticketId}`} title={entry.ticketSubject}>#{entry.ticketId} {entry.ticketSubject}</a></td>
+                <td>{entry.userName}</td>
+                <td>{workTime(entry.minutes)}</td>
+                <td>{entry.billable ? "Yes" : "No"}</td>
+                <td>{entry.note || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

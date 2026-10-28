@@ -374,6 +374,7 @@ export async function createTicket(formData) {
     status: String(formData.get("status") || "open"),
     priority: String(formData.get("priority") || "normal"),
     comment: String(formData.get("comment") || ""),
+    attachmentIds: String(formData.get("attachmentIds") || ""),
   });
   if (!response.ok) redirect("/tickets/new?error=ticket");
   const body = await response.json();
@@ -399,6 +400,8 @@ export async function updateTicket(formData) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
+  const deviceChanged = formData.has("deviceId")
+    && (!formData.has("currentDeviceId") || String(formData.get("deviceId") || "") !== String(formData.get("currentDeviceId") || ""));
   const response = await fetch(`${apiUrl}/v1/tickets/${id}`, {
     method: "PATCH",
     headers: {
@@ -410,7 +413,7 @@ export async function updateTicket(formData) {
       priority: String(formData.get("priority") || ""),
       assigneeUserId: formData.get("assigneeUserId") || null,
       ...(formData.has("contactId") ? { contactId: formData.get("contactId") || null } : {}),
-      ...(formData.has("deviceId") ? { deviceId: formData.get("deviceId") || null } : {}),
+      ...(deviceChanged ? { deviceId: formData.get("deviceId") || null } : {}),
     }),
     cache: "no-store",
   });
@@ -418,13 +421,63 @@ export async function updateTicket(formData) {
   redirect(`/tickets/${id}`);
 }
 
-export async function addComment(formData) {
+function ticketPath(formData) {
   const id = String(formData.get("ticketId") || "");
+  return /^\d+$/.test(id) ? id : "";
+}
+
+export async function addComment(formData) {
+  const id = ticketPath(formData);
+  const kind = formData.get("kind") === "note" ? "note" : "reply";
   const response = await authed(`/v1/tickets/${id}/comments`, {
     body: String(formData.get("body") || ""),
+    kind,
+    attachmentIds: String(formData.get("attachmentIds") || ""),
   });
-  if (!response.ok) redirect(`/tickets/${id}?error=comment`);
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/${id}?compose=${kind}&error=${await errorText(response, "That could not be saved.")}`);
   redirect(`/tickets/${id}`);
+}
+
+export async function startTimer(formData) {
+  const id = ticketPath(formData);
+  const response = await authed(`/v1/tickets/${id}/timer`, { action: "start" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/${id}?error=${await errorText(response, "The timer could not start.")}`);
+  redirect(`/tickets/${id}`);
+}
+
+export async function stopTimer(formData) {
+  const id = ticketPath(formData);
+  const response = await authed(`/v1/tickets/${id}/timer`, {
+    action: "stop",
+    billable: formData.get("billable") === "on",
+    note: String(formData.get("note") || ""),
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/${id}?error=${await errorText(response, "The timer could not stop.")}`);
+  redirect(`/tickets/${id}?saved=time`);
+}
+
+export async function addTime(formData) {
+  const id = ticketPath(formData);
+  const response = await authed(`/v1/tickets/${id}/time`, {
+    minutes: Number(formData.get("minutes")),
+    billable: formData.get("billable") === "on",
+    note: String(formData.get("note") || ""),
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/${id}?error=${await errorText(response, "That time could not be logged.")}`);
+  redirect(`/tickets/${id}?saved=time`);
+}
+
+export async function removeTime(formData) {
+  const id = ticketPath(formData);
+  const entryId = String(formData.get("entryId") || "");
+  const response = await callApi(`/v1/tickets/${id}/time/${/^\d+$/.test(entryId) ? entryId : "0"}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/${id}?error=${await errorText(response, "That time could not be removed.")}`);
+  redirect(`/tickets/${id}?saved=timeRemoved`);
 }
 
 export async function deviceSoftware(deviceId) {
@@ -722,7 +775,7 @@ export async function restartRemoteAgent(deviceId) {
   return { ok: true, back: Boolean(body.back), remaining: Number(body.remaining?.total) || 0, error: "" };
 }
 
-export async function startRemoteSession(deviceId, user) {
+export async function startRemoteSession(deviceId, user, ticketId) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) return { ok: false, error: "Sign in again." };
@@ -732,7 +785,7 @@ export async function startRemoteSession(deviceId, user) {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ user: user || "" }),
+    body: JSON.stringify({ user: user || "", ...(ticketId ? { ticketId: String(ticketId) } : {}) }),
     cache: "no-store",
   });
   const body = await response.json().catch(() => ({}));

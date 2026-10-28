@@ -20,6 +20,11 @@ export async function ContactList({ app, searchParams }) {
               All Contacts <span className="desk-total">({contacts.length})</span>
             </h1>
             <SearchBox q={q} placeholder="Search contacts" />
+            {body.readOnly ? null : (
+              <a className="desk-new" href={`${base}/contacts/new`}>
+                <span aria-hidden="true">+</span> Add contact
+              </a>
+            )}
           </header>
           <p className="org-name">Contacts are added on their customer, so every contact belongs to one customer.</p>
           <div className="cust-list">

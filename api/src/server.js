@@ -16,6 +16,20 @@ import { loadAllLicenses, loadLicense } from "./license-store.js";
 import { hasApp, hasFeature } from "./licensing.js";
 import { dateOnly, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
+import {
+  ATTACHMENT_LIMIT,
+  attachmentIds,
+  commentAuthor,
+  contentDisposition,
+  imageType,
+  safeFileName as attachmentName,
+  storedContentType,
+  ticketChanges,
+  timeInput,
+  timelineItem,
+  timerMinutes,
+  timeTotals,
+} from "./ticket-events.js";
 
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
 const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
@@ -2557,9 +2571,15 @@ async function openWorkTicket(orgId, customerId, deviceId, subject, detail) {
     priority: "normal",
     ...detail,
   });
+  await ticketEvent(orgId, created.rows[0].id, "created", {
+    label: AUTOMATION_LABELS[detail?.reason] || null,
+    detail: { status: "open", priority: "normal" },
+  });
   await notifyNewTicket(orgId, created.rows[0].id, subject);
   return Number(created.rows[0].id);
 }
+
+const AUTOMATION_LABELS = { offline: "Offline monitor", missing: "Patch monitor", online: "Offline monitor" };
 
 async function notifyNewTicket(orgId, ticketId, subject) {
   const to = String(process.env.MAIL_TO || "").trim();
@@ -2572,6 +2592,7 @@ async function notifyNewTicket(orgId, ticketId, subject) {
     });
     if (!sent) return;
     await writeAudit(orgId, null, "ticket.mail", "ticket", String(ticketId), {});
+    await ticketEvent(orgId, ticketId, "email", { label: "Notifications", detail: { template: "new_ticket", subject } });
   } catch {
     console.error("ticket mail failed");
   }
@@ -2640,11 +2661,16 @@ async function attachMissingTickets(deviceId) {
   }
   if (!ticketId) return;
   for (const name of fresh) {
-    await pool.query(
-      `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
-       VALUES ($1, $2, NULL, $3)`,
-      [row.org_id, ticketId, missingNote(name)],
+    const comment = await pool.query(
+      `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body, kind, author_label)
+       VALUES ($1, $2, NULL, $3, 'note', $4)
+       RETURNING id`,
+      [row.org_id, ticketId, missingNote(name), AUTOMATION_LABELS.missing],
     );
+    await ticketEvent(row.org_id, ticketId, "note", {
+      label: AUTOMATION_LABELS.missing,
+      detail: { commentId: Number(comment.rows[0].id) },
+    });
     await writeAudit(row.org_id, null, "ticket.comment", "ticket", String(ticketId), {
       reason: "missing",
       packageName: name,
@@ -2661,16 +2687,26 @@ async function clearOfflineTicket(deviceId) {
   if (!row) return;
   const subject = `Offline on ${row.hostname}`.slice(0, 200);
   const updated = await pool.query(
-    `UPDATE tickets
+    `WITH old AS (
+       SELECT id, status FROM tickets
+       WHERE org_id = $1 AND device_id = $2 AND subject = $3 AND status <> 'resolved'
+       FOR UPDATE
+     )
+     UPDATE tickets t
      SET status = 'resolved', updated_at = now()
-     WHERE org_id = $1 AND device_id = $2 AND subject = $3 AND status <> 'resolved'
-     RETURNING id`,
+     FROM old
+     WHERE t.id = old.id
+     RETURNING t.id, old.status AS old_status`,
     [row.org_id, row.id, subject],
   );
   for (const ticket of updated.rows) {
     await writeAudit(row.org_id, null, "ticket.update", "ticket", String(ticket.id), {
       status: "resolved",
       reason: "online",
+    });
+    await ticketEvent(row.org_id, ticket.id, "status", {
+      label: AUTOMATION_LABELS.online,
+      detail: { from: ticket.old_status, to: "resolved" },
     });
   }
 }
@@ -2737,6 +2773,7 @@ async function notifyBreach(orgId, ticketId, subject) {
     });
     if (!sent) return;
     await writeAudit(orgId, null, "ticket.breach", "ticket", String(ticketId), {});
+    await ticketEvent(orgId, ticketId, "email", { label: "Notifications", detail: { template: "breach", subject: `SLA breach: ${subject}` } });
   } catch {
     console.error("ticket mail failed");
   }
@@ -2762,7 +2799,8 @@ async function sweepBreaches() {
            WHERE e.action = 'ticket.breach'
              AND e.target_type = 'ticket'
              AND e.target_id = t.id::text
-         )`,
+         )
+         AND NOT EXISTS (SELECT 1 FROM ticket_events te WHERE te.ticket_id = t.id AND te.kind = 'sla_breach')`,
       [afterId, await orgsWithFeature("ticketing")],
     );
     const now = new Date();
@@ -2775,6 +2813,10 @@ async function sweepBreaches() {
       const responseLate = clock.responseElapsed > clock.responseMinutes;
       const resolveLate = clock.resolveElapsed > clock.resolveMinutes;
       if (!responseLate && !resolveLate) continue;
+      await ticketEvent(ticket.org_id, ticket.id, "sla_breach", {
+        label: "SLA monitor",
+        detail: { target: responseLate ? "response" : "resolve" },
+      });
       await notifyBreach(ticket.org_id, ticket.id, ticket.subject);
     }
   } catch (error) {
@@ -3117,7 +3159,7 @@ async function inTransaction(work) {
   try {
     await client.query("BEGIN");
     const result = await work(client);
-    await client.query("COMMIT");
+    await client.query(result?.rollback ? "ROLLBACK" : "COMMIT");
     return result;
   } catch (error) {
     try {
@@ -3192,7 +3234,7 @@ const TICKET_CLOCK_SQL = `
     SELECT MIN(tc.created_at)
     FROM ticket_comments tc
     JOIN users u ON u.id = tc.author_user_id AND u.org_id = t.org_id
-    WHERE tc.ticket_id = t.id
+    WHERE tc.ticket_id = t.id AND tc.kind = 'reply'
   ) AS first_response_at,
   (
     SELECT MIN(e.created_at)
@@ -3463,6 +3505,196 @@ async function writeAudit(orgId, actorId, action, targetType, targetId, detail) 
      VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
     [orgId, actorId, action, targetType, targetId, JSON.stringify(detail || {})],
   );
+}
+
+async function ticketEvent(orgId, ticketId, kind, { actorId = null, label = null, detail = {}, db = pool } = {}) {
+  await db.query(
+    `INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+    [orgId, ticketId, kind, actorId, actorId == null ? label : null, JSON.stringify(detail)],
+  );
+}
+
+async function ticketChangeEvents(orgId, ticketId, before, after, options) {
+  for (const change of ticketChanges(before, after)) {
+    await ticketEvent(orgId, ticketId, change.kind, { ...options, detail: { from: change.from, to: change.to } });
+  }
+}
+
+const ATTACHMENT_DIR = process.env.ATTACHMENT_DIR || "/var/lib/df-api/attachments";
+
+function attachmentView(row) {
+  return {
+    id: Number(row.id),
+    name: row.file_name,
+    contentType: row.content_type,
+    isImage: row.is_image,
+    size: row.size_bytes,
+  };
+}
+
+async function linkAttachments(client, actor, ticketId, commentId, ids) {
+  if (ids.length === 0) return true;
+  const linked = await client.query(
+    `UPDATE ticket_attachments
+     SET ticket_id = $1, comment_id = $2, linked_at = now()
+     WHERE id = ANY($3::bigint[]) AND org_id = $4 AND uploaded_by = $5 AND linked_at IS NULL
+       AND (ticket_id IS NULL OR ticket_id = $1)
+     RETURNING id`,
+    [ticketId, commentId, ids, actor.org_id, actor.id],
+  );
+  return linked.rows.length === ids.length;
+}
+
+function idsFromEvents(rows, kinds, key) {
+  const ids = new Set();
+  for (const row of rows) {
+    if (!kinds.includes(row.kind)) continue;
+    for (const value of key === "deviceId" && row.kind === "device" ? [row.detail.from, row.detail.to] : [row.detail[key]]) {
+      const id = Number(value);
+      if (value != null && Number.isInteger(id)) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+async function ticketTimeline(orgId, ticketId, comments) {
+  const [events, attachments, users] = await Promise.all([
+    pool.query(
+      `SELECT e.id, e.kind, e.actor_user_id, e.actor_label, e.detail, e.created_at, u.name AS actor_name
+       FROM ticket_events e
+       LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.ticket_id = $1 AND e.org_id = $2
+       ORDER BY e.created_at, e.id`,
+      [ticketId, orgId],
+    ),
+    pool.query(
+      `SELECT id, comment_id, file_name, content_type, is_image, size_bytes
+       FROM ticket_attachments
+       WHERE ticket_id = $1 AND org_id = $2 AND linked_at IS NOT NULL
+       ORDER BY id`,
+      [ticketId, orgId],
+    ),
+    pool.query("SELECT id, name FROM users WHERE org_id = $1", [orgId]),
+  ]);
+  const contactIds = events.rows
+    .filter((row) => row.kind === "contact")
+    .flatMap((row) => [row.detail.from, row.detail.to])
+    .filter((value) => value != null)
+    .map(Number);
+  const deviceIds = [
+    ...idsFromEvents(events.rows, ["device"], "deviceId"),
+    ...idsFromEvents(events.rows, ["remote_start", "command"], "deviceId"),
+  ];
+  const [contacts, devices] = await Promise.all([
+    pool.query("SELECT id, name FROM contacts WHERE org_id = $1 AND id = ANY($2::bigint[])", [orgId, contactIds]),
+    pool.query("SELECT id, COALESCE(display_name, hostname) AS name FROM devices WHERE org_id = $1 AND id = ANY($2::bigint[])", [orgId, deviceIds]),
+  ]);
+  const byComment = new Map();
+  for (const row of attachments.rows) {
+    const key = Number(row.comment_id);
+    if (!byComment.has(key)) byComment.set(key, []);
+    byComment.get(key).push(attachmentView(row));
+  }
+  const lookups = {
+    comments: new Map(comments.map((row) => [Number(row.id), row])),
+    attachments: byComment,
+    users: new Map(users.rows.map((row) => [Number(row.id), row.name])),
+    contacts: new Map(contacts.rows.map((row) => [Number(row.id), row.name])),
+    devices: new Map(devices.rows.map((row) => [Number(row.id), row.name])),
+  };
+  return events.rows.map((row) => timelineItem(row, lookups));
+}
+
+async function ticketTime(actor, ticketId) {
+  const [entries, timer] = await Promise.all([
+    pool.query(
+      `SELECT te.id, te.minutes, te.billable, te.note, te.source, te.created_at, te.user_id, u.name AS user_name
+       FROM ticket_time_entries te
+       LEFT JOIN users u ON u.id = te.user_id
+       WHERE te.ticket_id = $1 AND te.org_id = $2
+       ORDER BY te.id DESC`,
+      [ticketId, actor.org_id],
+    ),
+    pool.query("SELECT started_at FROM ticket_timers WHERE ticket_id = $1 AND user_id = $2", [ticketId, actor.id]),
+  ]);
+  return {
+    ...timeTotals(entries.rows),
+    timerStartedAt: timer.rows[0]?.started_at || null,
+    entries: entries.rows.map((row) => ({
+      id: Number(row.id),
+      minutes: row.minutes,
+      billable: row.billable,
+      note: row.note,
+      source: row.source,
+      createdAt: row.created_at,
+      userName: row.user_name || "Removed user",
+      canDelete: Number(row.user_id) === Number(actor.id) || canOperate(actor),
+    })),
+  };
+}
+
+async function ticketInOrg(ticketId, orgId, db = pool) {
+  const found = await db.query("SELECT id, customer_id FROM tickets WHERE id = $1 AND org_id = $2", [ticketId, orgId]);
+  return found.rows[0] || null;
+}
+
+let ticketSessionSweepRunning = false;
+const liveTicketSessions = new Set();
+
+// Mesh does not report when a viewer closes, so the end time is when the device stops showing a session.
+async function sweepTicketSessions() {
+  if (ticketSessionSweepRunning) return;
+  ticketSessionSweepRunning = true;
+  try {
+    const open = await pool.query(
+      `SELECT e.id, e.org_id, e.ticket_id, e.created_at, d.mesh_node_id
+       FROM ticket_events e
+       JOIN devices d ON d.id = (e.detail->>'deviceId')::bigint AND d.org_id = e.org_id
+       WHERE e.kind = 'remote_start'
+         AND e.created_at > now() - interval '12 hours'
+         AND NOT (e.detail ? 'backfilled')
+         AND NOT EXISTS (
+           SELECT 1 FROM ticket_events x
+           WHERE x.ticket_id = e.ticket_id AND x.kind = 'remote_end' AND x.detail->>'startId' = e.id::text
+         )`,
+    );
+    if (open.rows.length === 0) return;
+    const live = await meshSessionList();
+    const now = Date.now();
+    for (const row of open.rows) {
+      const key = String(row.id);
+      if (row.mesh_node_id && live[row.mesh_node_id]) {
+        liveTicketSessions.add(key);
+        continue;
+      }
+      const age = now - new Date(row.created_at).getTime();
+      if (!liveTicketSessions.has(key) && age < 3 * 60000) continue;
+      liveTicketSessions.delete(key);
+      await ticketEvent(row.org_id, row.ticket_id, "remote_end", {
+        label: "Remote Desk",
+        detail: { startId: Number(row.id), minutes: Math.max(1, Math.round(age / 60000)) },
+      });
+    }
+  } catch (error) {
+    console.error(error.message);
+  } finally {
+    ticketSessionSweepRunning = false;
+  }
+}
+
+async function sweepPendingAttachments() {
+  try {
+    const stale = await pool.query(
+      "SELECT id, storage_key FROM ticket_attachments WHERE linked_at IS NULL AND created_at < now() - interval '1 day' LIMIT 200",
+    );
+    for (const row of stale.rows) {
+      await rm(join(ATTACHMENT_DIR, row.storage_key), { force: true });
+      await pool.query("DELETE FROM ticket_attachments WHERE id = $1 AND linked_at IS NULL", [row.id]);
+    }
+  } catch (error) {
+    console.error(error.message);
+  }
 }
 
 function platformHelpers() {
@@ -4762,10 +4994,16 @@ const server = createServer(async (req, res) => {
         `UPDATE jobs
          SET status = 'finished', exit_code = $1, output = $2, finished_at = now()
          WHERE id = $3 AND device_id = $4 AND status = 'running'
-         RETURNING id`,
+         RETURNING id, org_id, ticket_id`,
         [exitCode, output, jobResultMatch[1], device.id],
       );
       if (!updated.rows[0]) return send(res, 404, { error: "Job not found." });
+      if (updated.rows[0].ticket_id != null) {
+        await ticketEvent(updated.rows[0].org_id, updated.rows[0].ticket_id, "command_result", {
+          label: device.hostname || "Device agent",
+          detail: { jobId: Number(updated.rows[0].id), exitCode, output: output.slice(0, 4000) },
+        });
+      }
       return send(res, 200, { id: Number(updated.rows[0].id), status: "finished" });
     }
 
@@ -5614,6 +5852,11 @@ const server = createServer(async (req, res) => {
         await writeAudit(actor.org_id, actor.id, "job.deny", "device", deviceJobMatch[1], { reason: "role" });
         return send(res, 403, { error: "A technician cannot run a shell." });
       }
+      const jobLicense = await licenseQuery(actor.org_id);
+      if (!hasApp(jobLicense.rows[0]?.entitlements, "remote")) {
+        await writeAudit(actor.org_id, actor.id, "job.deny", "device", deviceJobMatch[1], { reason: "app" });
+        return send(res, 403, { error: "Running commands needs Remote Desk.", code: "app_not_entitled", app: "remote" });
+      }
       const body = await readJson(req);
       const command = typeof body.command === "string" ? body.command.trim() : "";
       if (!command || command.length > 400 || command.includes("\n") || command.includes("\0")) {
@@ -5644,6 +5887,12 @@ const server = createServer(async (req, res) => {
          VALUES ($1, $2, 'job.create', 'job', $3, $4::jsonb)`,
         [actor.org_id, actor.id, String(job.rows[0].id), JSON.stringify({ deviceId: device.rows[0].id })],
       );
+      if (ticketId != null) {
+        await ticketEvent(actor.org_id, ticketId, "command", {
+          actorId: actor.id,
+          detail: { jobId: Number(job.rows[0].id), command, deviceId: Number(device.rows[0].id) },
+        });
+      }
       return send(res, 201, { id: Number(job.rows[0].id), status: "queued" });
     }
 
@@ -5773,6 +6022,12 @@ const server = createServer(async (req, res) => {
           }),
         ],
       );
+      if (ticketId != null) {
+        await ticketEvent(actor.org_id, ticketId, "remote_start", {
+          actorId: actor.id,
+          detail: { deviceId: Number(device.rows[0].id), ...(sessionUser ? { user: sessionUser } : {}) },
+        });
+      }
       return send(res, 200, { url });
     }
 
@@ -6093,9 +6348,40 @@ const server = createServer(async (req, res) => {
         };
       }
       const slaTargets = slaInfo && slaInfo.resolveMinutes ? { resolveMinutes: slaInfo.resolveMinutes } : null;
+      const timeRows = view === "desk"
+        ? await pool.query(
+          `SELECT te.id, te.minutes, te.billable, te.note, te.source, te.created_at, te.ticket_id, t.subject,
+                  u.name AS user_name,
+                  sum(te.minutes) OVER ()::int AS total_minutes,
+                  (sum(te.minutes) FILTER (WHERE te.billable) OVER ())::int AS billable_minutes
+           FROM ticket_time_entries te
+           JOIN tickets t ON t.id = te.ticket_id AND t.org_id = te.org_id
+           LEFT JOIN users u ON u.id = te.user_id
+           WHERE t.customer_id = $1 AND te.org_id = $2
+           ORDER BY te.created_at DESC, te.id DESC`,
+          [accountId, actor.org_id],
+        )
+        : null;
       return send(res, 200, {
         account: accountView(account.rows[0]),
         view,
+        ...(timeRows ? {
+          time: {
+            totalMinutes: timeRows.rows[0]?.total_minutes || 0,
+            billableMinutes: timeRows.rows[0]?.billable_minutes || 0,
+            entries: timeRows.rows.slice(0, 200).map((row) => ({
+              id: Number(row.id),
+              ticketId: Number(row.ticket_id),
+              ticketSubject: row.subject,
+              minutes: row.minutes,
+              billable: row.billable,
+              note: row.note,
+              source: row.source,
+              userName: row.user_name || "Removed user",
+              createdAt: row.created_at,
+            })),
+          },
+        } : {}),
         report: reportRow
           ? {
             ticketsOpened30: reportRow.opened_30,
@@ -6557,6 +6843,11 @@ const server = createServer(async (req, res) => {
           [actor.org_id, customerId, alert.rows[0].device_id, actor.id, subject],
         );
         await client.query("UPDATE alerts SET ticket_id = $1 WHERE id = $2", [ticket.rows[0].id, alert.rows[0].id]);
+        await ticketEvent(actor.org_id, ticket.rows[0].id, "created", {
+          actorId: actor.id,
+          detail: { status: "open", priority: "high", alertId: Number(alert.rows[0].id) },
+          db: client,
+        });
         await client.query("COMMIT");
         await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
           alertId: Number(alert.rows[0].id),
@@ -7092,6 +7383,8 @@ const server = createServer(async (req, res) => {
       const assigneeUserId = body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
       const contactId = body.contactId == null || body.contactId === "" ? null : Number(body.contactId);
       const comment = typeof body.comment === "string" ? body.comment.trim() : "";
+      const files = attachmentIds(body.attachmentIds);
+      if (files == null) return send(res, 400, { error: "Attach up to 10 files at a time." });
       if (!subject || subject.length > 200) return send(res, 400, { error: "Enter a subject." });
       if (!TICKET_STATUSES.has(status) || !TICKET_PRIORITIES.has(priority)) {
         return send(res, 400, { error: "Choose a status and priority." });
@@ -7137,12 +7430,21 @@ const server = createServer(async (req, res) => {
            RETURNING id`,
           [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id, contactId],
         );
-        if (comment) {
-          await client.query(
+        const ticketId = Number(ticket.rows[0].id);
+        await ticketEvent(actor.org_id, ticketId, "created", { actorId: actor.id, detail: { status, priority }, db: client });
+        if (comment || files.length) {
+          const added = await client.query(
             `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
-             VALUES ($1, $2, $3, $4)`,
-            [actor.org_id, ticket.rows[0].id, actor.id, comment],
+             VALUES ($1, $2, $3, $4)
+             RETURNING id`,
+            [actor.org_id, ticketId, actor.id, comment],
           );
+          const commentId = Number(added.rows[0].id);
+          if (!(await linkAttachments(client, actor, ticketId, commentId, files))) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "An attachment was not found. Upload it again." });
+          }
+          await ticketEvent(actor.org_id, ticketId, "reply", { actorId: actor.id, detail: { commentId }, db: client });
         }
         await client.query("COMMIT");
         if (linked.linked) {
@@ -7188,12 +7490,18 @@ const server = createServer(async (req, res) => {
         if (!assignee.rows[0]) return send(res, 400, { error: "Choose an assignee in this organisation." });
       }
       const updated = await pool.query(
-        `UPDATE tickets
-         SET status = COALESCE($1, status),
-             assignee_user_id = CASE WHEN $2::boolean THEN $3::bigint ELSE assignee_user_id END,
+        `WITH old AS (
+           SELECT id, status, assignee_user_id FROM tickets
+           WHERE org_id = $4 AND id = ANY($5::bigint[])
+           FOR UPDATE
+         )
+         UPDATE tickets t
+         SET status = COALESCE($1, t.status),
+             assignee_user_id = CASE WHEN $2::boolean THEN $3::bigint ELSE t.assignee_user_id END,
              updated_at = now()
-         WHERE org_id = $4 AND id = ANY($5::bigint[])
-         RETURNING id, status, priority, assignee_user_id`,
+         FROM old
+         WHERE t.id = old.id
+         RETURNING t.id, t.status, t.priority, t.assignee_user_id, old.status AS old_status, old.assignee_user_id AS old_assignee`,
         [status, assign, assigneeUserId, actor.org_id, ids],
       );
       for (const row of updated.rows) {
@@ -7203,32 +7511,204 @@ const server = createServer(async (req, res) => {
           assigneeUserId: row.assignee_user_id == null ? null : Number(row.assignee_user_id),
           bulk: true,
         });
+        await ticketChangeEvents(
+          actor.org_id,
+          row.id,
+          { status: row.old_status, assigneeUserId: row.old_assignee },
+          { ...(status !== null ? { status: row.status } : {}), ...(assign ? { assigneeUserId: row.assignee_user_id } : {}) },
+          { actorId: actor.id },
+        );
       }
       return send(res, 200, { updated: updated.rows.length });
     }
 
+    if (req.method === "POST" && url.pathname === "/v1/attachments") {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const declared = headerNumber(req.headers["content-length"]);
+      if (declared != null && declared > ATTACHMENT_LIMIT) return send(res, 413, { error: "Attachments can be up to 10 MB." });
+      let rawName = "";
+      try {
+        rawName = decodeURIComponent(String(req.headers["x-df-name"] || ""));
+      } catch {
+        rawName = "";
+      }
+      const ticketHeader = String(req.headers["x-df-ticket"] || "");
+      const ticketId = ticketHeader ? Number(ticketHeader) : null;
+      if (ticketId != null && (!Number.isInteger(ticketId) || !(await ticketInOrg(ticketId, actor.org_id)))) {
+        return send(res, 404, { error: "Ticket not found." });
+      }
+      let data;
+      try {
+        data = await readBytes(req, ATTACHMENT_LIMIT);
+      } catch (error) {
+        return send(res, error.status || 400, { error: error.status === 413 ? "Attachments can be up to 10 MB." : "The file was not uploaded." });
+      }
+      if (data.length === 0) return send(res, 400, { error: "Choose a file." });
+      const image = imageType(data.subarray(0, 16));
+      const name = attachmentName(rawName);
+      const contentType = image || storedContentType(req.headers["x-df-type"]);
+      const storageKey = `${actor.org_id}/${randomBytes(16).toString("hex")}`;
+      const stored = join(ATTACHMENT_DIR, storageKey);
+      await mkdir(dirname(stored), { recursive: true, mode: 0o700 });
+      await writeFile(stored, data, { mode: 0o600, flag: "wx" });
+      const inserted = await pool.query(
+        `INSERT INTO ticket_attachments (org_id, ticket_id, uploaded_by, file_name, content_type, is_image, size_bytes, storage_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id, file_name, content_type, is_image, size_bytes`,
+        [actor.org_id, ticketId, actor.id, name, contentType, Boolean(image), data.length, storageKey],
+      );
+      return send(res, 201, attachmentView(inserted.rows[0]));
+    }
+
+    const attachmentMatch = url.pathname.match(/^\/v1\/attachments\/(\d+)$/);
+    if (req.method === "GET" && attachmentMatch) {
+      if (!(await requireTicketing(actor, res))) return;
+      const found = await pool.query(
+        `SELECT id, file_name, content_type, is_image, size_bytes, storage_key
+         FROM ticket_attachments
+         WHERE id = $1 AND org_id = $2 AND (linked_at IS NOT NULL OR uploaded_by = $3)`,
+        [attachmentMatch[1], actor.org_id, actor.id],
+      );
+      const row = found.rows[0];
+      if (!row) return send(res, 404, { error: "Attachment not found." });
+      const stored = join(ATTACHMENT_DIR, row.storage_key);
+      try {
+        await stat(stored);
+      } catch {
+        return send(res, 404, { error: "Attachment not found." });
+      }
+      res.writeHead(200, {
+        "content-type": row.is_image ? row.content_type : "application/octet-stream",
+        "content-length": String(row.size_bytes),
+        "content-disposition": contentDisposition(row.file_name, row.is_image),
+        "cache-control": "private, max-age=300",
+        "x-content-type-options": "nosniff",
+        "content-security-policy": "default-src 'none'; sandbox",
+      });
+      createReadStream(stored).pipe(res);
+      return;
+    }
+
+    const ticketTimeMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/time$/);
+    if (req.method === "POST" && ticketTimeMatch) {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const ticket = await ticketInOrg(ticketTimeMatch[1], actor.org_id);
+      if (!ticket) return send(res, 404, { error: "Ticket not found." });
+      const input = timeInput(await readJson(req));
+      if (input.error) return send(res, 400, { error: input.error });
+      const entry = await pool.query(
+        `INSERT INTO ticket_time_entries (org_id, ticket_id, user_id, minutes, billable, note)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [actor.org_id, ticket.id, actor.id, input.minutes, input.billable, input.note],
+      );
+      const entryId = Number(entry.rows[0].id);
+      await ticketEvent(actor.org_id, ticket.id, "time", {
+        actorId: actor.id,
+        detail: { entryId, minutes: input.minutes, billable: input.billable, note: input.note },
+      });
+      await writeAudit(actor.org_id, actor.id, "ticket.time", "ticket", String(ticket.id), { entryId, minutes: input.minutes });
+      return send(res, 201, { id: entryId });
+    }
+
+    const ticketTimeEntryMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/time\/(\d+)$/);
+    if (req.method === "DELETE" && ticketTimeEntryMatch) {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const found = await pool.query(
+        "SELECT id, ticket_id, user_id, minutes FROM ticket_time_entries WHERE id = $1 AND ticket_id = $2 AND org_id = $3",
+        [ticketTimeEntryMatch[2], ticketTimeEntryMatch[1], actor.org_id],
+      );
+      const entry = found.rows[0];
+      if (!entry) return send(res, 404, { error: "Time entry not found." });
+      if (Number(entry.user_id) !== Number(actor.id) && !canOperate(actor)) {
+        return send(res, 403, { error: "Only the person who logged it or an admin can remove this time." });
+      }
+      await pool.query("DELETE FROM ticket_time_entries WHERE id = $1", [entry.id]);
+      await ticketEvent(actor.org_id, entry.ticket_id, "time_removed", {
+        actorId: actor.id,
+        detail: { entryId: Number(entry.id), minutes: entry.minutes },
+      });
+      await writeAudit(actor.org_id, actor.id, "ticket.time_remove", "ticket", String(entry.ticket_id), { entryId: Number(entry.id) });
+      return send(res, 200, { removed: true });
+    }
+
+    const ticketTimerMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/timer$/);
+    if (req.method === "POST" && ticketTimerMatch) {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const ticket = await ticketInOrg(ticketTimerMatch[1], actor.org_id);
+      if (!ticket) return send(res, 404, { error: "Ticket not found." });
+      const body = await readJson(req);
+      if (body.action === "start") {
+        const started = await pool.query(
+          `INSERT INTO ticket_timers (org_id, ticket_id, user_id) VALUES ($1, $2, $3)
+           ON CONFLICT (ticket_id, user_id) DO UPDATE SET started_at = ticket_timers.started_at
+           RETURNING started_at`,
+          [actor.org_id, ticket.id, actor.id],
+        );
+        return send(res, 200, { startedAt: started.rows[0].started_at });
+      }
+      if (body.action !== "stop") return send(res, 400, { error: "Choose start or stop." });
+      const stopped = await pool.query(
+        "DELETE FROM ticket_timers WHERE ticket_id = $1 AND user_id = $2 RETURNING started_at",
+        [ticket.id, actor.id],
+      );
+      if (!stopped.rows[0]) return send(res, 409, { error: "No timer is running on this ticket." });
+      const minutes = timerMinutes(stopped.rows[0].started_at);
+      const billable = body.billable !== false;
+      const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 500) : null;
+      const entry = await pool.query(
+        `INSERT INTO ticket_time_entries (org_id, ticket_id, user_id, minutes, billable, note, source, started_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'timer', $7)
+         RETURNING id`,
+        [actor.org_id, ticket.id, actor.id, minutes, billable, note, stopped.rows[0].started_at],
+      );
+      const entryId = Number(entry.rows[0].id);
+      await ticketEvent(actor.org_id, ticket.id, "time", {
+        actorId: actor.id,
+        detail: { entryId, minutes, billable, note, timer: true },
+      });
+      await writeAudit(actor.org_id, actor.id, "ticket.time", "ticket", String(ticket.id), { entryId, minutes, timer: true });
+      return send(res, 200, { id: entryId, minutes });
+    }
+
     const ticketCommentMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)\/comments$/);
     if (req.method === "POST" && ticketCommentMatch) {
-      if (!(await requireTicketing(actor, res))) return;
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
       const body = await readJson(req);
       const text = typeof body.body === "string" ? body.body.trim() : "";
-      if (!text || text.length > 4000) return send(res, 400, { error: "Enter a comment." });
-      const ticket = await pool.query(
-        "SELECT id FROM tickets WHERE id = $1 AND org_id = $2",
-        [ticketCommentMatch[1], actor.org_id],
-      );
-      if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
-      const comment = await pool.query(
-        `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id`,
-        [actor.org_id, ticket.rows[0].id, actor.id, text],
-      );
-      await pool.query("UPDATE tickets SET updated_at = now() WHERE id = $1", [ticket.rows[0].id]);
-      await writeAudit(actor.org_id, actor.id, "ticket.comment", "ticket", String(ticket.rows[0].id), {
-        commentId: String(comment.rows[0].id),
+      const kind = body.kind === "note" ? "note" : "reply";
+      const files = attachmentIds(body.attachmentIds);
+      if (files == null) return send(res, 400, { error: "Attach up to 10 files at a time." });
+      if (text.length > 4000 || (!text && files.length === 0)) {
+        return send(res, 400, { error: kind === "note" ? "Enter a note." : "Enter a reply." });
+      }
+      const outcome = await inTransaction(async (client) => {
+        const ticket = await client.query(
+          "SELECT id FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE",
+          [ticketCommentMatch[1], actor.org_id],
+        );
+        if (!ticket.rows[0]) return { status: 404, error: "Ticket not found." };
+        const ticketId = Number(ticket.rows[0].id);
+        const comment = await client.query(
+          `INSERT INTO ticket_comments (org_id, ticket_id, author_user_id, body, kind)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id`,
+          [actor.org_id, ticketId, actor.id, text, kind],
+        );
+        const commentId = Number(comment.rows[0].id);
+        if (!(await linkAttachments(client, actor, ticketId, commentId, files))) {
+          return { status: 400, error: "An attachment was not found. Upload it again.", rollback: true };
+        }
+        await ticketEvent(actor.org_id, ticketId, kind, { actorId: actor.id, detail: { commentId }, db: client });
+        await client.query("UPDATE tickets SET updated_at = now() WHERE id = $1", [ticketId]);
+        return { ticketId, commentId };
       });
-      return send(res, 201, { id: Number(comment.rows[0].id) });
+      if (outcome.error) return send(res, outcome.status, { error: outcome.error });
+      await writeAudit(actor.org_id, actor.id, kind === "note" ? "ticket.note" : "ticket.comment", "ticket", String(outcome.ticketId), {
+        commentId: String(outcome.commentId),
+        attachments: files.length,
+      });
+      return send(res, 201, { id: outcome.commentId });
     }
 
     const ticketMatch = url.pathname.match(/^\/v1\/tickets\/(\d+)$/);
@@ -7258,7 +7738,8 @@ const server = createServer(async (req, res) => {
         }
         const outcome = await inTransaction(async (client) => {
           const current = await client.query(
-            "SELECT id, customer_id FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE",
+            `SELECT id, customer_id, status, priority, assignee_user_id, contact_id, device_id
+             FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE`,
             [ticketMatch[1], actor.org_id],
           );
           if (!current.rows[0]) return { status: 404, error: "Ticket not found." };
@@ -7279,6 +7760,26 @@ const server = createServer(async (req, res) => {
                  device_id = CASE WHEN $6::boolean THEN $7::bigint ELSE device_id END
              WHERE id = $8`,
             [status, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id],
+          );
+          const before = current.rows[0];
+          await ticketChangeEvents(
+            actor.org_id,
+            before.id,
+            {
+              status: before.status,
+              priority: before.priority,
+              assigneeUserId: before.assignee_user_id,
+              contactId: before.contact_id,
+              deviceId: before.device_id,
+            },
+            {
+              status,
+              priority,
+              assigneeUserId,
+              ...(changeContact ? { contactId } : {}),
+              ...(changeDevice ? { deviceId } : {}),
+            },
+            { actorId: actor.id, db: client },
           );
           return { id: current.rows[0].id, customerId, linked };
         });
@@ -7301,6 +7802,7 @@ const server = createServer(async (req, res) => {
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
                 ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
+                d.display_name AS device_display_name, d.users AS device_users,
                 d.mesh_node_id IS NOT NULL AS device_has_remote,
                 t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email,
                 t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
@@ -7315,13 +7817,15 @@ const server = createServer(async (req, res) => {
       if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
       const license = await licenseQuery(actor.org_id);
       const comments = await pool.query(
-        `SELECT tc.id, tc.body, tc.created_at, u.name AS author_name
+        `SELECT tc.id, tc.body, tc.kind, tc.created_at, tc.author_label, u.name AS author_name
          FROM ticket_comments tc
          LEFT JOIN users u ON u.id = tc.author_user_id
          WHERE tc.ticket_id = $1
          ORDER BY tc.id`,
         [ticket.rows[0].id],
       );
+      const timeline = await ticketTimeline(actor.org_id, ticket.rows[0].id, comments.rows);
+      const time = await ticketTime(actor, ticket.rows[0].id);
       const users = await pool.query(
         "SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name",
         [actor.org_id],
@@ -7359,20 +7863,26 @@ const server = createServer(async (req, res) => {
       );
       const job = latestJob.rows[0];
       const sla = slaFor(await slaBook(actor.org_id), ticket.rows[0].sla_plan_id);
+      const remoteDesk = hasApp(license.rows[0]?.entitlements, "remote");
       return send(res, 200, {
-        canRemote: remoteAccess(license.rows[0]).canRemote,
+        canRemote: remoteDesk && remoteAccess(license.rows[0]).canRemote,
+        canRunCommands: remoteDesk && canOperate(actor),
         canPatch: patchAllowed(license.rows[0]),
         canReport: reportingAllowed(license.rows[0]),
         canMonitor: monitoringAllowed(license.rows[0]),
         canOperate: canOperate(actor),
         sla,
         clock: slaClock(ticket.rows[0], sla, new Date()),
+        timeline,
+        time,
         ticket: {
           ...view,
           device: view.device
             ? {
               ...view.device,
               osName: ticket.rows[0].device_os_name,
+              displayName: ticket.rows[0].device_display_name || view.device.hostname,
+              users: Array.isArray(ticket.rows[0].device_users) ? ticket.rows[0].device_users : [],
               hasRemote: Boolean(ticket.rows[0].device_has_remote),
             }
             : null,
@@ -7389,8 +7899,9 @@ const server = createServer(async (req, res) => {
           comments: comments.rows.map((row) => ({
             id: Number(row.id),
             body: row.body,
+            kind: row.kind,
             createdAt: row.created_at,
-            authorName: row.author_name || "Unknown",
+            authorName: commentAuthor(row),
           })),
         },
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
@@ -7467,4 +7978,6 @@ server.listen(port, "127.0.0.1", () => {
   sweepBreaches();
   setTimeout(isolateTenantMesh, 30000);
   setInterval(isolateTenantMesh, 600000);
+  setInterval(sweepTicketSessions, 60000);
+  setInterval(sweepPendingAttachments, 3600000);
 });

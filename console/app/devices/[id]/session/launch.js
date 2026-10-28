@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { startRemoteSession } from "../../../actions";
 
-export function SessionLaunch({ deviceId, host, label, user }) {
+export function SessionLaunch({ deviceId, host, label, user, ticketId }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
     let gone = false;
-    startRemoteSession(deviceId, user).then((result) => {
+    startRemoteSession(deviceId, user, ticketId).then((result) => {
       if (gone) return;
       if (!result.ok || !result.url) {
         setError(result.error || "The remote session did not start.");
@@ -34,7 +34,7 @@ export function SessionLaunch({ deviceId, host, label, user }) {
     return () => {
       gone = true;
     };
-  }, [deviceId, host, label, user]);
+  }, [deviceId, host, label, user, ticketId]);
 
   return (
     <main className="remote-wait">

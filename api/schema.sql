@@ -555,6 +555,144 @@ ALTER TABLE customers ADD COLUMN IF NOT EXISTS contract_notes text;
 CREATE INDEX IF NOT EXISTS customers_sla_plan_id_idx ON customers (sla_plan_id);
 CREATE INDEX IF NOT EXISTS audit_events_target_idx ON audit_events (target_type, target_id);
 
+-- 'note' comments are internal: never emailed, never shown to customers.
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'reply';
+-- Shown instead of "System" when an automation wrote the comment.
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS author_label text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ticket_comments_kind_check') THEN
+    ALTER TABLE ticket_comments ADD CONSTRAINT ticket_comments_kind_check CHECK (kind IN ('reply', 'note'));
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS ticket_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint NOT NULL REFERENCES tickets (id),
+  kind text NOT NULL,
+  actor_user_id bigint REFERENCES users (id),
+  actor_label text,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_events_ticket_idx ON ticket_events (ticket_id, created_at, id);
+CREATE INDEX IF NOT EXISTS ticket_events_org_kind_idx ON ticket_events (org_id, kind, created_at);
+
+CREATE OR REPLACE FUNCTION ticket_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'ticket_events is append-only';
+END $$;
+DROP TRIGGER IF EXISTS ticket_events_append_only ON ticket_events;
+CREATE TRIGGER ticket_events_append_only BEFORE UPDATE OR DELETE ON ticket_events
+  FOR EACH ROW EXECUTE FUNCTION ticket_events_append_only();
+
+-- Uploaded first, then linked to a ticket and comment when the reply or ticket is saved.
+CREATE TABLE IF NOT EXISTS ticket_attachments (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint REFERENCES tickets (id),
+  comment_id bigint REFERENCES ticket_comments (id),
+  uploaded_by bigint REFERENCES users (id),
+  file_name text NOT NULL,
+  content_type text NOT NULL,
+  is_image boolean NOT NULL DEFAULT false,
+  size_bytes integer NOT NULL CHECK (size_bytes > 0),
+  storage_key text NOT NULL UNIQUE,
+  linked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_attachments_ticket_idx ON ticket_attachments (ticket_id);
+CREATE INDEX IF NOT EXISTS ticket_attachments_comment_idx ON ticket_attachments (comment_id);
+CREATE INDEX IF NOT EXISTS ticket_attachments_pending_idx ON ticket_attachments (created_at) WHERE linked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS ticket_time_entries (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint NOT NULL REFERENCES tickets (id),
+  user_id bigint REFERENCES users (id),
+  minutes integer NOT NULL CHECK (minutes BETWEEN 1 AND 1440),
+  billable boolean NOT NULL DEFAULT true,
+  note text,
+  source text NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'timer')),
+  started_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_time_entries_ticket_idx ON ticket_time_entries (ticket_id, id);
+CREATE INDEX IF NOT EXISTS ticket_time_entries_org_idx ON ticket_time_entries (org_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ticket_timers (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint NOT NULL REFERENCES tickets (id),
+  user_id bigint NOT NULL REFERENCES users (id),
+  started_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (ticket_id, user_id)
+);
+
+-- One-time backfill so existing tickets start with a timeline.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM ticket_events) THEN
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT t.org_id, t.id, 'created', t.created_by,
+           CASE WHEN t.created_by IS NOT NULL THEN NULL
+                WHEN t.subject LIKE 'Offline on %' THEN 'Offline monitor'
+                WHEN t.subject LIKE 'Missing %' THEN 'Patch monitor'
+                ELSE NULL END,
+           jsonb_build_object('backfilled', true), t.created_at
+    FROM tickets t;
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT tc.org_id, tc.ticket_id, tc.kind, tc.author_user_id,
+           CASE WHEN tc.author_user_id IS NULL AND tc.body LIKE 'Missing %' THEN 'Patch monitor' END,
+           jsonb_build_object('commentId', tc.id, 'backfilled', true), tc.created_at
+    FROM ticket_comments tc;
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT org_id, ticket_id, field, actor_user_id, NULL,
+           jsonb_build_object('from', prev, 'to', value, 'backfilled', true), created_at
+    FROM (
+      SELECT e.org_id, t.id AS ticket_id, e.actor_user_id, e.created_at, e.action, f.field, e.detail->>f.key AS value,
+             LAG(e.detail->>f.key) OVER (PARTITION BY t.id, f.field ORDER BY e.id) AS prev,
+             ROW_NUMBER() OVER (PARTITION BY t.id, f.field ORDER BY e.id) AS seq
+      FROM audit_events e
+      JOIN tickets t ON e.target_id ~ '^[0-9]+$' AND t.id = e.target_id::bigint AND t.org_id = e.org_id
+      CROSS JOIN (VALUES ('status', 'status'), ('priority', 'priority'), ('assignee', 'assigneeUserId')) AS f (field, key)
+      WHERE e.target_type = 'ticket' AND e.action IN ('ticket.create', 'ticket.update') AND e.detail ? f.key
+    ) changes
+    WHERE action = 'ticket.update' AND seq > 1 AND value IS DISTINCT FROM prev;
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT e.org_id, t.id, CASE e.action WHEN 'ticket.breach' THEN 'sla_breach' ELSE 'email' END, NULL, NULL,
+           jsonb_build_object('template', CASE e.action WHEN 'ticket.breach' THEN 'breach' ELSE 'new_ticket' END, 'backfilled', true),
+           e.created_at
+    FROM audit_events e
+    JOIN tickets t ON e.target_id ~ '^[0-9]+$' AND t.id = e.target_id::bigint AND t.org_id = e.org_id
+    WHERE e.target_type = 'ticket' AND e.action IN ('ticket.breach', 'ticket.mail');
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT e.org_id, t.id, 'remote_start', e.actor_user_id, NULL,
+           jsonb_build_object('deviceId', e.target_id::bigint, 'user', e.detail->>'user', 'backfilled', true), e.created_at
+    FROM audit_events e
+    JOIN tickets t ON (e.detail->>'ticketId') ~ '^[0-9]+$' AND t.id = (e.detail->>'ticketId')::bigint AND t.org_id = e.org_id
+    WHERE e.action = 'remote.launch' AND e.target_id ~ '^[0-9]+$';
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT j.org_id, j.ticket_id, 'command', j.created_by, NULL,
+           jsonb_build_object('jobId', j.id, 'command', j.command, 'deviceId', j.device_id, 'backfilled', true), j.created_at
+    FROM jobs j JOIN tickets t ON t.id = j.ticket_id AND t.org_id = j.org_id;
+
+    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+    SELECT j.org_id, j.ticket_id, 'command_result', NULL, d.hostname,
+           jsonb_build_object('jobId', j.id, 'exitCode', j.exit_code, 'output', left(COALESCE(j.output, ''), 4000), 'backfilled', true),
+           j.finished_at
+    FROM jobs j
+    JOIN tickets t ON t.id = j.ticket_id AND t.org_id = j.org_id
+    JOIN devices d ON d.id = j.device_id
+    WHERE j.status = 'finished' AND j.finished_at IS NOT NULL;
+  END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'audit_events is append-only';

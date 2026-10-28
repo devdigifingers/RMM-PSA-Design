@@ -11,6 +11,7 @@ export default async function SessionPage({ params, searchParams }) {
       host={typeof query.host === "string" ? query.host : ""}
       label={typeof query.label === "string" ? query.label : ""}
       user={typeof query.user === "string" ? query.user : ""}
+      ticketId={typeof query.ticket === "string" && /^\d+$/.test(query.ticket) ? query.ticket : ""}
     />
   );
 }

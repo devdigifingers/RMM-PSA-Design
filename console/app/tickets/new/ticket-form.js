@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { createTicket } from "../../actions";
 import { defaultDevice, DeviceOptions, deviceGroups } from "../device-options";
+import { FileDrop } from "../file-drop";
 
 export function NewTicketForm({ customers, devices, users, me, initialCustomer }) {
   const start = customers.some((customer) => customer.id === initialCustomer) ? initialCustomer : customers[0].id;
@@ -13,6 +14,7 @@ export function NewTicketForm({ customers, devices, users, me, initialCustomer }
   const contact = contacts.find((item) => item.id === contactId) || null;
   const groups = deviceGroups(devices, customerId, contact);
   const [find, setFind] = useState("");
+  const [busy, setBusy] = useState(false);
   const needle = find.trim().toLowerCase();
   const matches = needle ? customers.filter((item) => item.name.toLowerCase().includes(needle)) : customers;
   const shown = matches.some((item) => item.id === customerId) ? matches : [customer, ...matches];
@@ -90,7 +92,11 @@ export function NewTicketForm({ customers, devices, users, me, initialCustomer }
         Description
         <textarea name="comment" maxLength={4000} />
       </label>
-      <button type="submit">Create Ticket</button>
+      <div className="ticket-attach">
+        <span>Attachments</span>
+        <FileDrop onBusy={setBusy} />
+      </div>
+      <button type="submit" disabled={busy}>{busy ? "Uploading…" : "Create Ticket"}</button>
     </form>
   );
 }

@@ -15,7 +15,7 @@ const POWER = [
   ["lock", "Lock"],
 ];
 
-export function RemoteActions({ deviceId, hostname, label = "", users, connectOnly = false, agent = null }) {
+export function RemoteActions({ deviceId, hostname, label = "", users, connectOnly = false, agent = null, ticketId = null }) {
   const [menu, setMenu] = useState(null);
   const [spot, setSpot] = useState(null);
   const [user, setUser] = useState(users[0] || "");
@@ -66,7 +66,7 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
 
   function connect(chosen) {
     const person = typeof chosen === "string" ? chosen : (user || users[0] || "");
-    const opened = openRemoteSession({ deviceId, hostname, label, user: person });
+    const opened = openRemoteSession({ deviceId, hostname, label, user: person, ticketId });
     if (!opened) setNote("Allow pop-ups for this site to open the remote session.");
   }
 

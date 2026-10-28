@@ -1,9 +1,10 @@
 import { cookies } from "next/headers";
 import { AccountMenu } from "./account-menu";
-import { accountFromSession, licenseStatus } from "./account-data";
+import { accountFromSession, entitlements, licenseStatus } from "./account-data";
 import { logout } from "./actions";
 import { AppLauncher } from "./launcher";
-import { Wordmark } from "./mark";
+import Link from "next/link";
+import { BrandMark, Wordmark } from "./mark";
 import { NavLinks } from "./nav-links";
 import { Ribbon, SystemNotices } from "./notices";
 import { SearchConnect } from "./search-connect";
@@ -22,9 +23,10 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
     <>
       <header className="topbar">
         <div className="brand-nav">
-          <a className="brand-plate" href={platform ? "/control" : lastApp === "service" ? "/tickets" : "/devices"} aria-label="Digital Fingers">
+          <Link className="brand-plate" href={platform ? "/control/tenants" : lastApp === "service" ? "/tickets" : "/devices"} aria-label="Digital Fingers home">
             <Wordmark />
-          </a>
+            <BrandMark className="brand-mark" />
+          </Link>
         </div>
         {!platform && allowed.remote ? <SearchConnect /> : <span className="topbar-spacer" />}
         {account?.user ? (
@@ -34,14 +36,14 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
               manage={(account.user.roles || []).some((role) => role === "owner" || role === "admin")}
               allowed={allowed}
               flags={{
-                alerts: account.license?.monitoring === true,
-                patches: account.license?.patch === true,
-                dashboard: account.license?.reporting === true,
+                alerts: entitlements(account).features.includes("monitoring"),
+                patches: entitlements(account).features.includes("patching"),
+                dashboard: entitlements(account).features.includes("reporting"),
               }}
             />
             <SystemNotices items={notices.devices || []} showOrg={account.user.isPlatformAdmin === true} />
             <AccountMenu user={account.user} />
-            <AppLauncher allowed={allowed} lastApp={lastApp} />
+            <AppLauncher entitledApps={allowed.apps} lastApp={lastApp} />
           </div>
         ) : (
           <form action={logout}>
@@ -49,18 +51,31 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
           </form>
         )}
       </header>
-      <NavLinks
-        lastApp={platform ? "remote" : lastApp}
-        links={[
-          !platform && allowed.support ? ["/support", "Support"] : null,
-          platform ? ["/control", "Tenants"] : ["/devices", "Devices"],
-          showDashboard ? ["/dashboard", "Dashboard"] : null,
-          showAlerts ? ["/alerts", "Alerts"] : null,
-          showPatches ? ["/patches", "Patches"] : null,
-          ["/audit", "Audit"],
-        ].filter(Boolean)}
-        serviceLinks={platform ? null : [["/tickets", "Tickets"], ["/audit", "Audit"]]}
-      />
+      {platform ? (
+        <NavLinks
+          label="Admin"
+          lastApp="remote"
+          links={[
+            ["/control/tenants", "Tenants"],
+            ["/control/packages", "Packages"],
+            ["/control/audit", "Audit"],
+            ["/control/notices", "Notices"],
+          ]}
+        />
+      ) : (
+        <NavLinks
+          lastApp={lastApp}
+          links={[
+            allowed.support ? ["/support", "Support"] : null,
+            ["/devices", "Devices"],
+            showDashboard ? ["/dashboard", "Dashboard"] : null,
+            showAlerts ? ["/alerts", "Alerts"] : null,
+            showPatches ? ["/patches", "Patches"] : null,
+            ["/audit", "Audit"],
+          ].filter(Boolean)}
+          serviceLinks={[["/tickets", "Tickets"], ["/customers", "Customers"], ["/audit", "Audit"]]}
+        />
+      )}
       {notices.ribbon ? <Ribbon notice={notices.ribbon} /> : null}
       <LicenseStrip account={account} />
     </>
@@ -82,13 +97,13 @@ function LicenseStrip({ account }) {
 }
 
 function appsAllowed(account) {
-  if (account?.user?.isPlatformAdmin) return { service: true, remote: true, support: false };
-  const license = account?.license;
-  const live = Boolean(license) && (!license.expiresAt || new Date(license.expiresAt) > new Date());
+  if (account?.user?.isPlatformAdmin) return { service: true, remote: true, support: false, apps: ["remote", "servicedesk"] };
+  const { apps, features } = entitlements(account);
   return {
-    service: live && license.ticketing === true,
-    remote: live && license.remoteDesktop === true,
-    support: live && license.remoteSupport === true,
+    service: apps.includes("servicedesk"),
+    remote: apps.includes("remote"),
+    support: features.includes("remote_support"),
+    apps,
   };
 }
 

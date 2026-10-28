@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
-    "bootstrap": "node scripts/bootstrap.js"
+    "bootstrap": "node scripts/bootstrap.js",
+    "license:backfill": "node scripts/license-backfill.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
     "ioredis": "^5.8.2",

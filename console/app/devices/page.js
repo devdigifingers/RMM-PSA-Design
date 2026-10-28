@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { ConsoleBar } from "../bar";
+import { AppTitle } from "../mark";
 import { DeviceDetails } from "./details-window";
 import { OsMark } from "./os-mark";
 import { RemoteActions } from "./remote-actions";
@@ -28,7 +29,7 @@ export default async function DevicesPage({ searchParams }) {
     <div className="console">
       <ConsoleBar showTickets={body.canTicket} showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
-        <h1>Devices</h1>
+        <h1><AppTitle app="remote-desk">Devices</AppTitle></h1>
         <div className="find-row">
           <form className="find" method="get">
             <label className="search">
@@ -68,7 +69,7 @@ export default async function DevicesPage({ searchParams }) {
               <th>Display name</th>
               <th>Hostname</th>
               <th>Address</th>
-              <th>Customer</th>
+              <th>Account</th>
               <th>Operating system</th>
               <th>Active Users</th>
               <th>Last seen</th>
@@ -95,7 +96,11 @@ export default async function DevicesPage({ searchParams }) {
                     />
                   </td>
                   <td>{device.ipv4 || "—"}</td>
-                  <td>{device.customerName || "No customer"}</td>
+                  <td>
+                    {device.customerName && body.canTicket ? (
+                      <a href={`/customers/${device.customerId}?tab=assets`}>{device.customerName}</a>
+                    ) : device.customerName || "No account"}
+                  </td>
                   <td>
                     <span className="os-name">
                       {device.osName ? <OsMark osName={device.osName} /> : null}

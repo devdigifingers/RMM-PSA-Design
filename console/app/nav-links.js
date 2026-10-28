@@ -1,22 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-
-const SERVICE_PATHS = ["/tickets"];
-const REMOTE_PATHS = ["/support", "/devices", "/dashboard", "/alerts", "/patches"];
-
-function under(path, roots) {
-  return roots.some((root) => path === root || path.startsWith(`${root}/`));
-}
+import { appForPath as suiteAppForPath } from "./apps";
 
 export function appForPath(path) {
-  if (under(path, SERVICE_PATHS)) return "service";
-  if (under(path, REMOTE_PATHS)) return "remote";
-  return null;
+  return suiteAppForPath(path)?.key || null;
 }
 
-export function NavLinks({ links, serviceLinks, lastApp }) {
+export function NavLinks({ links, serviceLinks, lastApp, label }) {
   const path = usePathname() || "";
   const fromPath = appForPath(path);
   const app = fromPath || lastApp;
@@ -27,14 +20,14 @@ export function NavLinks({ links, serviceLinks, lastApp }) {
 
   const shown = app === "service" && serviceLinks ? serviceLinks : links;
   return (
-    <nav className="app-rail" aria-label={app === "service" ? "Service Desk" : "Remote Desk"}>
+    <nav className="app-rail" aria-label={label || (app === "service" ? "Service Desk" : "Remote Desk")}>
       {shown.map(([href, label]) => {
         const on = path === href || path.startsWith(`${href}/`);
         return (
-          <a key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
+          <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
             {ICONS[href] || ICONS["/devices"]}
             <span>{label}</span>
-          </a>
+          </Link>
         );
       })}
     </nav>
@@ -88,10 +81,29 @@ const ICONS = {
       <path d="M13 5v2M13 17v2M13 11v2" />
     </svg>
   ),
-  "/control": (
+  "/customers": (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path className="solid" d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
       <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2M10 6h4M10 10h4M10 14h4M10 18h4" />
     </svg>
   ),
+  "/control/tenants": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+      <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2M10 6h4M10 10h4M10 14h4M10 18h4" />
+    </svg>
+  ),
+  "/control/packages": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" />
+      <path d="M12 22V12M3.3 7 12 12l8.7-5M7.5 4.27l9 5.15" />
+    </svg>
+  ),
+  "/control/notices": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1Z" />
+      <path d="M16 9a4 4 0 0 1 0 6M19.4 6a8 8 0 0 1 0 12" />
+    </svg>
+  ),
 };
+ICONS["/control/audit"] = ICONS["/audit"];

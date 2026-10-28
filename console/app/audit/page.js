@@ -9,6 +9,8 @@ export default async function AuditPage() {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
+  const account = await accountFromSession();
+  if (account?.user?.isPlatformAdmin) redirect("/control/audit");
 
   const response = await fetch(`${apiUrl}/v1/audit`, {
     headers: { authorization: `Bearer ${token}` },
@@ -17,7 +19,6 @@ export default async function AuditPage() {
   if (response.status === 401) redirect("/");
   const body = await response.json();
   const events = body.events || [];
-  const account = await accountFromSession();
 
   return (
     <div className="console">

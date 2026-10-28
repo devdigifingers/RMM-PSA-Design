@@ -16,9 +16,21 @@ const sora = localFont({
 });
 
 export const metadata = {
+  metadataBase: new URL("https://rmm.digitalfingers.co.za"),
   title: "Digital Fingers RMM",
+  applicationName: "Digital Fingers RMM",
   description: "Digital Fingers remote monitoring and management.",
+  manifest: "/manifest.webmanifest?v=c1",
+  openGraph: {
+    title: "Digital Fingers RMM",
+    siteName: "Digital Fingers",
+    description: "Remote support · Custom software",
+  },
   robots: { index: false, follow: false },
+};
+
+export const viewport = {
+  themeColor: "#0B0B2E",
 };
 
 export default function RootLayout({ children }) {

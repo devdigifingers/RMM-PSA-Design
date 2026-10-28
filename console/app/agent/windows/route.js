@@ -21,9 +21,11 @@ export async function GET(request) {
   if (!account.org) {
     return new Response("This login is not in an organisation, so it cannot enroll a computer.", { status: 403 });
   }
+  const customerId = Number(new URL(request.url).searchParams.get("customer")) || null;
   const enroll = await fetch(`${apiUrl}/v1/enroll-tokens`, {
     method: "POST",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(customerId ? { customerId } : {}),
     cache: "no-store",
   });
   if (!enroll.ok) {

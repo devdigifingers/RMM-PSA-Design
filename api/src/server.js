@@ -12,6 +12,8 @@ import Redis from "ioredis";
 import { pool } from "./db.js";
 import { sendMail } from "./mail.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
+import { loadLicense, syncPackageFromLegacy } from "./license-store.js";
+import { handlePlatformAdmin } from "./platform-admin.js";
 
 const MODULES = ["core", "remote_desktop", "remote_support", "ticketing", "monitoring", "patch", "reporting"];
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
@@ -2017,7 +2019,21 @@ function licenseView(row) {
 }
 
 function licenseExpired(row) {
+  if (row?.status) return row.status !== "active";
   return Boolean(row?.expires_at && new Date(row.expires_at).getTime() < Date.now());
+}
+
+function inactiveMessage(row) {
+  return row?.status === "suspended" ? "This license is suspended." : "This license has expired.";
+}
+
+function licenseQuery(orgId, db = pool, options = {}) {
+  return loadLicense(db, orgId, options).then((row) => ({ rows: row ? [row] : [] }));
+}
+
+function licenseDenied(res, row, reason, feature, name) {
+  if (reason === "expired") return send(res, 403, { error: inactiveMessage(row), code: "license_inactive", feature });
+  return send(res, 403, { error: `${name} is not included on this license.`, code: "feature_not_entitled", feature });
 }
 
 function remoteAccess(row) {
@@ -2393,18 +2409,13 @@ async function requirePatch(actor, res, options = {}) {
     send(res, 403, { error: "This account is not in an org." });
     return false;
   }
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [actor.org_id],
-  );
+  const license = await licenseQuery(actor.org_id);
   const reason = patchReason(license.rows[0]);
   if (reason) {
     if (options.deny) {
       await writeAudit(actor.org_id, actor.id, "patch.deny", "org", String(actor.org_id), { reason });
     }
-    send(res, 403, {
-      error: reason === "expired" ? "This license has expired." : "Patch management is not included on this license.",
-    });
+    licenseDenied(res, license.rows[0], reason, "patching", "Patch management");
     return false;
   }
   return true;
@@ -2426,18 +2437,13 @@ async function requireReporting(actor, res, options = {}) {
     send(res, 403, { error: "This account is not in an org." });
     return false;
   }
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [actor.org_id],
-  );
+  const license = await licenseQuery(actor.org_id);
   const reason = reportingReason(license.rows[0]);
   if (reason) {
     if (options.deny) {
       await writeAudit(actor.org_id, actor.id, "reporting.deny", "org", String(actor.org_id), { reason });
     }
-    send(res, 403, {
-      error: reason === "expired" ? "This license has expired." : "Reporting is not included on this license.",
-    });
+    licenseDenied(res, license.rows[0], reason, "reporting", "Reporting");
     return false;
   }
   return true;
@@ -2511,19 +2517,13 @@ async function requireMonitoring(actor, res, options = {}) {
     send(res, 403, { error: "This account is not in an org." });
     return false;
   }
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [actor.org_id],
-  );
+  const license = await licenseQuery(actor.org_id);
   const reason = monitoringReason(license.rows[0]);
   if (reason) {
     if (options.deny) {
       await writeAudit(actor.org_id, actor.id, "monitoring.deny", "org", String(actor.org_id), { reason });
     }
-    const message = reason === "expired"
-      ? "This license has expired."
-      : "Monitoring is not included on this license.";
-    send(res, 403, { error: message });
+    licenseDenied(res, license.rows[0], reason, "monitoring", "Monitoring");
     return false;
   }
   return true;
@@ -2586,10 +2586,7 @@ async function attachMissingTickets(deviceId) {
   );
   const row = device.rows[0];
   if (!row || row.customer_id == null) return;
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [row.org_id],
-  );
+  const license = await licenseQuery(row.org_id);
   if (!ticketingAllowed(license.rows[0]) || !patchAllowed(license.rows[0])) return;
   const succeeded = await pool.query(
     "SELECT package_name FROM patch_deploys WHERE device_id = $1 AND status = 'succeeded'",
@@ -2808,19 +2805,13 @@ async function requireTicketing(actor, res, options = {}) {
     send(res, 403, { error: "This account is not in an org." });
     return false;
   }
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [actor.org_id],
-  );
+  const license = await licenseQuery(actor.org_id);
   const reason = ticketingReason(license.rows[0]);
   if (reason) {
     if (options.deny) {
       await writeAudit(actor.org_id, actor.id, "ticket.deny", "org", String(actor.org_id), { reason });
     }
-    const message = reason === "expired"
-      ? "This license has expired."
-      : "Ticketing is not included on this license.";
-    send(res, 403, { error: message });
+    licenseDenied(res, license.rows[0], reason, "ticketing", "Ticketing");
     return false;
   }
   return true;
@@ -2835,10 +2826,11 @@ function ticketView(row) {
     customer: {
       id: Number(row.customer_id),
       name: row.customer_name,
+      contactId: row.contact_id == null ? null : Number(row.contact_id),
       contactName: row.contact_name || null,
       contactEmail: row.contact_email || null,
     },
-    device: { id: Number(row.device_id), hostname: row.device_hostname },
+    device: row.device_id == null ? null : { id: Number(row.device_id), hostname: row.device_hostname },
     assignee: row.assignee_user_id
       ? { id: Number(row.assignee_user_id), name: row.assignee_name, email: row.assignee_email }
       : null,
@@ -2876,6 +2868,200 @@ async function linkDeviceToCustomer(client, orgId, customerId, deviceId) {
     return { linked: true, siteId: Number(site.rows[0].id) };
   }
   return { linked: false, siteId: Number(site.rows[0].id) };
+}
+
+async function accountOnly(client, orgId, customerId) {
+  const customer = await client.query("SELECT id FROM customers WHERE id = $1 AND org_id = $2", [customerId, orgId]);
+  if (!customer.rows[0]) return { status: 400, error: "Choose an account in this organisation." };
+  return { linked: false };
+}
+
+const TICKET_CONTACT_JOIN = `LEFT JOIN contacts ct ON ct.id = COALESCE(
+  t.contact_id,
+  (SELECT p.id FROM contacts p WHERE p.customer_id = t.customer_id AND p.is_primary LIMIT 1)
+)`;
+
+const ACCOUNT_KINDS = new Set(["company", "sole_proprietor", "other"]);
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function textField(body, key, max) {
+  const raw = body?.[key];
+  if (raw == null) return { value: null };
+  if (typeof raw !== "string") return { error: true };
+  const value = raw.trim();
+  if (value.length > max) return { error: true };
+  return { value: value || null };
+}
+
+function accountInput(body) {
+  const fields = {
+    name: textField(body, "name", 200),
+    website: textField(body, "website", 200),
+    email: textField(body, "email", 200),
+    phone: textField(body, "phone", 40),
+    altPhone: textField(body, "altPhone", 40),
+    address: textField(body, "address", 500),
+    registrationNumber: textField(body, "registrationNumber", 60),
+    vatNumber: textField(body, "vatNumber", 60),
+    notes: textField(body, "notes", 4000),
+  };
+  if (!fields.name.value || fields.name.error) return { error: "Enter an account name." };
+  const kind = body?.kind || "company";
+  if (!ACCOUNT_KINDS.has(kind)) return { error: "Choose an account type." };
+  const bad = Object.entries(fields).find(([, field]) => field.error);
+  if (bad) return { error: `Check the ${bad[0]} field.` };
+  const email = fields.email.value?.toLowerCase() || null;
+  if (email && !EMAIL_PATTERN.test(email)) return { error: "Enter a valid email address." };
+  return {
+    values: {
+      name: fields.name.value,
+      kind,
+      website: fields.website.value,
+      email,
+      phone: fields.phone.value,
+      altPhone: fields.altPhone.value,
+      address: fields.address.value,
+      registrationNumber: fields.registrationNumber.value,
+      vatNumber: fields.vatNumber.value,
+      notes: fields.notes.value,
+    },
+  };
+}
+
+function contactInput(body) {
+  const fields = {
+    name: textField(body, "name", 200),
+    email: textField(body, "email", 200),
+    phone: textField(body, "phone", 40),
+    altPhone: textField(body, "altPhone", 40),
+    jobTitle: textField(body, "jobTitle", 120),
+  };
+  if (!fields.name.value || fields.name.error) return { error: "Enter a contact name." };
+  const bad = Object.entries(fields).find(([, field]) => field.error);
+  if (bad) return { error: `Check the ${bad[0]} field.` };
+  const email = fields.email.value?.toLowerCase() || null;
+  if (email && !EMAIL_PATTERN.test(email)) return { error: "Enter a valid contact email." };
+  return {
+    values: {
+      name: fields.name.value,
+      email,
+      phone: fields.phone.value,
+      altPhone: fields.altPhone.value,
+      jobTitle: fields.jobTitle.value,
+      primary: body?.primary === true,
+    },
+  };
+}
+
+function accountView(row) {
+  return {
+    id: Number(row.id),
+    name: row.name,
+    kind: row.kind,
+    website: row.website || null,
+    email: row.email || null,
+    phone: row.phone || null,
+    altPhone: row.alt_phone || null,
+    address: row.address || null,
+    registrationNumber: row.registration_number || null,
+    vatNumber: row.vat_number || null,
+    notes: row.notes || null,
+    createdAt: row.created_at,
+  };
+}
+
+function contactView(row) {
+  return {
+    id: Number(row.id),
+    accountId: Number(row.customer_id),
+    accountName: row.customer_name || null,
+    name: row.name,
+    email: row.email || null,
+    phone: row.phone || null,
+    altPhone: row.alt_phone || null,
+    jobTitle: row.job_title || null,
+    primary: row.is_primary === true,
+  };
+}
+
+function deviceChoice(row) {
+  return {
+    id: Number(row.id),
+    hostname: row.display_name || row.hostname,
+    customerId: row.customer_id == null ? null : Number(row.customer_id),
+    customerName: row.customer_name || null,
+    contactId: row.contact_id == null ? null : Number(row.contact_id),
+  };
+}
+
+function loginKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function contactKeys(contact) {
+  const words = String(contact.name || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const keys = new Set();
+  const local = String(contact.email || "").split("@")[0];
+  if (local) keys.add(loginKey(local));
+  if (words.length) {
+    keys.add(loginKey(words.join("")));
+    keys.add(loginKey(words[0]));
+    if (words.length > 1) {
+      const last = words[words.length - 1];
+      keys.add(loginKey(`${words[0][0]}${last}`));
+      keys.add(loginKey(`${words[0]}${last[0]}`));
+    }
+  }
+  return [...keys].filter((key) => key.length >= 3);
+}
+
+function suggestContact(users, contacts) {
+  const logins = (Array.isArray(users) ? users : [])
+    .map((user) => loginKey(String(user).split("\\").pop().split("@")[0]))
+    .filter((key) => key.length >= 3);
+  if (!logins.length) return null;
+  const matches = contacts.filter((contact) => contactKeys(contact).some((key) => logins.includes(key)));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function assetsAllowed(row) {
+  return ticketingAllowed(row) && remoteAccess(row).canRemote;
+}
+
+async function licenseFlags(orgId) {
+  const license = await licenseQuery(orgId);
+  const row = license.rows[0];
+  return {
+    row,
+    canAssets: assetsAllowed(row),
+    canMonitor: monitoringAllowed(row),
+    canPatch: patchAllowed(row),
+    canReport: reportingAllowed(row),
+  };
+}
+
+async function setPrimaryContact(client, customerId, contactId) {
+  await client.query("UPDATE contacts SET is_primary = false WHERE customer_id = $1 AND is_primary AND id <> $2", [customerId, contactId]);
+  await client.query("UPDATE contacts SET is_primary = true, updated_at = now() WHERE id = $1", [contactId]);
+}
+
+async function inTransaction(work) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // The transaction was already closed.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function slaMinutes(value) {
@@ -2939,10 +3125,7 @@ function csvCell(value) {
 }
 
 async function dashboardSnapshot(orgId) {
-  const license = await pool.query(
-    "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-    [orgId],
-  );
+  const license = await licenseQuery(orgId);
   const row = license.rows[0];
   const [org, devices, tickets] = await Promise.all([
     pool.query("SELECT id, name FROM orgs WHERE id = $1", [orgId]),
@@ -3115,10 +3298,7 @@ async function runDueExports() {
        LIMIT 5`,
     );
     for (const schedule of due.rows) {
-      const license = await pool.query(
-        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-        [schedule.org_id],
-      );
+      const license = await licenseQuery(schedule.org_id);
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -3212,6 +3392,7 @@ async function createOrg(client, input, actor) {
     "INSERT INTO roles (org_id, name) VALUES ($1, 'owner'), ($1, 'admin'), ($1, 'tech')",
     [org.rows[0].id],
   );
+  await syncPackageFromLegacy(client, org.rows[0].id, { actorId: actor.id, action: "license.package" });
   const audit = await client.query(
     `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
      VALUES ($1, $2, 'org.create', 'org', $3, $4::jsonb)
@@ -3260,26 +3441,21 @@ function parseOrgInput(body) {
   return { value: { name, slug, plan, seats, deviceCap, supportConcurrent, expiresAt: expiry.value, modules } };
 }
 
-function parseLicenseInput(body) {
-  const plan = typeof body.plan === "string" ? body.plan.trim() : "";
-  if (!plan || plan.length > 40) return { error: "Enter a license type." };
-  if (!Number.isInteger(body.seats) || body.seats < 1 || !Number.isInteger(body.deviceCap) || body.deviceCap < 0) {
-    return { error: "seats must be a positive integer and deviceCap must be zero or greater." };
-  }
-  if (body.modules == null || typeof body.modules !== "object" || Array.isArray(body.modules)) {
-    return { error: "modules must be an object of feature flags." };
-  }
-  const modules = {};
-  for (const key of MODULES) {
-    if (typeof body.modules[key] !== "boolean") return { error: `modules.${key} must be true or false.` };
-    modules[key] = body.modules[key];
-  }
-  const expiry = expiryFrom(body.expiresAt);
-  if (expiry.error) return expiry;
-  const supportConcurrent = supportConcurrentFrom(body.supportConcurrent);
-  if (supportConcurrent == null) return { error: "Support sessions must be a whole number from 0 to 100." };
+function platformHelpers() {
   return {
-    value: { plan, seats: body.seats, deviceCap: body.deviceCap, supportConcurrent, expiresAt: expiry.value, modules },
+    send,
+    readJson,
+    requirePlatform,
+    hashPassword,
+    orgUsers,
+    setUserRole,
+    managersLeft,
+    revokeUserSessions,
+    expiryFrom,
+    seatsLeft,
+    parseTenantAdmin,
+    parseUserInput,
+    USER_ROLES,
   };
 }
 
@@ -3352,14 +3528,13 @@ async function orgUsers(orgId) {
 }
 
 async function seatsLeft(client, orgId) {
+  const license = await loadLicense(client, orgId);
+  if (!license) return 0;
   const result = await client.query(
-    `SELECT l.seats,
-            (SELECT count(*)::int FROM users u WHERE u.org_id = $1 AND u.is_platform_admin = false AND u.disabled_at IS NULL) AS used
-     FROM licenses l WHERE l.org_id = $1`,
+    "SELECT count(*)::int AS used FROM users u WHERE u.org_id = $1 AND u.is_platform_admin = false AND u.disabled_at IS NULL",
     [orgId],
   );
-  const row = result.rows[0];
-  return row ? row.seats - row.used : 0;
+  return license.seats - result.rows[0].used;
 }
 
 async function setUserRole(client, orgId, userId, role) {
@@ -3429,18 +3604,13 @@ async function requireSupport(actor, res, options = {}) {
     send(res, 403, { error: "This account is not in an org." });
     return null;
   }
-  const license = await pool.query(
-    "SELECT expires_at, modules, support_concurrent FROM licenses WHERE org_id = $1",
-    [actor.org_id],
-  );
+  const license = await licenseQuery(actor.org_id);
   const reason = supportReason(license.rows[0]);
   if (reason) {
     if (options.deny) {
       await writeAudit(actor.org_id, actor.id, "support.deny", "org", String(actor.org_id), { reason });
     }
-    send(res, 403, {
-      error: reason === "expired" ? "This license has expired." : "Remote support is not included on this license.",
-    });
+    licenseDenied(res, license.rows[0], reason, "remote_support", "Remote support");
     return null;
   }
   return license.rows[0];
@@ -3456,12 +3626,10 @@ const REMOTE_OPERATE_LABELS = {
 };
 
 async function requireRemote(actor, res, deviceId, operation) {
-  const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+  const license = await licenseQuery(actor.org_id);
   const access = remoteAccess(license.rows[0]);
   if (!access.canRemote) {
-    send(res, 403, {
-      error: access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.",
-    });
+    licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
     return false;
   }
   if (operation && !canOperate(actor)) {
@@ -3605,12 +3773,6 @@ async function liveSupportByCode(code) {
     [code],
   );
   return found.rows[0] || null;
-}
-
-function moduleFlags(modules) {
-  const flags = {};
-  for (const key of MODULES) flags[key] = modules?.[key] === true;
-  return flags;
 }
 
 const server = createServer(async (req, res) => {
@@ -3758,7 +3920,7 @@ const server = createServer(async (req, res) => {
           [actor.org_id, SUPPORT_LIVE],
         ),
       ]);
-      const license = await pool.query("SELECT support_concurrent FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const license = await licenseQuery(actor.org_id);
       return send(res, 200, {
         live: live.rows.map(supportView),
         history: history.rows.map(supportView),
@@ -3909,6 +4071,7 @@ const server = createServer(async (req, res) => {
           )
         : { rows: [] };
       const row = found.rows[0];
+      const effective = row?.license_id == null ? null : await loadLicense(pool, actor.org_id);
       const org = row
         ? {
             id: Number(row.id),
@@ -3919,24 +4082,29 @@ const server = createServer(async (req, res) => {
             ipRestricted: (row.ip_allowlist || []).length > 0,
           }
         : null;
-      const license = row?.license_id == null
+      const license = !effective
         ? null
         : {
             id: Number(row.license_id),
             number: 900000000 + Number(row.license_id),
-            plan: row.plan,
-            seats: row.seats,
+            plan: effective.plan,
+            package: effective.package,
+            status: effective.status,
+            active: effective.entitlements.active,
+            apps: effective.entitlements.apps,
+            features: effective.entitlements.features,
+            seats: effective.seats,
             seatsUsed: row.seats_used,
-            deviceCap: row.device_cap,
+            deviceCap: effective.device_cap,
             deviceCount: row.device_count,
-            expiresAt: row.expires_at,
-            remoteDesktop: row.modules?.remote_desktop === true,
-            remoteSupport: row.modules?.remote_support === true,
-            supportConcurrent: row.support_concurrent,
-            ticketing: row.modules?.ticketing === true,
-            monitoring: row.modules?.monitoring === true,
-            patch: row.modules?.patch === true,
-            reporting: row.modules?.reporting === true,
+            expiresAt: effective.expires_at,
+            remoteDesktop: effective.modules?.remote_desktop === true,
+            remoteSupport: effective.modules?.remote_support === true,
+            supportConcurrent: effective.support_concurrent,
+            ticketing: effective.modules?.ticketing === true,
+            monitoring: effective.modules?.monitoring === true,
+            patch: effective.modules?.patch === true,
+            reporting: effective.modules?.reporting === true,
           };
       return send(res, 200, {
         user: {
@@ -3973,6 +4141,8 @@ const server = createServer(async (req, res) => {
          FROM ribbon_notices n
          LEFT JOIN ribbon_dismissals d ON d.notice_id = n.id AND d.user_id = $1
          WHERE n.active = true
+           AND (n.starts_at IS NULL OR n.starts_at <= now())
+           AND (n.ends_at IS NULL OR n.ends_at > now())
            AND d.notice_id IS NULL
            AND (n.org_id IS NULL OR n.org_id = $2)
          ORDER BY n.org_id NULLS LAST, n.id DESC
@@ -4071,7 +4241,7 @@ const server = createServer(async (req, res) => {
           await client.query("SELECT id FROM licenses WHERE org_id = $1 FOR UPDATE", [actor.org_id]);
           if ((await seatsLeft(client, actor.org_id)) < 1) {
             await client.query("ROLLBACK");
-            return send(res, 409, { error: "All logins on the licence are in use. Disable a technician or add seats first." });
+            return send(res, 409, { error: "All seats on the license are in use. Disable a technician or add seats first." });
           }
           const user = await client.query(
             `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin)
@@ -4117,7 +4287,7 @@ const server = createServer(async (req, res) => {
           await client.query("SELECT id FROM licenses WHERE org_id = $1 FOR UPDATE", [actor.org_id]);
           if (target.disabledAt && !disabled && (await seatsLeft(client, actor.org_id)) < 1) {
             await client.query("ROLLBACK");
-            return send(res, 409, { error: "All logins on the licence are in use. Disable someone else or add seats first." });
+            return send(res, 409, { error: "All seats on the license are in use. Disable someone else or add seats first." });
           }
           await setUserRole(client, actor.org_id, userId, role);
           await client.query(
@@ -4328,211 +4498,7 @@ const server = createServer(async (req, res) => {
       });
     }
 
-    if (req.method === "GET" && url.pathname === "/v1/platform/tenants") {
-      if (!requirePlatform(actor, res)) return;
-      const orgs = await pool.query(
-        `SELECT o.id, o.name, o.slug, o.created_at,
-                l.id AS license_id, l.plan, l.seats, l.device_cap, l.expires_at, l.modules, l.support_concurrent,
-                (SELECT count(*)::int FROM devices d WHERE d.org_id = o.id) AS device_count
-         FROM orgs o
-         JOIN licenses l ON l.org_id = o.id
-         ORDER BY o.id`,
-      );
-      const people = await pool.query(
-        `SELECT u.id, u.org_id, u.email, u.name, u.account_number,
-                COALESCE(array_agg(r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
-         FROM users u
-         LEFT JOIN user_roles ur ON ur.user_id = u.id
-         LEFT JOIN roles r ON r.id = ur.role_id
-         WHERE u.org_id IS NOT NULL AND u.is_platform_admin = false
-         GROUP BY u.id
-         ORDER BY u.id`,
-      );
-      const ribbons = await pool.query(
-        `SELECT n.id, n.org_id, n.body, n.link_label, n.link_url, n.created_at, o.name AS org_name
-         FROM ribbon_notices n
-         LEFT JOIN orgs o ON o.id = n.org_id
-         WHERE n.active = true
-         ORDER BY n.id DESC`,
-      );
-      return send(res, 200, {
-        ribbons: ribbons.rows.map((row) => ({
-          id: Number(row.id),
-          orgId: row.org_id == null ? null : Number(row.org_id),
-          orgName: row.org_name || "All tenants",
-          body: row.body,
-          linkLabel: row.link_label || "",
-          linkUrl: row.link_url || "",
-          createdAt: row.created_at,
-        })),
-        tenants: orgs.rows.map((row) => ({
-          id: Number(row.id),
-          name: row.name,
-          slug: row.slug,
-          createdAt: row.created_at,
-          license: {
-            id: Number(row.license_id),
-            number: 900000000 + Number(row.license_id),
-            plan: row.plan,
-            seats: row.seats,
-            deviceCap: row.device_cap,
-            deviceCount: row.device_count,
-            supportConcurrent: row.support_concurrent,
-            expiresAt: row.expires_at,
-            modules: moduleFlags(row.modules),
-          },
-          users: people.rows
-            .filter((person) => Number(person.org_id) === Number(row.id))
-            .map((person) => ({
-              id: Number(person.id),
-              accountNumber: Number(person.account_number || 900000000 + Number(person.id)),
-              name: person.name,
-              email: person.email,
-              roles: person.roles,
-            })),
-        })),
-      });
-    }
-
-    if (req.method === "POST" && url.pathname === "/v1/platform/ribbons") {
-      if (!requirePlatform(actor, res)) return;
-      const body = await readJson(req);
-      const message = String(body.body || "").replace(/[\r\n\t]+/g, " ").trim();
-      if (!message || message.length > 180) return send(res, 400, { error: "message" });
-      const linkLabel = String(body.linkLabel || "").replace(/[\r\n\t]+/g, " ").trim().slice(0, 40);
-      const linkUrl = String(body.linkUrl || "").trim();
-      let href = "";
-      if (linkUrl) {
-        try {
-          const parsed = new URL(linkUrl);
-          if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return send(res, 400, { error: "link" });
-          href = parsed.toString().slice(0, 300);
-        } catch {
-          return send(res, 400, { error: "link" });
-        }
-      }
-      const orgId = body.orgId == null || body.orgId === "" ? null : Number(body.orgId);
-      if (orgId != null && (!Number.isInteger(orgId) || orgId < 1)) return send(res, 400, { error: "tenant" });
-      if (orgId != null) {
-        const org = await pool.query("SELECT id FROM orgs WHERE id = $1", [orgId]);
-        if (!org.rows[0]) return send(res, 400, { error: "tenant" });
-      }
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        await client.query(
-          "UPDATE ribbon_notices SET active = false WHERE active = true AND org_id IS NOT DISTINCT FROM $1",
-          [orgId],
-        );
-        const created = await client.query(
-          `INSERT INTO ribbon_notices (org_id, body, link_label, link_url, created_by)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING id`,
-          [orgId, message, href ? (linkLabel || "Know more") : null, href || null, actor.id],
-        );
-        await client.query(
-          `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-           VALUES ($1, $2, 'ribbon.publish', 'ribbon', $3, $4::jsonb)`,
-          [orgId, actor.id, String(created.rows[0].id), JSON.stringify({ audience: orgId ? "tenant" : "all" })],
-        );
-        await client.query("COMMIT");
-        return send(res, 201, { id: Number(created.rows[0].id) });
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
-    const ribbonRemoveMatch = url.pathname.match(/^\/v1\/platform\/ribbons\/(\d+)$/);
-    if (req.method === "DELETE" && ribbonRemoveMatch) {
-      if (!requirePlatform(actor, res)) return;
-      const removed = await pool.query(
-        "UPDATE ribbon_notices SET active = false WHERE id = $1 AND active = true RETURNING id, org_id",
-        [ribbonRemoveMatch[1]],
-      );
-      if (!removed.rows[0]) return send(res, 404, { error: "That notice is no longer here." });
-      await writeAudit(removed.rows[0].org_id, actor.id, "ribbon.remove", "ribbon", String(removed.rows[0].id), {});
-      return send(res, 200, { ok: true });
-    }
-
-    if (req.method === "POST" && url.pathname === "/v1/platform/tenants") {
-      if (!requirePlatform(actor, res)) return;
-      const body = await readJson(req);
-      const parsed = parseOrgInput(body);
-      if (parsed.error) return send(res, 400, { error: parsed.error });
-      const admin = parseTenantAdmin(body);
-      if (admin.error) return send(res, 400, { error: admin.error });
-      const passwordHash = await hashPassword(admin.value.password);
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const created = await createOrg(client, parsed.value, actor);
-        const user = await client.query(
-          `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin)
-           VALUES ($1, $2, $3, $4, false)
-           RETURNING id`,
-          [created.org.id, admin.value.email, admin.value.name, passwordHash],
-        );
-        const role = await client.query(
-          "SELECT id FROM roles WHERE org_id = $1 AND name = 'admin'",
-          [created.org.id],
-        );
-        await client.query(
-          "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)",
-          [user.rows[0].id, role.rows[0].id],
-        );
-        await client.query(
-          `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-           VALUES ($1, $2, 'user.create', 'user', $3, $4::jsonb)`,
-          [created.org.id, actor.id, String(user.rows[0].id), JSON.stringify({ role: "admin" })],
-        );
-        await client.query("COMMIT");
-        return send(res, 201, { id: Number(created.org.id) });
-      } catch (error) {
-        await client.query("ROLLBACK");
-        if (error.code === "23505" && String(error.constraint || "").includes("email")) {
-          return send(res, 409, { error: "That email is already a login." });
-        }
-        if (error.code === "23505") return send(res, 409, { error: "An org with that slug already exists." });
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-
-    const platformLicense = url.pathname.match(/^\/v1\/platform\/orgs\/(\d+)\/license$/);
-    if (req.method === "PUT" && platformLicense) {
-      if (!requirePlatform(actor, res)) return;
-      const parsed = parseLicenseInput(await readJson(req));
-      if (parsed.error) return send(res, 400, { error: parsed.error });
-      const updated = await pool.query(
-        `UPDATE licenses
-         SET plan = $2, seats = $3, device_cap = $4, expires_at = $5, modules = $6::jsonb, support_concurrent = $7
-         WHERE org_id = $1
-         RETURNING id`,
-        [
-          platformLicense[1],
-          parsed.value.plan,
-          parsed.value.seats,
-          parsed.value.deviceCap,
-          parsed.value.expiresAt,
-          JSON.stringify(parsed.value.modules),
-          parsed.value.supportConcurrent,
-        ],
-      );
-      if (!updated.rows[0]) return send(res, 404, { error: "Org not found." });
-      await writeAudit(platformLicense[1], actor.id, "license.update", "license", String(updated.rows[0].id), {
-        plan: parsed.value.plan,
-        seats: parsed.value.seats,
-        deviceCap: parsed.value.deviceCap,
-        supportConcurrent: parsed.value.supportConcurrent,
-        expiresAt: parsed.value.expiresAt,
-        modules: parsed.value.modules,
-      });
-      return send(res, 200, { ok: true });
-    }
+    if (await handlePlatformAdmin(req, res, url, actor, platformHelpers())) return;
 
     const platformPassword = url.pathname.match(/^\/v1\/platform\/users\/(\d+)\/password$/);
     if (req.method === "POST" && platformPassword) {
@@ -4549,7 +4515,7 @@ const server = createServer(async (req, res) => {
       const passwordHash = await hashPassword(password);
       await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, person.id]);
       await revokeUserSessions(person.id, null);
-      await writeAudit(person.org_id, actor.id, "user.password", "user", String(person.id), {});
+      await writeAudit(person.org_id, actor.id, "user.password_set", "user", String(person.id), {});
       return send(res, 200, { ok: true });
     }
 
@@ -4560,12 +4526,22 @@ const server = createServer(async (req, res) => {
         await writeAudit(actor.org_id, actor.id, "enroll.deny", "org", String(actor.org_id), { reason: "role" });
         return send(res, 403, { error: "Only an owner or admin can add computers." });
       }
+      const body = await readJson(req);
+      let customerId = null;
+      if (body.customerId != null && body.customerId !== "") {
+        const account = await pool.query(
+          "SELECT id FROM customers WHERE id = $1 AND org_id = $2",
+          [Number.isInteger(Number(body.customerId)) ? Number(body.customerId) : 0, actor.org_id],
+        );
+        if (!account.rows[0]) return send(res, 400, { error: "Choose an account in this organisation." });
+        customerId = account.rows[0].id;
+      }
       const token = randomBytes(32).toString("base64url");
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
       await pool.query(
-        `INSERT INTO enroll_tokens (org_id, token_hash, created_by, expires_at)
-         VALUES ($1, $2, $3, $4)`,
-        [actor.org_id, sha256(token), actor.id, expiresAt.toISOString()],
+        `INSERT INTO enroll_tokens (org_id, token_hash, created_by, expires_at, customer_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [actor.org_id, sha256(token), actor.id, expiresAt.toISOString(), customerId],
       );
       return send(res, 201, { token, expiresAt: expiresAt.toISOString() });
     }
@@ -4605,7 +4581,7 @@ const server = createServer(async (req, res) => {
       try {
         await client.query("BEGIN");
         const tokenRow = await client.query(
-          `SELECT id, org_id, created_by, expires_at, used_at
+          `SELECT id, org_id, created_by, expires_at, used_at, customer_id
            FROM enroll_tokens
            WHERE token_hash = $1
            FOR UPDATE`,
@@ -4616,11 +4592,7 @@ const server = createServer(async (req, res) => {
           await client.query("ROLLBACK");
           return send(res, 401, { error: "Enroll token is not valid." });
         }
-        const license = await client.query(
-          "SELECT device_cap, expires_at, modules FROM licenses WHERE org_id = $1 FOR UPDATE",
-          [invite.org_id],
-        );
-        const current = license.rows[0];
+        const current = await loadLicense(client, invite.org_id, { lock: true });
         const denyEnroll = async (reason, message) => {
           await client.query("ROLLBACK");
           await writeAudit(invite.org_id, invite.created_by, "enroll.deny", "org", String(invite.org_id), { reason });
@@ -4630,7 +4602,7 @@ const server = createServer(async (req, res) => {
           return await denyEnroll("core", "This org cannot enroll devices.");
         }
         if (licenseExpired(current)) {
-          return await denyEnroll("expired", "This license has expired.");
+          return await denyEnroll("expired", inactiveMessage(current));
         }
         const count = await client.query(
           "SELECT count(*)::int AS total FROM devices WHERE org_id = $1",
@@ -4640,11 +4612,14 @@ const server = createServer(async (req, res) => {
           return await denyEnroll("device_cap", "Device cap reached.");
         }
         const deviceToken = randomBytes(32).toString("base64url");
+        const site = invite.customer_id
+          ? await client.query("SELECT id FROM sites WHERE customer_id = $1 ORDER BY id LIMIT 1", [invite.customer_id])
+          : { rows: [] };
         const device = await client.query(
-          `INSERT INTO devices (org_id, hostname, display_name, os_name, last_seen_at, agent_token_hash)
-           VALUES ($1, $2, $2, $3, now(), $4)
+          `INSERT INTO devices (org_id, hostname, display_name, os_name, last_seen_at, agent_token_hash, site_id)
+           VALUES ($1, $2, $2, $3, now(), $4, $5)
            RETURNING id`,
-          [invite.org_id, hostname, osName || null, sha256(deviceToken)],
+          [invite.org_id, hostname, osName || null, sha256(deviceToken), site.rows[0]?.id || null],
         );
         await client.query("UPDATE enroll_tokens SET used_at = now() WHERE id = $1", [invite.id]);
         await client.query(
@@ -4654,7 +4629,7 @@ const server = createServer(async (req, res) => {
             invite.org_id,
             invite.created_by,
             String(device.rows[0].id),
-            JSON.stringify({ hostname, osName }),
+            JSON.stringify({ hostname, osName, ...(invite.customer_id ? { customerId: String(invite.customer_id) } : {}) }),
           ],
         );
         await client.query(
@@ -4829,16 +4804,13 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [actor.org_id]);
-      const license = await pool.query(
-        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-        [actor.org_id],
-      );
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
       const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const result = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.users, d.agent_version,
-                c.name AS customer_name
+                c.id AS customer_id, c.name AS customer_name
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -4866,6 +4838,7 @@ const server = createServer(async (req, res) => {
           displayName: row.display_name || row.hostname,
           presence: presenceFrom(row.last_seen_at),
           users: Array.isArray(row.users) ? row.users : [],
+          customerId: row.customer_id == null ? null : Number(row.customer_id),
           customerName: row.customer_name || null,
           osName: row.os_name,
           ipv4: row.ipv4 || null,
@@ -4880,10 +4853,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && deviceDetailsMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
-      const license = await pool.query(
-        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-        [actor.org_id],
-      );
+      const license = await licenseQuery(actor.org_id);
       const device = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
                 d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name
@@ -5052,11 +5022,10 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       if (!(await requireRemote(actor, res, deviceStartupMatch[1], "startup"))) return;
-      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
-        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
-        return send(res, 403, { error: message });
+        return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
       }
       const body = await readJson(req);
       const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -5097,11 +5066,10 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       if (!(await requireRemote(actor, res, deviceServiceMatch[1], "service"))) return;
-      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
-        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
-        return send(res, 403, { error: message });
+        return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
       }
       const body = await readJson(req);
       const name = typeof body.name === "string" ? body.name.trim() : "";
@@ -5152,11 +5120,10 @@ const server = createServer(async (req, res) => {
       if (!/^[1-9]\d{0,9}$/.test(pid) || Number(pid) > 2147483647) {
         return send(res, 400, { error: "That process is not available." });
       }
-      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
-        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
-        return send(res, 403, { error: message });
+        return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
       }
       const device = await pool.query(
         "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
@@ -5240,11 +5207,10 @@ const server = createServer(async (req, res) => {
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       if (!(await requireRemote(actor, res, (deviceTerminalMatch || deviceTerminalSessionMatch)[1], "terminal"))) return;
       const deviceId = (deviceTerminalMatch || deviceTerminalSessionMatch)[1];
-      const license = await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]);
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
-        const message = access.remoteReason === "expired" ? "This license has expired." : "Remote desktop is not included on this license.";
-        return send(res, 403, { error: message });
+        return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
       }
       if (req.method === "POST" && deviceTerminalMatch) {
         const body = await readJson(req);
@@ -5733,19 +5699,13 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && deviceRemoteMatch) {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
-      const license = await pool.query(
-        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-        [actor.org_id],
-      );
+      const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
       if (!access.canRemote) {
         await writeAudit(actor.org_id, actor.id, "remote.deny", "device", deviceRemoteMatch[1], {
           reason: access.remoteReason,
         });
-        const message = access.remoteReason === "expired"
-          ? "This license has expired."
-          : "Remote desktop is not included on this license.";
-        return send(res, 403, { error: message });
+        return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
       }
       const device = await pool.query(
         "SELECT id, hostname, display_name, mesh_node_id, os_name, users FROM devices WHERE id = $1 AND org_id = $2",
@@ -5793,70 +5753,359 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { url });
     }
 
-    const customerMatch = url.pathname.match(/^\/v1\/customers\/(\d+)$/);
-    if (req.method === "PUT" && customerMatch) {
+    if (req.method === "GET" && url.pathname === "/v1/accounts") {
       if (!(await requireTicketing(actor, res))) return;
-      const body = await readJson(req);
-      const contactName = typeof body.contactName === "string" ? body.contactName.trim() : "";
-      const contactEmail = typeof body.contactEmail === "string" ? body.contactEmail.trim().toLowerCase() : "";
-      if (!contactName || contactName.length > 200) return send(res, 400, { error: "Enter a contact name." });
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail) || contactEmail.length > 200) {
-        return send(res, 400, { error: "Enter a contact email." });
-      }
-      const updated = await pool.query(
-        `UPDATE customers
-         SET contact_name = $1, contact_email = $2
-         WHERE id = $3 AND org_id = $4
-         RETURNING id`,
-        [contactName, contactEmail, customerMatch[1], actor.org_id],
-      );
-      if (!updated.rows[0]) return send(res, 404, { error: "Customer not found." });
-      await writeAudit(actor.org_id, actor.id, "customer.contact", "customer", String(updated.rows[0].id), {
-        contactName,
-      });
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
+      const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+      const [accounts, contactTotal, flags] = await Promise.all([
+        pool.query(
+          `SELECT c.*, p.name AS primary_name, p.email AS primary_email, p.phone AS primary_phone,
+                  (SELECT count(*)::int FROM contacts ct WHERE ct.customer_id = c.id) AS contact_count,
+                  (SELECT count(*)::int FROM devices d JOIN sites s ON s.id = d.site_id WHERE s.customer_id = c.id) AS device_count,
+                  (SELECT count(*)::int FROM tickets t WHERE t.customer_id = c.id AND t.status <> 'resolved') AS open_ticket_count
+           FROM customers c
+           LEFT JOIN contacts p ON p.customer_id = c.id AND p.is_primary
+           WHERE c.org_id = $1
+             AND ($2 = '' OR c.name ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR COALESCE(c.email, '') ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR COALESCE(c.phone, '') ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR COALESCE(c.website, '') ILIKE '%' || $2 || '%' ESCAPE '\\')
+           ORDER BY lower(c.name)`,
+          [actor.org_id, needle],
+        ),
+        pool.query("SELECT count(*)::int AS total FROM contacts WHERE org_id = $1", [actor.org_id]),
+        licenseFlags(actor.org_id),
+      ]);
       return send(res, 200, {
-        id: Number(updated.rows[0].id),
-        contactName,
-        contactEmail,
+        accounts: accounts.rows.map((row) => ({
+          ...accountView(row),
+          primaryContact: row.primary_name
+            ? { name: row.primary_name, email: row.primary_email || null, phone: row.primary_phone || null }
+            : null,
+          contactCount: row.contact_count,
+          deviceCount: row.device_count,
+          openTicketCount: row.open_ticket_count,
+        })),
+        contactTotal: contactTotal.rows[0].total,
+        canAssets: flags.canAssets,
+        canMonitor: flags.canMonitor,
+        canPatch: flags.canPatch,
+        canReport: flags.canReport,
       });
     }
 
-    if (req.method === "POST" && url.pathname === "/v1/customers") {
+    if (req.method === "GET" && url.pathname === "/v1/contacts") {
+      if (!(await requireTicketing(actor, res))) return;
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
+      const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+      const [contacts, accountTotal, flags] = await Promise.all([
+        pool.query(
+          `SELECT ct.*, c.name AS customer_name
+           FROM contacts ct
+           JOIN customers c ON c.id = ct.customer_id
+           WHERE ct.org_id = $1
+             AND ($2 = '' OR ct.name ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR COALESCE(ct.email, '') ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR COALESCE(ct.phone, '') ILIKE '%' || $2 || '%' ESCAPE '\\'
+                  OR c.name ILIKE '%' || $2 || '%' ESCAPE '\\')
+           ORDER BY lower(ct.name)`,
+          [actor.org_id, needle],
+        ),
+        pool.query("SELECT count(*)::int AS total FROM customers WHERE org_id = $1", [actor.org_id]),
+        licenseFlags(actor.org_id),
+      ]);
+      return send(res, 200, {
+        contacts: contacts.rows.map(contactView),
+        accountTotal: accountTotal.rows[0].total,
+        canMonitor: flags.canMonitor,
+        canPatch: flags.canPatch,
+        canReport: flags.canReport,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/accounts") {
       if (!(await requireTicketing(actor, res))) return;
       const body = await readJson(req);
-      const name = typeof body.name === "string" ? body.name.trim() : "";
-      if (!name || name.length > 200) return send(res, 400, { error: "Enter a customer name." });
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const customer = await client.query(
-          "INSERT INTO customers (org_id, name) VALUES ($1, $2) RETURNING id, name",
-          [actor.org_id, name],
+      const input = accountInput(body);
+      if (input.error) return send(res, 400, { error: input.error });
+      let contact = null;
+      if (body.contact && typeof body.contact === "object" && String(body.contact.name || "").trim()) {
+        contact = contactInput(body.contact);
+        if (contact.error) return send(res, 400, { error: contact.error });
+      }
+      const v = input.values;
+      const created = await inTransaction(async (client) => {
+        const account = await client.query(
+          `INSERT INTO customers (org_id, name, kind, website, email, phone, alt_phone, address, registration_number, vat_number, notes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           RETURNING id`,
+          [actor.org_id, v.name, v.kind, v.website, v.email, v.phone, v.altPhone, v.address, v.registrationNumber, v.vatNumber, v.notes],
         );
+        const accountId = account.rows[0].id;
         const site = await client.query(
           "INSERT INTO sites (org_id, customer_id, name) VALUES ($1, $2, 'Primary') RETURNING id",
-          [actor.org_id, customer.rows[0].id],
+          [actor.org_id, accountId],
         );
-        await client.query("COMMIT");
-        await writeAudit(actor.org_id, actor.id, "customer.create", "customer", String(customer.rows[0].id), {
-          name,
-          siteId: String(site.rows[0].id),
-        });
-        return send(res, 201, {
-          id: Number(customer.rows[0].id),
-          name: customer.rows[0].name,
-          siteId: Number(site.rows[0].id),
-        });
-      } catch (error) {
-        try {
-          await client.query("ROLLBACK");
-        } catch {
-          // The transaction was already closed.
+        let contactId = null;
+        if (contact) {
+          const c = contact.values;
+          const row = await client.query(
+            `INSERT INTO contacts (org_id, customer_id, name, email, phone, alt_phone, job_title, is_primary)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+             RETURNING id`,
+            [actor.org_id, accountId, c.name, c.email, c.phone, c.altPhone, c.jobTitle],
+          );
+          contactId = row.rows[0].id;
         }
-        throw error;
-      } finally {
-        client.release();
+        return { accountId, siteId: site.rows[0].id, contactId };
+      });
+      await writeAudit(actor.org_id, actor.id, "customer.create", "customer", String(created.accountId), {
+        name: v.name,
+        kind: v.kind,
+        siteId: String(created.siteId),
+        ...(created.contactId ? { contactId: String(created.contactId) } : {}),
+      });
+      return send(res, 201, { id: Number(created.accountId) });
+    }
+
+    const accountMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)$/);
+    if (accountMatch && (req.method === "GET" || req.method === "PUT")) {
+      if (!(await requireTicketing(actor, res))) return;
+      if (req.method === "PUT") {
+        const input = accountInput(await readJson(req));
+        if (input.error) return send(res, 400, { error: input.error });
+        const v = input.values;
+        const updated = await pool.query(
+          `UPDATE customers
+           SET name = $1, kind = $2, website = $3, email = $4, phone = $5, alt_phone = $6, address = $7,
+               registration_number = $8, vat_number = $9, notes = $10, updated_at = now()
+           WHERE id = $11 AND org_id = $12
+           RETURNING id`,
+          [v.name, v.kind, v.website, v.email, v.phone, v.altPhone, v.address, v.registrationNumber, v.vatNumber, v.notes, accountMatch[1], actor.org_id],
+        );
+        if (!updated.rows[0]) return send(res, 404, { error: "Account not found." });
+        await writeAudit(actor.org_id, actor.id, "customer.update", "customer", String(updated.rows[0].id), { name: v.name, kind: v.kind });
+        return send(res, 200, { id: Number(updated.rows[0].id) });
       }
+      const account = await pool.query("SELECT * FROM customers WHERE id = $1 AND org_id = $2", [accountMatch[1], actor.org_id]);
+      if (!account.rows[0]) return send(res, 404, { error: "Account not found." });
+      const accountId = account.rows[0].id;
+      const flags = await licenseFlags(actor.org_id);
+      const [contacts, tickets, devices, others] = await Promise.all([
+        pool.query(
+          "SELECT * FROM contacts WHERE customer_id = $1 ORDER BY is_primary DESC, lower(name)",
+          [accountId],
+        ),
+        pool.query(
+          `SELECT t.id, t.subject, t.status, t.priority, t.created_at, t.updated_at,
+                  ct.name AS contact_name, d.hostname AS device_hostname, u.name AS assignee_name
+           FROM tickets t
+           LEFT JOIN devices d ON d.id = t.device_id
+           LEFT JOIN users u ON u.id = t.assignee_user_id
+           ${TICKET_CONTACT_JOIN}
+           WHERE t.customer_id = $1
+           ORDER BY t.id DESC
+           LIMIT 200`,
+          [accountId],
+        ),
+        flags.canAssets
+          ? pool.query(
+            `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.agent_version,
+                    d.users, d.contact_id
+             FROM devices d
+             JOIN sites s ON s.id = d.site_id
+             WHERE s.customer_id = $1 AND d.org_id = $2
+             ORDER BY lower(COALESCE(d.display_name, d.hostname))`,
+            [accountId, actor.org_id],
+          )
+          : { rows: [] },
+        flags.canAssets && canOperate(actor)
+          ? pool.query(
+            `SELECT d.id, d.hostname, d.display_name, c.name AS customer_name
+             FROM devices d
+             LEFT JOIN sites s ON s.id = d.site_id
+             LEFT JOIN customers c ON c.id = s.customer_id
+             WHERE d.org_id = $1 AND (s.customer_id IS NULL OR s.customer_id <> $2)
+             ORDER BY c.name NULLS FIRST, lower(COALESCE(d.display_name, d.hostname))`,
+            [actor.org_id, accountId],
+          )
+          : { rows: [] },
+      ]);
+      return send(res, 200, {
+        account: accountView(account.rows[0]),
+        contacts: contacts.rows.map(contactView),
+        tickets: tickets.rows.map((row) => ({
+          id: Number(row.id),
+          subject: row.subject,
+          status: row.status,
+          priority: row.priority,
+          contactName: row.contact_name || null,
+          deviceHostname: row.device_hostname,
+          assigneeName: row.assignee_name || null,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })),
+        devices: devices.rows.map((row) => {
+          const users = Array.isArray(row.users) ? row.users : [];
+          const suggested = row.contact_id == null ? suggestContact(users, contacts.rows) : null;
+          return {
+            id: Number(row.id),
+            hostname: row.hostname,
+            displayName: row.display_name || row.hostname,
+            osName: row.os_name || null,
+            ipv4: row.ipv4 || null,
+            agentVersion: row.agent_version || null,
+            presence: presenceFrom(row.last_seen_at),
+            lastSeenAt: row.last_seen_at,
+            users,
+            contactId: row.contact_id == null ? null : Number(row.contact_id),
+            suggestedContact: suggested ? { id: Number(suggested.id), name: suggested.name } : null,
+          };
+        }),
+        linkable: others.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.display_name || row.hostname,
+          accountName: row.customer_name || null,
+        })),
+        canAssets: flags.canAssets,
+        canOperate: canOperate(actor),
+        canMonitor: flags.canMonitor,
+        canPatch: flags.canPatch,
+        canReport: flags.canReport,
+      });
+    }
+
+    const accountContactsMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)\/contacts$/);
+    if (req.method === "POST" && accountContactsMatch) {
+      if (!(await requireTicketing(actor, res))) return;
+      const input = contactInput(await readJson(req));
+      if (input.error) return send(res, 400, { error: input.error });
+      const c = input.values;
+      const account = await pool.query("SELECT id FROM customers WHERE id = $1 AND org_id = $2", [accountContactsMatch[1], actor.org_id]);
+      if (!account.rows[0]) return send(res, 404, { error: "Account not found." });
+      const accountId = account.rows[0].id;
+      const contactId = await inTransaction(async (client) => {
+        await client.query("SELECT id FROM customers WHERE id = $1 FOR UPDATE", [accountId]);
+        const existing = await client.query("SELECT 1 FROM contacts WHERE customer_id = $1 AND is_primary", [accountId]);
+        const row = await client.query(
+          `INSERT INTO contacts (org_id, customer_id, name, email, phone, alt_phone, job_title)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id`,
+          [actor.org_id, accountId, c.name, c.email, c.phone, c.altPhone, c.jobTitle],
+        );
+        if (c.primary || !existing.rows[0]) await setPrimaryContact(client, accountId, row.rows[0].id);
+        return row.rows[0].id;
+      });
+      await writeAudit(actor.org_id, actor.id, "contact.create", "contact", String(contactId), { accountId: String(accountId), name: c.name });
+      return send(res, 201, { id: Number(contactId) });
+    }
+
+    const contactMatch = url.pathname.match(/^\/v1\/contacts\/(\d+)$/);
+    if (contactMatch && (req.method === "PUT" || req.method === "DELETE")) {
+      if (!(await requireTicketing(actor, res))) return;
+      const found = await pool.query("SELECT id, customer_id, is_primary FROM contacts WHERE id = $1 AND org_id = $2", [contactMatch[1], actor.org_id]);
+      if (!found.rows[0]) return send(res, 404, { error: "Contact not found." });
+      const { id: contactId, customer_id: accountId } = found.rows[0];
+      if (req.method === "PUT") {
+        const input = contactInput(await readJson(req));
+        if (input.error) return send(res, 400, { error: input.error });
+        const c = input.values;
+        await inTransaction(async (client) => {
+          await client.query("SELECT id FROM customers WHERE id = $1 FOR UPDATE", [accountId]);
+          await client.query(
+            `UPDATE contacts
+             SET name = $1, email = $2, phone = $3, alt_phone = $4, job_title = $5, updated_at = now()
+             WHERE id = $6`,
+            [c.name, c.email, c.phone, c.altPhone, c.jobTitle, contactId],
+          );
+          if (c.primary) await setPrimaryContact(client, accountId, contactId);
+        });
+        await writeAudit(actor.org_id, actor.id, "contact.update", "contact", String(contactId), { name: c.name, primary: c.primary });
+        return send(res, 200, { id: Number(contactId) });
+      }
+      await inTransaction(async (client) => {
+        await client.query("SELECT id FROM customers WHERE id = $1 FOR UPDATE", [accountId]);
+        await client.query("UPDATE tickets SET contact_id = NULL WHERE contact_id = $1", [contactId]);
+        await client.query("UPDATE devices SET contact_id = NULL WHERE contact_id = $1", [contactId]);
+        await client.query("DELETE FROM contacts WHERE id = $1", [contactId]);
+        if (found.rows[0].is_primary) {
+          const next = await client.query("SELECT id FROM contacts WHERE customer_id = $1 ORDER BY id LIMIT 1", [accountId]);
+          if (next.rows[0]) await setPrimaryContact(client, accountId, next.rows[0].id);
+        }
+      });
+      await writeAudit(actor.org_id, actor.id, "contact.delete", "contact", String(contactId), { accountId: String(accountId) });
+      return send(res, 200, { ok: true });
+    }
+
+    const accountDeviceMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)\/devices(?:\/(\d+))?$/);
+    if (accountDeviceMatch && req.method === "PUT" && accountDeviceMatch[2]) {
+      if (!(await requireTicketing(actor, res))) return;
+      const flags = await licenseFlags(actor.org_id);
+      if (!flags.canAssets) return send(res, 403, { error: "Assets need both Service Desk and Remote Desk on the licence." });
+      const body = await readJson(req);
+      const contactId = body.contactId == null || body.contactId === "" ? null : Number(body.contactId);
+      if (contactId != null && !Number.isInteger(contactId)) return send(res, 400, { error: "Choose a contact." });
+      if (contactId != null) {
+        const contact = await pool.query(
+          "SELECT id FROM contacts WHERE id = $1 AND customer_id = $2 AND org_id = $3",
+          [contactId, accountDeviceMatch[1], actor.org_id],
+        );
+        if (!contact.rows[0]) return send(res, 400, { error: "Choose a contact on this account." });
+      }
+      const updated = await pool.query(
+        `UPDATE devices d SET contact_id = $1
+         FROM sites s
+         WHERE s.id = d.site_id AND s.customer_id = $2 AND d.id = $3 AND d.org_id = $4
+         RETURNING d.id`,
+        [contactId, accountDeviceMatch[1], accountDeviceMatch[2], actor.org_id],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "That device is not on this account." });
+      await writeAudit(actor.org_id, actor.id, "device.assign", "device", String(updated.rows[0].id), {
+        customerId: String(accountDeviceMatch[1]),
+        contactId: contactId == null ? null : String(contactId),
+      });
+      return send(res, 200, { ok: true });
+    }
+    if (accountDeviceMatch && ((req.method === "POST" && !accountDeviceMatch[2]) || (req.method === "DELETE" && accountDeviceMatch[2]))) {
+      if (!(await requireTicketing(actor, res))) return;
+      const flags = await licenseFlags(actor.org_id);
+      if (!flags.canAssets) return send(res, 403, { error: "Linking assets needs both Service Desk and Remote Desk on the licence." });
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can link assets." });
+      const deviceId = req.method === "POST" ? Number((await readJson(req)).deviceId) : Number(accountDeviceMatch[2]);
+      if (!Number.isInteger(deviceId)) return send(res, 400, { error: "Choose a device." });
+      const site = await pool.query(
+        "SELECT id FROM sites WHERE customer_id = $1 AND org_id = $2 ORDER BY id LIMIT 1",
+        [accountDeviceMatch[1], actor.org_id],
+      );
+      if (!site.rows[0]) return send(res, 404, { error: "Account not found." });
+      const accountId = String(accountDeviceMatch[1]);
+      if (req.method === "POST") {
+        const before = await pool.query(
+          `SELECT s.customer_id FROM devices d LEFT JOIN sites s ON s.id = d.site_id WHERE d.id = $1 AND d.org_id = $2`,
+          [deviceId, actor.org_id],
+        );
+        if (!before.rows[0]) return send(res, 404, { error: "Device not found." });
+        await pool.query(
+          "UPDATE devices SET site_id = $1, contact_id = NULL WHERE id = $2 AND org_id = $3",
+          [site.rows[0].id, deviceId, actor.org_id],
+        );
+        await writeAudit(actor.org_id, actor.id, "device.link", "device", String(deviceId), {
+          customerId: accountId,
+          siteId: String(site.rows[0].id),
+          ...(before.rows[0].customer_id ? { fromCustomerId: String(before.rows[0].customer_id) } : {}),
+        });
+        return send(res, 200, { ok: true });
+      }
+      const removed = await pool.query(
+        `UPDATE devices d SET site_id = NULL, contact_id = NULL
+         FROM sites s
+         WHERE s.id = d.site_id AND s.customer_id = $1 AND d.id = $2 AND d.org_id = $3
+         RETURNING d.id`,
+        [accountDeviceMatch[1], deviceId, actor.org_id],
+      );
+      if (!removed.rows[0]) return send(res, 404, { error: "That device is not on this account." });
+      await writeAudit(actor.org_id, actor.id, "device.unlink", "device", String(deviceId), { customerId: accountId });
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "PUT" && url.pathname === "/v1/sla") {
@@ -5898,7 +6147,7 @@ const server = createServer(async (req, res) => {
           "SELECT id, hostname FROM devices WHERE org_id = $1 ORDER BY hostname",
           [actor.org_id],
         ),
-        pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]),
+        licenseQuery(actor.org_id),
       ]);
       return send(res, 200, {
         canTicket: ticketingAllowed(license.rows[0]),
@@ -6196,7 +6445,7 @@ const server = createServer(async (req, res) => {
           [actor.org_id],
         ),
         pool.query("SELECT category FROM patch_rules WHERE org_id = $1 ORDER BY category", [actor.org_id]),
-        pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id]),
+        licenseQuery(actor.org_id),
       ]);
       const latest = new Map(deploys.rows.map((row) => [`${row.device_id}:${row.package_name}`, row]));
       const lastInstalled = new Map();
@@ -6429,7 +6678,7 @@ const server = createServer(async (req, res) => {
       const [tickets, customers, devices, users] = await Promise.all([
         pool.query(
           `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
-                  c.contact_name, c.contact_email,
+                  ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                   t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
                   u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
                   (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count,
@@ -6442,19 +6691,27 @@ const server = createServer(async (req, res) => {
                   END AS channel
            FROM tickets t
            JOIN customers c ON c.id = t.customer_id
-           JOIN devices d ON d.id = t.device_id
+           LEFT JOIN devices d ON d.id = t.device_id
            LEFT JOIN users u ON u.id = t.assignee_user_id
+           ${TICKET_CONTACT_JOIN}
            WHERE t.org_id = $1
            ORDER BY t.id DESC
            LIMIT 2000`,
           [actor.org_id],
         ),
         pool.query(
-          "SELECT id, name, contact_name, contact_email FROM customers WHERE org_id = $1 ORDER BY name",
+          `SELECT c.id, c.name,
+                  COALESCE(json_agg(json_build_object('id', ct.id, 'name', ct.name, 'primary', ct.is_primary)
+                    ORDER BY ct.is_primary DESC, ct.name) FILTER (WHERE ct.id IS NOT NULL), '[]') AS contacts
+           FROM customers c
+           LEFT JOIN contacts ct ON ct.customer_id = c.id
+           WHERE c.org_id = $1
+           GROUP BY c.id
+           ORDER BY c.name`,
           [actor.org_id],
         ),
         pool.query(
-          `SELECT d.id, d.hostname, s.customer_id, c.name AS customer_name
+          `SELECT d.id, d.hostname, d.contact_id, s.customer_id, c.name AS customer_name
            FROM devices d
            LEFT JOIN sites s ON s.id = d.site_id
            LEFT JOIN customers c ON c.id = s.customer_id
@@ -6483,29 +6740,14 @@ const server = createServer(async (req, res) => {
         customers: customers.rows.map((row) => ({
           id: Number(row.id),
           name: row.name,
-          contactName: row.contact_name || null,
-          contactEmail: row.contact_email || null,
+          contacts: row.contacts.map((contact) => ({ id: Number(contact.id), name: contact.name, primary: contact.primary })),
         })),
-        devices: devices.rows.map((row) => ({
-          id: Number(row.id),
-          hostname: row.hostname,
-          customerId: row.customer_id == null ? null : Number(row.customer_id),
-          customerName: row.customer_name || null,
-        })),
+        devices: devices.rows.map(deviceChoice),
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
         sla,
-        canPatch: patchAllowed((await pool.query(
-          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-          [actor.org_id],
-        )).rows[0]),
-        canReport: reportingAllowed((await pool.query(
-          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-          [actor.org_id],
-        )).rows[0]),
-        canMonitor: monitoringAllowed((await pool.query(
-          "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-          [actor.org_id],
-        )).rows[0]),
+        canPatch: patchAllowed((await licenseQuery(actor.org_id)).rows[0]),
+        canReport: reportingAllowed((await licenseQuery(actor.org_id)).rows[0]),
+        canMonitor: monitoringAllowed((await licenseQuery(actor.org_id)).rows[0]),
       });
     }
 
@@ -6516,21 +6758,25 @@ const server = createServer(async (req, res) => {
       const status = body.status || "open";
       const priority = body.priority || "normal";
       const customerId = Number(body.customerId);
-      const deviceId = Number(body.deviceId);
+      const deviceId = body.deviceId == null || body.deviceId === "" ? null : Number(body.deviceId);
       const assigneeUserId = body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
+      const contactId = body.contactId == null || body.contactId === "" ? null : Number(body.contactId);
       const comment = typeof body.comment === "string" ? body.comment.trim() : "";
       if (!subject || subject.length > 200) return send(res, 400, { error: "Enter a subject." });
       if (!TICKET_STATUSES.has(status) || !TICKET_PRIORITIES.has(priority)) {
         return send(res, 400, { error: "Choose a status and priority." });
       }
-      if (!Number.isInteger(customerId) || !Number.isInteger(deviceId)) {
-        return send(res, 400, { error: "Choose a customer and a device." });
+      if (!Number.isInteger(customerId) || (deviceId != null && !Number.isInteger(deviceId))) {
+        return send(res, 400, { error: "Choose an account and a device." });
       }
+      if (contactId != null && !Number.isInteger(contactId)) return send(res, 400, { error: "Choose a contact." });
       if (comment.length > 4000) return send(res, 400, { error: "Comment is too long." });
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const linked = await linkDeviceToCustomer(client, actor.org_id, customerId, deviceId);
+        const linked = deviceId == null
+          ? await accountOnly(client, actor.org_id, customerId)
+          : await linkDeviceToCustomer(client, actor.org_id, customerId, deviceId);
         if (linked.error) {
           await client.query("ROLLBACK");
           return send(res, linked.status, { error: linked.error });
@@ -6545,11 +6791,21 @@ const server = createServer(async (req, res) => {
             return send(res, 400, { error: "Choose an assignee in this organisation." });
           }
         }
+        if (contactId != null) {
+          const contact = await client.query(
+            "SELECT id FROM contacts WHERE id = $1 AND customer_id = $2 AND org_id = $3",
+            [contactId, customerId, actor.org_id],
+          );
+          if (!contact.rows[0]) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "Choose a contact on that account." });
+          }
+        }
         const ticket = await client.query(
-          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by, contact_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id`,
-          [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id],
+          [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id, contactId],
         );
         if (comment) {
           await client.query(
@@ -6567,6 +6823,7 @@ const server = createServer(async (req, res) => {
         }
         await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
           customerId,
+          contactId,
           deviceId,
           status,
           priority,
@@ -6662,39 +6919,71 @@ const server = createServer(async (req, res) => {
           );
           if (!assignee.rows[0]) return send(res, 400, { error: "Choose an assignee in this organisation." });
         }
-        const updated = await pool.query(
-          `UPDATE tickets
-           SET status = $1, priority = $2, assignee_user_id = $3, updated_at = now()
-           WHERE id = $4 AND org_id = $5
-           RETURNING id`,
-          [status, priority, assigneeUserId, ticketMatch[1], actor.org_id],
-        );
-        if (!updated.rows[0]) return send(res, 404, { error: "Ticket not found." });
-        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(updated.rows[0].id), {
+        const changeContact = Object.hasOwn(body, "contactId");
+        const changeDevice = Object.hasOwn(body, "deviceId");
+        const contactId = !changeContact || body.contactId == null || body.contactId === "" ? null : Number(body.contactId);
+        const deviceId = !changeDevice || body.deviceId == null || body.deviceId === "" ? null : Number(body.deviceId);
+        if ((contactId != null && !Number.isInteger(contactId)) || (deviceId != null && !Number.isInteger(deviceId))) {
+          return send(res, 400, { error: "Choose a contact and device." });
+        }
+        const outcome = await inTransaction(async (client) => {
+          const current = await client.query(
+            "SELECT id, customer_id FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE",
+            [ticketMatch[1], actor.org_id],
+          );
+          if (!current.rows[0]) return { status: 404, error: "Ticket not found." };
+          const customerId = Number(current.rows[0].customer_id);
+          if (contactId != null) {
+            const contact = await client.query("SELECT id FROM contacts WHERE id = $1 AND customer_id = $2", [contactId, customerId]);
+            if (!contact.rows[0]) return { status: 400, error: "Choose a contact on this ticket's account." };
+          }
+          let linked = null;
+          if (deviceId != null) {
+            linked = await linkDeviceToCustomer(client, actor.org_id, customerId, deviceId);
+            if (linked.error) return linked;
+          }
+          await client.query(
+            `UPDATE tickets
+             SET status = $1, priority = $2, assignee_user_id = $3, updated_at = now(),
+                 contact_id = CASE WHEN $4::boolean THEN $5::bigint ELSE contact_id END,
+                 device_id = CASE WHEN $6::boolean THEN $7::bigint ELSE device_id END
+             WHERE id = $8`,
+            [status, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id],
+          );
+          return { id: current.rows[0].id, customerId, linked };
+        });
+        if (outcome.error) return send(res, outcome.status, { error: outcome.error });
+        if (outcome.linked?.linked) {
+          await writeAudit(actor.org_id, actor.id, "device.link", "device", String(deviceId), {
+            customerId: outcome.customerId,
+            siteId: outcome.linked.siteId,
+          });
+        }
+        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(outcome.id), {
           status,
           priority,
           assigneeUserId,
+          ...(changeContact ? { contactId } : {}),
+          ...(changeDevice ? { deviceId } : {}),
         });
       }
       const ticket = await pool.query(
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
-                c.contact_name, c.contact_email,
+                ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
                 d.mesh_node_id IS NOT NULL AS device_has_remote,
                 t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email,
                 t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
          FROM tickets t
          JOIN customers c ON c.id = t.customer_id
-         JOIN devices d ON d.id = t.device_id
+         LEFT JOIN devices d ON d.id = t.device_id
          LEFT JOIN users u ON u.id = t.assignee_user_id
+         ${TICKET_CONTACT_JOIN}
          WHERE t.id = $1 AND t.org_id = $2`,
         [ticketMatch[1], actor.org_id],
       );
       if (!ticket.rows[0]) return send(res, 404, { error: "Ticket not found." });
-      const license = await pool.query(
-        "SELECT expires_at, modules FROM licenses WHERE org_id = $1",
-        [actor.org_id],
-      );
+      const license = await licenseQuery(actor.org_id);
       const comments = await pool.query(
         `SELECT tc.id, tc.body, tc.created_at, u.name AS author_name
          FROM ticket_comments tc
@@ -6708,6 +6997,20 @@ const server = createServer(async (req, res) => {
         [actor.org_id],
       );
       const view = ticketView(ticket.rows[0]);
+      const [accountContacts, deviceChoices] = await Promise.all([
+        pool.query(
+          "SELECT id, name, is_primary FROM contacts WHERE customer_id = $1 ORDER BY is_primary DESC, lower(name)",
+          [ticket.rows[0].customer_id],
+        ),
+        pool.query(
+          `SELECT d.id, d.hostname, d.display_name, d.contact_id, s.customer_id
+           FROM devices d
+           LEFT JOIN sites s ON s.id = d.site_id
+           WHERE d.org_id = $1 AND (s.customer_id = $2 OR d.site_id IS NULL OR d.id = $3)
+           ORDER BY lower(COALESCE(d.display_name, d.hostname))`,
+          [actor.org_id, ticket.rows[0].customer_id, ticket.rows[0].device_id],
+        ),
+      ]);
       const latestJob = await pool.query(
         `SELECT id, command, status, exit_code, output, finished_at
          FROM jobs
@@ -6728,11 +7031,13 @@ const server = createServer(async (req, res) => {
         clock: slaClock(ticket.rows[0], sla, new Date()),
         ticket: {
           ...view,
-          device: {
-            ...view.device,
-            osName: ticket.rows[0].device_os_name,
-            hasRemote: Boolean(ticket.rows[0].device_has_remote),
-          },
+          device: view.device
+            ? {
+              ...view.device,
+              osName: ticket.rows[0].device_os_name,
+              hasRemote: Boolean(ticket.rows[0].device_has_remote),
+            }
+            : null,
           latestJob: job
             ? {
                 id: Number(job.id),
@@ -6751,6 +7056,8 @@ const server = createServer(async (req, res) => {
           })),
         },
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
+        contacts: accountContacts.rows.map((row) => ({ id: Number(row.id), name: row.name, primary: row.is_primary })),
+        devices: deviceChoices.rows.map(deviceChoice),
       });
     }
 
@@ -6759,7 +7066,7 @@ const server = createServer(async (req, res) => {
       const action = url.searchParams.get("action");
       const orgId = actor.is_platform_admin ? null : actor.org_id || 0;
       const license = actor.org_id
-        ? await pool.query("SELECT expires_at, modules FROM licenses WHERE org_id = $1", [actor.org_id])
+        ? await licenseQuery(actor.org_id)
         : { rows: [] };
       const row = license.rows[0];
       const result = await pool.query(

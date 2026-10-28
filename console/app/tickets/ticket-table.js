@@ -97,10 +97,10 @@ export function TicketTable({ tickets, users, me, empty }) {
               <th className="desk-check">
                 <input type="checkbox" checked={allChosen} onChange={toggleAll} aria-label="Select all tickets" disabled={!ids.length} />
               </th>
-              <th>Ticket ID</th>
+              <th>ID</th>
               <th>Subject</th>
               <th>Contact Name</th>
-              <th>Customer</th>
+              <th>Account</th>
               <th>Device</th>
               <th>Last Activity</th>
               <th>Due Date</th>
@@ -125,9 +125,9 @@ export function TicketTable({ tickets, users, me, empty }) {
                   <a href={`/tickets/${ticket.id}`} title={ticket.subject}>{ticket.subject}</a>
                   {ticket.commentCount ? <span className="desk-comments" title={`${ticket.commentCount} comments`}>{ticket.commentCount}</span> : null}
                 </td>
-                <td>{ticket.customer?.contactName || "—"}</td>
-                <td>{ticket.customer?.name || "—"}</td>
-                <td>{ticket.device?.hostname || "—"}</td>
+                <td className="desk-clip" title={ticket.customer?.contactName || undefined}>{ticket.customer?.contactName || "—"}</td>
+                <td className="desk-clip" title={ticket.customer?.name || undefined}>{ticket.customer?.name || "—"}</td>
+                <td className="desk-clip" title={ticket.device?.hostname || undefined}>{ticket.device?.hostname || "—"}</td>
                 <td>{when(ticket.lastActivityAt)}</td>
                 <td className={ticket.overdue ? "desk-overdue" : undefined}>{ticket.dueAt ? when(ticket.dueAt) : "—"}</td>
                 <td>
@@ -145,7 +145,7 @@ export function TicketTable({ tickets, users, me, empty }) {
                 <td>
                   <span className={ticket.assignee ? "desk-owner" : "desk-owner is-empty"}>
                     <Avatar name={ticket.assignee?.name} />
-                    {ticket.assignee?.name || "Unassigned"}
+                    <span className="desk-owner-name" title={ticket.assignee?.name || undefined}>{ticket.assignee?.name || "Unassigned"}</span>
                   </span>
                 </td>
                 <td>
@@ -171,9 +171,9 @@ function when(value) {
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: true,
+    hourCycle: "h23",
   }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
-  return `${parts.day} ${parts.month} ${parts.hour}:${parts.minute} ${String(parts.dayPeriod || "").toUpperCase()}`;
+  return `${parts.day} ${parts.month} ${parts.hour}:${parts.minute}`;
 }
 
 function Avatar({ name }) {

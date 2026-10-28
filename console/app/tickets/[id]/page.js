@@ -2,6 +2,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { addComment, runJob, updateTicket } from "../../actions";
 import { ConsoleBar } from "../../bar";
+import { AppTitle } from "../../mark";
+import { DeviceOptions, deviceGroups } from "../device-options";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -27,16 +29,16 @@ export default async function TicketPage({ params, searchParams }) {
       <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
         <p className="desk-back"><a href="/tickets">← All Tickets</a></p>
-        <h1><span className="desk-id">#{ticket.id}</span> {ticket.subject}</h1>
+        <h1><AppTitle app="service-desk"><span className="desk-id">#{ticket.id}</span> {ticket.subject}</AppTitle></h1>
         <p className="ticket-tags">
           <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
           <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
         </p>
         <p className="org-name">
-          {ticket.customer.name} · {ticket.device.hostname}
+          {ticket.customer.name} · {ticket.device ? ticket.device.hostname : "No specific device"}
         </p>
         {ticket.customer.contactName ? (
-          <p className="org-name">{ticket.customer.contactName} · {ticket.customer.contactEmail}</p>
+          <p className="org-name">{[ticket.customer.contactName, ticket.customer.contactEmail].filter(Boolean).join(" · ")}</p>
         ) : null}
         {body.clock ? (
           <p className="ticket-tags">
@@ -44,10 +46,10 @@ export default async function TicketPage({ params, searchParams }) {
             <Clock label="Resolve" used={body.clock.resolveElapsed} target={body.clock.resolveMinutes} />
           </p>
         ) : null}
-        {body.canRemote && ticket.device.hasRemote ? (
+        {body.canRemote && ticket.device?.hasRemote ? (
           <p><a className="remote" href={`/tickets/${ticket.id}/remote`}>Open remote</a></p>
         ) : null}
-        {body.canOperate ? (
+        {body.canOperate && ticket.device ? (
           <section className="job">
             <h2>Command</h2>
             <form action={runJob}>
@@ -96,6 +98,21 @@ export default async function TicketPage({ params, searchParams }) {
                 {users.map((user) => (
                   <option key={user.id} value={user.id}>{user.name}</option>
                 ))}
+              </select>
+            </label>
+            <label>
+              Contact
+              <select name="contactId" defaultValue={ticket.customer.contactId || ""}>
+                <option value="">No contact</option>
+                {(body.contacts || []).map((item) => (
+                  <option key={item.id} value={item.id}>{item.primary ? `${item.name} (primary)` : item.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Affected device
+              <select name="deviceId" defaultValue={ticket.device?.id || ""}>
+                <DeviceOptions groups={deviceGroups(body.devices || [], ticket.customer.id, (body.contacts || []).find((item) => item.id === ticket.customer.contactId) || null)} />
               </select>
             </label>
             <button type="submit">Save</button>

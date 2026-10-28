@@ -1,11 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 function sectionsFor({ platform, manage, allowed, flags }) {
   if (platform) {
     return [
-      { title: "Platform", icon: <OrgIcon />, items: [["Tenants and licences", "/control"], ["Action Log Viewer", "/audit"]] },
+      { title: "Platform", icon: <OrgIcon />, items: [["Tenants", "/control/tenants"], ["Packages", "/control/packages"], ["Notices", "/control/notices"], ["Action Log Viewer", "/control/audit"]] },
       { title: "My Login", icon: <ShieldIcon />, items: [["My Account", "/account"], ["Password", "/account"], ["Multi-Factor Authentication (MFA)", "/settings/mfa"]] },
     ];
   }
@@ -146,7 +147,7 @@ export function SettingsMenu(props) {
                   {section.items.map(([label, href]) => (
                     <li key={label}>
                       {href ? (
-                        <a href={href}>{label}</a>
+                        <Link href={href} onClick={() => setOpen(false)}>{label}</Link>
                       ) : (
                         <span className="settings-soon" title="Coming soon">{label}<em>Soon</em></span>
                       )}

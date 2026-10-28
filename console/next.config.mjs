@@ -11,6 +11,7 @@ const everywhere = [
 
 const nextConfig = {
   poweredByHeader: false,
+  experimental: { authInterrupts: true },
   async headers() {
     return [
       { source: "/:path*", headers: everywhere },

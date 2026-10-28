@@ -401,3 +401,129 @@ ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_users jsonb;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_version text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_update_requested_at timestamptz;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS agent_update_offered_at timestamptz;
+
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'company';
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS website text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS alt_phone text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS address text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS registration_number text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS vat_number text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS notes text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_kind_check') THEN
+    ALTER TABLE customers ADD CONSTRAINT customers_kind_check CHECK (kind IN ('company', 'sole_proprietor', 'other'));
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint NOT NULL REFERENCES customers (id),
+  name text NOT NULL,
+  email text,
+  phone text,
+  alt_phone text,
+  job_title text,
+  is_primary boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS contacts_org_id_idx ON contacts (org_id);
+CREATE INDEX IF NOT EXISTS contacts_customer_id_idx ON contacts (customer_id);
+CREATE UNIQUE INDEX IF NOT EXISTS contacts_one_primary_idx ON contacts (customer_id) WHERE is_primary;
+
+INSERT INTO contacts (org_id, customer_id, name, email, is_primary)
+SELECT c.org_id, c.id, c.contact_name, c.contact_email, true
+FROM customers c
+WHERE c.contact_name IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM contacts ct WHERE ct.customer_id = c.id);
+
+UPDATE customers c
+SET contact_name = NULL, contact_email = NULL
+WHERE c.contact_name IS NOT NULL
+  AND EXISTS (SELECT 1 FROM contacts ct WHERE ct.customer_id = c.id);
+
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS contact_id bigint REFERENCES contacts (id);
+CREATE INDEX IF NOT EXISTS tickets_contact_id_idx ON tickets (contact_id);
+
+ALTER TABLE enroll_tokens ADD COLUMN IF NOT EXISTS customer_id bigint REFERENCES customers (id);
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS contact_id bigint REFERENCES contacts (id);
+CREATE INDEX IF NOT EXISTS devices_contact_id_idx ON devices (contact_id);
+ALTER TABLE tickets ALTER COLUMN device_id DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS packages (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  code text NOT NULL UNIQUE,
+  name text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  features text[] NOT NULL DEFAULT '{}',
+  default_seats integer NOT NULL CHECK (default_seats > 0),
+  default_devices integer NOT NULL CHECK (default_devices >= 0),
+  default_sessions integer NOT NULL CHECK (default_sessions >= 0),
+  price_monthly numeric(12, 2),
+  currency text NOT NULL DEFAULT 'ZAR',
+  active boolean NOT NULL DEFAULT true,
+  is_custom boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT packages_features_known CHECK (
+    features <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting']::text[]
+  )
+);
+
+INSERT INTO packages (code, name, description, features, default_seats, default_devices, default_sessions)
+VALUES
+  ('REMOTE', 'Remote Desk', 'Remote monitoring and support',
+   ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching'], 5, 50, 1),
+  ('SERVICE', 'Service Desk', 'Tickets and customer support',
+   ARRAY['ticketing'], 5, 0, 0),
+  ('SUITE', 'Digital Fingers Suite', 'Remote Desk and Service Desk',
+   ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing'], 10, 100, 2)
+ON CONFLICT (code) DO NOTHING;
+
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS package_id bigint REFERENCES packages (id);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS seats_override integer CHECK (seats_override > 0);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS devices_override integer CHECK (devices_override >= 0);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS sessions_override integer CHECK (sessions_override >= 0);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS features_added text[] NOT NULL DEFAULT '{}';
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS features_removed text[] NOT NULL DEFAULT '{}';
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS no_expiry boolean NOT NULL DEFAULT false;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS updated_by bigint REFERENCES users (id);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+CREATE INDEX IF NOT EXISTS licenses_package_id_idx ON licenses (package_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'licenses_status_check') THEN
+    ALTER TABLE licenses ADD CONSTRAINT licenses_status_check CHECK (status IN ('active', 'suspended'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'licenses_no_expiry_check') THEN
+    ALTER TABLE licenses ADD CONSTRAINT licenses_no_expiry_check CHECK (NOT (no_expiry AND expires_at IS NOT NULL));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'licenses_features_known') THEN
+    ALTER TABLE licenses ADD CONSTRAINT licenses_features_known CHECK (
+      features_added <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting']::text[]
+      AND features_removed <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting']::text[]
+    );
+  END IF;
+END $$;
+
+ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS starts_at timestamptz;
+ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS ends_at timestamptz;
+ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS unpublished_at timestamptz;
+ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS unpublished_by bigint REFERENCES users (id);
+CREATE INDEX IF NOT EXISTS audit_events_action_idx ON audit_events (action);
+
+CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_events is append-only';
+END $$;
+DROP TRIGGER IF EXISTS audit_events_append_only ON audit_events;
+CREATE TRIGGER audit_events_append_only BEFORE UPDATE OR DELETE ON audit_events
+  FOR EACH ROW EXECUTE FUNCTION audit_events_append_only();

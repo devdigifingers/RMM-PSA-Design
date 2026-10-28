@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 import { ConsoleBar } from "../bar";
+import { AppTitle } from "../mark";
 import { TicketTable } from "./ticket-table";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -26,7 +27,7 @@ export default async function TicketsPage({ searchParams }) {
     cache: "no-store",
   });
   if (response.status === 401) redirect("/");
-  if (response.status === 403) redirect("/devices?error=ticket");
+  if (response.status === 403) forbidden();
   const body = await response.json();
   const all = body.tickets || [];
   const me = body.me;
@@ -65,13 +66,13 @@ export default async function TicketsPage({ searchParams }) {
           </nav>
           <p className="desk-views-title">Desk</p>
           <nav>
-            <a href="/tickets/setup"><span>SLA, Customers &amp; Contacts</span></a>
+            <a href="/tickets/setup"><span>SLA Targets</span></a>
           </nav>
         </aside>
         <section className="desk-list">
           <header className="desk-head">
             <h1>
-              {view.label} <span className="desk-total">({tickets.length})</span>
+              <AppTitle app="service-desk">{view.label} <span className="desk-total">({tickets.length})</span></AppTitle>
             </h1>
             <form className="find desk-find" method="get">
               {view.id !== "all" ? <input type="hidden" name="view" value={view.id} /> : null}
@@ -88,7 +89,7 @@ export default async function TicketsPage({ searchParams }) {
             </a>
           </header>
           {!body.sla ? (
-            <p className="org-name">Due dates appear once SLA targets are set in <a href="/tickets/setup">SLA, Customers &amp; Contacts</a>.</p>
+            <p className="org-name">Due dates appear once SLA targets are set in <a href="/tickets/setup">SLA Targets</a>.</p>
           ) : null}
           <TicketTable
             tickets={tickets}

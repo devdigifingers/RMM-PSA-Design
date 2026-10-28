@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 import { scheduleExport } from "../actions";
 import { ConsoleBar } from "../bar";
 
@@ -15,7 +15,7 @@ export default async function DashboardPage() {
     cache: "no-store",
   });
   if (response.status === 401) redirect("/");
-  if (response.status === 403) redirect("/devices?error=report");
+  if (response.status === 403) forbidden();
   const body = await response.json();
   const devices = body.devices || [];
   const tickets = body.openTickets || [];

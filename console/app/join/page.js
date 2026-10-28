@@ -24,7 +24,7 @@ export default async function JoinPage({ searchParams }) {
   return (
     <main className="join">
       <div className="join-card">
-        <div className="join-brand"><div className="brand-plate"><Wordmark /></div></div>
+        <div className="join-brand"><Wordmark surface="auto" /></div>
         {session ? (
           <>
             <h1>{session.technician ? `${session.technician} is ready to help` : "Your technician is ready to help"}</h1>

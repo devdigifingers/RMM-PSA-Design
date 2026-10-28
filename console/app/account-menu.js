@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { logout } from "./actions";
 
@@ -11,6 +12,7 @@ const LINKS = [
   ["blogs", "/blogs", "Blogs"],
   ["contact", "/contact", "Contact Us"],
 ];
+const TENANT_ONLY = new Set(["pricing", "offers", "blogs"]);
 
 export function AccountMenu({ user }) {
   const [open, setOpen] = useState(false);
@@ -18,6 +20,7 @@ export function AccountMenu({ user }) {
   const [dark, setDark] = useState(false);
   const [spot, setSpot] = useState(null);
   const root = useRef(null);
+  const close = () => setOpen(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("df-theme") === "dark";
@@ -65,17 +68,17 @@ export function AccountMenu({ user }) {
             <p className="account-email">{user.email}</p>
             <p className="account-id">User ID: {user.accountNumber}</p>
             <div className="account-shortcuts">
-              <a href="/account">My Account</a>
-              {user.isPlatformAdmin ? <a href="/control">Control panel</a> : <a href="/organization">My Organization</a>}
+              <Link href="/account" onClick={close}>My Account</Link>
+              {user.isPlatformAdmin ? <Link href="/control/tenants" onClick={close}>Control panel</Link> : <Link href="/organization" onClick={close}>My Organization</Link>}
             </div>
           </div>
-          <a className="account-sub" href="/subscription">
+          <Link className="account-sub" href="/subscription" onClick={close}>
             <Doc />
             Manage Subscription
-          </a>
+          </Link>
           <div className="account-grid">
-            {LINKS.map(([icon, href, label]) => (
-              <a key={href} href={href}>{iconFor(icon)}{label}</a>
+            {LINKS.filter(([icon]) => !(user.isPlatformAdmin && TENANT_ONLY.has(icon))).map(([icon, href, label]) => (
+              <Link key={href} href={href} onClick={close}>{iconFor(icon)}{label}</Link>
             ))}
           </div>
           <div className="account-updates">

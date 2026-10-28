@@ -17,7 +17,7 @@ const NOTICES = {
   email: ["error", "That email is already a login."],
   bademail: ["error", "Enter a valid email address."],
   short: ["error", "Use at least 8 characters for the password."],
-  seats: ["error", "All logins on the licence are in use. Disable a technician or add seats first."],
+  seats: ["error", "All seats on the license are in use. Disable a technician or add seats first."],
   owner: ["error", "Only an owner can add, change or appoint an owner."],
   managers: ["error", "The organisation needs at least one active owner or admin."],
   self: ["error", "You cannot change your own role or disable your own login."],
@@ -54,7 +54,7 @@ export default async function TechniciansPage({ searchParams }) {
         ) : (
           <>
             <div className="tech-seats">
-              <strong>{account.license?.seatsUsed ?? "—"}</strong> of <strong>{account.license?.seats ?? "—"}</strong> logins in use
+              <strong>{account.license?.seatsUsed ?? "—"}</strong> of <strong>{account.license?.seats ?? "—"}</strong> seats in use
               {body.seatsLeft > 0 ? <span>{body.seatsLeft} free</span> : <span className="full">Licence full</span>}
             </div>
             <div className="tech-table">
@@ -130,7 +130,7 @@ export default async function TechniciansPage({ searchParams }) {
                 <label>Temporary password<input name="password" type="password" required minLength={8} maxLength={200} autoComplete="new-password" /></label>
               </div>
               <button type="submit" disabled={body.seatsLeft < 1}>Add technician</button>
-              {body.seatsLeft < 1 ? <p className="org-name">The licence has no free logins. <a href="/subscription">Manage Subscription</a></p> : null}
+              {body.seatsLeft < 1 ? <p className="org-name">The license has no free seats. <a href="/subscription">Manage Subscription</a></p> : null}
             </form>
           </>
         )}

@@ -1,6 +1,9 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { ConsoleBar } from "../../bar";
 import { accountFromSession, navFlags } from "../../account-data";
+
+const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
 export default async function DeploymentPage() {
   const account = await accountFromSession();
@@ -9,6 +12,7 @@ export default async function DeploymentPage() {
   const manage = (account.user.roles || []).some((role) => role === "owner" || role === "admin");
   const license = account.license;
   const full = license?.deviceCap > 0 && license?.deviceCount >= license.deviceCap;
+  const accounts = manage && license?.ticketing === true ? await loadAccounts() : [];
 
   return (
     <div className="console">
@@ -32,7 +36,18 @@ export default async function DeploymentPage() {
               <li>The computer appears under Devices within a minute.</li>
             </ol>
             {manage && !full ? (
-              <a className="deploy-download" href="/agent/windows">Download for Windows</a>
+              <form className="deploy-form" method="get" action="/agent/windows">
+                {accounts.length ? (
+                  <label>
+                    Account
+                    <select name="customer" defaultValue="">
+                      <option value="">No account yet</option>
+                      {accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                ) : null}
+                <button type="submit" className="deploy-download">Download for Windows</button>
+              </form>
             ) : (
               <p className="error">{full ? "All devices on the licence are in use. Remove a device or add capacity first." : "Only an owner or admin can download the installer."}</p>
             )}
@@ -50,4 +65,17 @@ export default async function DeploymentPage() {
       </main>
     </div>
   );
+}
+
+async function loadAccounts() {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return [];
+  const response = await fetch(`${apiUrl}/v1/accounts`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  if (!response.ok) return [];
+  const body = await response.json();
+  return (body.accounts || []).map((item) => ({ id: item.id, name: item.name }));
 }

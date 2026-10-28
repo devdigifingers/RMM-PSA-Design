@@ -41,7 +41,7 @@ async function startSession(body) {
     maxAge: 60 * 60 * 12,
   });
   if (body.user?.mfaSetupRequired) redirect("/settings/mfa");
-  redirect(body.user?.isPlatformAdmin ? "/control" : "/devices");
+  redirect(body.user?.isPlatformAdmin ? "/control/tenants" : "/");
 }
 
 export async function verifyLoginCode(formData) {
@@ -68,81 +68,6 @@ export async function cancelLoginCode() {
   const jar = await cookies();
   jar.delete("df_mfa");
   redirect("/");
-}
-
-const LICENSE_MODULES = ["core", "remote_desktop", "remote_support", "ticketing", "monitoring", "patch", "reporting"];
-
-export async function saveLicense(formData) {
-  const orgId = String(formData.get("orgId") || "");
-  const response = await callApi(`/v1/platform/orgs/${orgId}/license`, {
-    method: "PUT",
-    body: licenseBody(formData),
-  });
-  if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/control?error=${await controlError(response, "license")}`);
-  redirect("/control?saved=license");
-}
-
-export async function resetTenantPassword(formData) {
-  const userId = String(formData.get("userId") || "");
-  const password = String(formData.get("password") || "");
-  const confirmPassword = String(formData.get("confirmPassword") || "");
-  if (password !== confirmPassword) redirect("/control?error=match");
-  if (password.length < 8 || password.length > 200) redirect("/control?error=short");
-  const response = await callApi(`/v1/platform/users/${userId}/password`, { body: { password } });
-  if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/control?error=${await controlError(response, "password")}`);
-  redirect("/control?saved=password");
-}
-
-export async function createTenant(formData) {
-  const password = String(formData.get("adminPassword") || "");
-  const confirmPassword = String(formData.get("adminConfirm") || "");
-  if (password !== confirmPassword) redirect("/control?error=match");
-  if (password.length < 8 || password.length > 200) redirect("/control?error=short");
-  const response = await callApi("/v1/platform/tenants", {
-    body: {
-      ...licenseBody(formData),
-      name: String(formData.get("name") || "").trim(),
-      slug: String(formData.get("slug") || "").trim(),
-      adminName: String(formData.get("adminName") || "").trim(),
-      adminEmail: String(formData.get("adminEmail") || "").trim(),
-      adminPassword: password,
-    },
-  });
-  if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/control?error=${await controlError(response, "tenant")}`);
-  redirect("/control?saved=tenant");
-}
-
-function licenseBody(formData) {
-  const modules = {};
-  for (const key of LICENSE_MODULES) modules[key] = formData.get(`module.${key}`) === "on";
-  const expiresAt = String(formData.get("expiresAt") || "").trim();
-  return {
-    plan: String(formData.get("plan") || "").trim(),
-    seats: Number(formData.get("seats")),
-    deviceCap: Number(formData.get("deviceCap")),
-    supportConcurrent: Number(formData.get("supportConcurrent") || 0),
-    expiresAt: expiresAt || null,
-    modules,
-  };
-}
-
-async function controlError(response, fallback) {
-  const body = await response.json().catch(() => ({}));
-  const error = String(body.error || "");
-  if (error.includes("first admin") || error.includes("license type") || error.includes("name, slug")) return "fields";
-  if (error.includes("slug")) return "slug";
-  if (error.includes("email")) return "email";
-  if (error.includes("seats") || error.includes("deviceCap")) return "seats";
-  if (error.includes("Support sessions")) return "support";
-  if (error.includes("expires")) return "date";
-  if (error.includes("modules")) return "modules";
-  if (error.includes("8 characters")) return "short";
-  if (error.includes("Login")) return "user";
-  if (response.status === 403) return "denied";
-  return fallback;
 }
 
 export async function changePassword(formData) {
@@ -179,33 +104,6 @@ export async function dismissRibbon(id) {
   if (!Number.isInteger(noticeId) || noticeId < 1) return false;
   const response = await callApi(`/v1/notices/ribbon/${noticeId}/dismiss`, { method: "POST" });
   return response.ok;
-}
-
-export async function publishRibbon(formData) {
-  const orgValue = String(formData.get("orgId") || "all");
-  const response = await callApi("/v1/platform/ribbons", {
-    body: {
-      body: String(formData.get("body") || "").trim(),
-      linkLabel: String(formData.get("linkLabel") || "").trim(),
-      linkUrl: String(formData.get("linkUrl") || "").trim(),
-      orgId: orgValue === "all" ? null : Number(orgValue),
-    },
-  });
-  if (response.status === 401) redirect("/");
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const code = body.error === "link" || body.error === "message" || body.error === "tenant" ? body.error : "ribbon";
-    redirect(`/control?error=${code}`);
-  }
-  redirect("/control?saved=ribbon");
-}
-
-export async function removeRibbon(formData) {
-  const noticeId = Number(formData.get("noticeId"));
-  const response = await callApi(`/v1/platform/ribbons/${noticeId}`, { method: "DELETE" });
-  if (response.status === 401) redirect("/");
-  if (!response.ok) redirect("/control?error=ribbon");
-  redirect("/control?saved=ribbon-off");
 }
 
 export async function logout() {
@@ -307,37 +205,103 @@ export async function saveSla(formData) {
   redirect("/tickets/setup?saved=sla");
 }
 
-export async function saveContact(formData) {
-  const jar = await cookies();
-  const token = jar.get("df_session")?.value;
-  if (!token) redirect("/");
-  const id = String(formData.get("customerId") || "");
-  const response = await fetch(`${apiUrl}/v1/customers/${id}`, {
-    method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      contactName: String(formData.get("contactName") || ""),
-      contactEmail: String(formData.get("contactEmail") || ""),
-    }),
-    cache: "no-store",
-  });
-  if (!response.ok) redirect("/tickets/setup?error=contact");
-  redirect("/tickets/setup?saved=contact");
+const ACCOUNT_FIELDS = ["name", "kind", "website", "email", "phone", "altPhone", "address", "registrationNumber", "vatNumber", "notes"];
+const CONTACT_FIELDS = ["name", "email", "phone", "altPhone", "jobTitle"];
+
+function pick(formData, fields, prefix = "") {
+  return Object.fromEntries(fields.map((field) => [field, String(formData.get(`${prefix}${field}`) || "")]));
 }
 
-export async function createCustomer(formData) {
-  const response = await authed("/v1/customers", { name: String(formData.get("name") || "") });
-  if (!response.ok) redirect("/tickets/setup?error=customer");
-  redirect("/tickets/setup?saved=customer");
+async function errorText(response, fallback) {
+  const body = await response.json().catch(() => ({}));
+  return encodeURIComponent(body.error || fallback);
+}
+
+export async function createAccount(formData) {
+  const response = await authed("/v1/accounts", {
+    ...pick(formData, ACCOUNT_FIELDS),
+    contact: pick(formData, CONTACT_FIELDS, "contact_"),
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/new?error=${await errorText(response, "That account could not be saved.")}`);
+  const body = await response.json();
+  redirect(`/customers/${body.id}?saved=created`);
+}
+
+export async function saveAccount(formData) {
+  const id = String(formData.get("accountId") || "");
+  const response = await callApi(`/v1/accounts/${id}`, { method: "PUT", body: pick(formData, ACCOUNT_FIELDS) });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=details&error=${await errorText(response, "That account could not be saved.")}`);
+  redirect(`/customers/${id}?tab=details&saved=account`);
+}
+
+export async function addContact(formData) {
+  const id = String(formData.get("accountId") || "");
+  const response = await authed(`/v1/accounts/${id}/contacts`, {
+    ...pick(formData, CONTACT_FIELDS),
+    primary: formData.get("primary") === "on",
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
+  redirect(`/customers/${id}?tab=contacts&saved=contact`);
+}
+
+export async function saveContact(formData) {
+  const id = String(formData.get("accountId") || "");
+  const contactId = String(formData.get("contactId") || "");
+  const response = await callApi(`/v1/contacts/${contactId}`, {
+    method: "PUT",
+    body: { ...pick(formData, CONTACT_FIELDS), primary: formData.get("primary") === "on" },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
+  redirect(`/customers/${id}?tab=contacts&saved=contact`);
+}
+
+export async function deleteContact(formData) {
+  const id = String(formData.get("accountId") || "");
+  const contactId = String(formData.get("contactId") || "");
+  const response = await callApi(`/v1/contacts/${contactId}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be removed.")}`);
+  redirect(`/customers/${id}?tab=contacts&saved=removed`);
+}
+
+export async function linkAsset(formData) {
+  const id = String(formData.get("accountId") || "");
+  const response = await authed(`/v1/accounts/${id}/devices`, { deviceId: Number(formData.get("deviceId")) });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be linked.")}`);
+  redirect(`/customers/${id}?tab=assets&saved=linked`);
+}
+
+export async function assignAsset(formData) {
+  const id = String(formData.get("accountId") || "");
+  const deviceId = String(formData.get("deviceId") || "");
+  const response = await callApi(`/v1/accounts/${id}/devices/${deviceId}`, {
+    method: "PUT",
+    body: { contactId: formData.get("contactId") || null },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be assigned.")}`);
+  redirect(`/customers/${id}?tab=assets&saved=assigned`);
+}
+
+export async function unlinkAsset(formData) {
+  const id = String(formData.get("accountId") || "");
+  const deviceId = String(formData.get("deviceId") || "");
+  const response = await callApi(`/v1/accounts/${id}/devices/${deviceId}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be unlinked.")}`);
+  redirect(`/customers/${id}?tab=assets&saved=unlinked`);
 }
 
 export async function createTicket(formData) {
   const response = await authed("/v1/tickets", {
     customerId: Number(formData.get("customerId")),
-    deviceId: Number(formData.get("deviceId")),
+    contactId: formData.get("contactId") || null,
+    deviceId: formData.get("deviceId") || null,
     assigneeUserId: formData.get("assigneeUserId") || null,
     subject: String(formData.get("subject") || ""),
     status: String(formData.get("status") || "open"),
@@ -378,6 +342,8 @@ export async function updateTicket(formData) {
       status: String(formData.get("status") || ""),
       priority: String(formData.get("priority") || ""),
       assigneeUserId: formData.get("assigneeUserId") || null,
+      ...(formData.has("contactId") ? { contactId: formData.get("contactId") || null } : {}),
+      ...(formData.has("deviceId") ? { deviceId: formData.get("deviceId") || null } : {}),
     }),
     cache: "no-store",
   });
@@ -767,7 +733,7 @@ async function technicianError(response) {
   const text = String(body.error || "");
   if (response.status === 401) redirect("/");
   if (text.includes("already a login")) return "email";
-  if (text.includes("logins on the licence")) return "seats";
+  if (text.includes("seats on the license")) return "seats";
   if (text.includes("owner or admin")) return response.status === 403 ? "denied" : "managers";
   if (text.includes("owner")) return "owner";
   if (text.includes("your own")) return "self";

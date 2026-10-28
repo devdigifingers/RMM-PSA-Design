@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { homeFor } from "./account-data";
 import { cancelLoginCode, login, verifyLoginCode } from "./actions";
 import { Wordmark } from "./mark";
 
@@ -16,7 +17,7 @@ export default async function LoginPage({ searchParams }) {
     if (session.ok) {
       const account = await session.json();
       if (account.user?.mfaSetupRequired) redirect("/settings/mfa");
-      redirect(account.user?.isPlatformAdmin ? "/control" : "/devices");
+      redirect(homeFor(account));
     }
   }
   const params = await searchParams;

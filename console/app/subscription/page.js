@@ -27,7 +27,7 @@ export default async function SubscriptionPage() {
               <p key={item.text} className={`sub-warning is-${item.level}`}>{item.text}</p>
             ))}
             <section className="sub-meters">
-              <Meter label="Logins" meter={status.seats} note="People who can sign in to this organisation." />
+              <Meter label="Seats" meter={status.seats} note="People who can sign in to this organisation." />
               <Meter label="Devices" meter={status.devices} note="Computers enrolled for monitoring and support." />
               <div className="sub-meter">
                 <p>Expires</p>
@@ -70,7 +70,7 @@ function Meter({ label, meter, note }) {
     <div className={`sub-meter is-${meter.level}`}>
       <p>{label}</p>
       <strong>{meter.used} <span>of {meter.total}</span></strong>
-      <div className="sub-bar"><i style={{ width: `${meter.percent}%` }} /></div>
+      <div className="sub-bar"><i className={meter.percent > 0 ? "has-value" : undefined} style={{ width: `${meter.percent}%` }} /></div>
       <small>{note}</small>
     </div>
   );

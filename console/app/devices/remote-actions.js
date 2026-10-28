@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { endRemoteSessions, powerDevice, updateAgent } from "../actions";
+import { endRemoteSessions, powerDevice, restartRemoteAgent, updateAgent } from "../actions";
 import { openRemoteSession } from "./remote-window";
 import { DIAGNOSTIC_TOOLS } from "./diagnostic-tools";
 import { refreshSessions, useDeviceSessions } from "./session-status";
@@ -23,6 +23,7 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
   const [note, setNote] = useState("");
   const [fly, setFly] = useState(null);
   const [ending, setEnding] = useState(false);
+  const [stuck, setStuck] = useState(false);
   const root = useRef(null);
   const sessions = useDeviceSessions(deviceId);
   const open = sessions?.total || 0;
@@ -95,9 +96,25 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
     setNote("Ending sessions…");
     const result = await endRemoteSessions(String(deviceId));
     setEnding(false);
+    setStuck(Boolean(result.ok && result.remaining));
     if (!result.ok) setNote(result.error);
-    else if (result.remaining) setNote(`${plural(result.remaining, "session")} could not be ended.`);
-    else setNote(result.ended ? `Ended ${plural(result.ended, "session")}.` : "No sessions were open.");
+    else if (result.remaining) {
+      setNote(`The agent on ${hostname} still reports ${plural(result.remaining, "open session")}. Its connection may already be closed; restarting the agent clears it.`);
+    } else setNote(result.ended ? `Ended ${plural(result.ended, "session")}.` : "No sessions were open.");
+    refreshSessions();
+  }
+
+  async function restartAgent() {
+    setMenu(null);
+    setStuck(false);
+    setEnding(true);
+    setNote("Restarting the agent… this can take up to a minute.");
+    const result = await restartRemoteAgent(String(deviceId));
+    setEnding(false);
+    if (!result.ok) setNote(result.error);
+    else if (!result.back) setNote(`Restart sent to ${hostname}. The agent hasn't reconnected yet; check again in a minute.`);
+    else if (result.remaining) setNote(`The agent restarted but still reports ${plural(result.remaining, "session")}. Someone may really be connected.`);
+    else setNote(`The agent on ${hostname} restarted. No sessions are open.`);
     refreshSessions();
   }
 
@@ -158,9 +175,24 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
             </li>
           ) : null}
           <li>
+            <button type="button" disabled={ending} onClick={() => setMenu("restartAgent")}>Restart remote agent</button>
+          </li>
+          <li>
             <button type="button" className="menu-danger" disabled={ending} onClick={() => setMenu("end")}>
               End All Sessions{open ? ` (${open})` : ""}
             </button>
+          </li>
+        </ul>
+      ) : null}
+      {menu === "restartAgent" && spot ? (
+        <ul className="remote-menu" style={{ top: spot.top, bottom: spot.bottom, left: spot.left, maxHeight: spot.maxHeight }}>
+          <li className="power-confirm">
+            <p>
+              Restart the remote agent on {hostname}? Every remote session on it (desktop, terminal, files) is closed and
+              the device is offline for up to a minute. The PC and the logged-in user are not affected.
+            </p>
+            <button type="button" onClick={() => setMenu(null)}>Cancel</button>
+            <button type="button" onClick={restartAgent}>Restart agent</button>
           </li>
         </ul>
       ) : null}
@@ -209,7 +241,16 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
                 ))}
         </ul>
       ) : null}
-      {note ? <span className="power-note">{note}</span> : null}
+      {note ? (
+        <span className="power-note">
+          {note}
+          {stuck ? (
+            <button type="button" className="note-action" disabled={ending} onClick={(event) => toggle("restartAgent", event)}>
+              Restart agent
+            </button>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
 }

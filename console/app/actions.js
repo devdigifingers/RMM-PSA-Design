@@ -205,8 +205,12 @@ export async function saveSla(formData) {
   redirect("/tickets/setup?saved=sla");
 }
 
-const ACCOUNT_FIELDS = ["name", "kind", "website", "email", "phone", "altPhone", "address", "registrationNumber", "vatNumber", "notes"];
+const ACCOUNT_FIELDS = ["name", "kind", "website", "email", "phone", "altPhone", "address", "registrationNumber", "vatNumber"];
 const CONTACT_FIELDS = ["name", "email", "phone", "altPhone", "jobTitle"];
+
+function customersBase(formData) {
+  return formData.get("app") === "desk" ? "/desk/customers" : "/remote/customers";
+}
 
 function pick(formData, fields, prefix = "") {
   return Object.fromEntries(fields.map((field) => [field, String(formData.get(`${prefix}${field}`) || "")]));
@@ -218,44 +222,98 @@ async function errorText(response, fallback) {
 }
 
 export async function createAccount(formData) {
+  const base = customersBase(formData);
   const response = await authed("/v1/accounts", {
     ...pick(formData, ACCOUNT_FIELDS),
+    notes: String(formData.get("notes") || ""),
     contact: pick(formData, CONTACT_FIELDS, "contact_"),
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/new?error=${await errorText(response, "That customer could not be saved.")}`);
+  if (!response.ok) redirect(`${base}/new?error=${await errorText(response, "That customer could not be saved.")}`);
   const body = await response.json();
-  redirect(`/customers/${body.id}?saved=created`);
+  redirect(`${base}/${body.id}?saved=created`);
 }
 
 export async function saveAccount(formData) {
+  const base = customersBase(formData);
   const id = String(formData.get("accountId") || "");
   const response = await callApi(`/v1/accounts/${id}`, { method: "PUT", body: pick(formData, ACCOUNT_FIELDS) });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=overview&error=${await errorText(response, "That customer could not be saved.")}`);
-  redirect(`/customers/${id}?tab=overview&saved=account`);
+  if (!response.ok) redirect(`${base}/${id}?tab=overview&error=${await errorText(response, "That customer could not be saved.")}`);
+  redirect(`${base}/${id}?tab=overview&saved=account`);
+}
+
+export async function saveCustomerNotes(formData) {
+  const base = customersBase(formData);
+  const id = String(formData.get("accountId") || "");
+  const response = await callApi(`/v1/accounts/${id}/notes`, { method: "PUT", body: { notes: String(formData.get("notes") || "") } });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`${base}/${id}?tab=notes&error=${await errorText(response, "Those notes could not be saved.")}`);
+  redirect(`${base}/${id}?tab=notes&saved=notes`);
+}
+
+export async function saveCustomerSla(formData) {
+  const id = String(formData.get("accountId") || "");
+  const response = await callApi(`/v1/accounts/${id}/sla`, {
+    method: "PUT",
+    body: {
+      planId: formData.get("planId") || null,
+      contractStart: String(formData.get("contractStart") || ""),
+      contractEnd: String(formData.get("contractEnd") || ""),
+      contractNotes: String(formData.get("contractNotes") || ""),
+    },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/desk/customers/${id}?tab=sla&error=${await errorText(response, "The SLA could not be saved.")}`);
+  redirect(`/desk/customers/${id}?tab=sla&saved=sla`);
+}
+
+export async function saveSlaPlan(formData) {
+  const id = String(formData.get("planId") || "");
+  const body = {
+    name: String(formData.get("name") || ""),
+    responseMinutes: Number(formData.get("responseMinutes")),
+    resolveMinutes: Number(formData.get("resolveMinutes")),
+  };
+  const response = id
+    ? await callApi(`/v1/sla-plans/${id}`, { method: "PUT", body })
+    : await authed("/v1/sla-plans", body);
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/setup?planError=${await errorText(response, "That plan could not be saved.")}`);
+  redirect("/tickets/setup?saved=plan");
+}
+
+export async function deleteSlaPlan(formData) {
+  const id = String(formData.get("planId") || "");
+  const response = await callApi(`/v1/sla-plans/${id}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/tickets/setup?planError=${await errorText(response, "That plan could not be deleted.")}`);
+  redirect("/tickets/setup?saved=planRemoved");
 }
 
 export async function deleteCustomer(formData) {
+  const base = customersBase(formData);
   const id = String(formData.get("accountId") || "");
   const response = await callApi(`/v1/accounts/${id}`, { method: "DELETE" });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=overview&error=${await errorText(response, "That customer could not be deleted.")}`);
-  redirect("/customers?saved=deleted");
+  if (!response.ok) redirect(`${base}/${id}?tab=overview&error=${await errorText(response, "That customer could not be deleted.")}`);
+  redirect(`${base}?saved=deleted`);
 }
 
 export async function addContact(formData) {
+  const base = customersBase(formData);
   const id = String(formData.get("accountId") || "");
   const response = await authed(`/v1/accounts/${id}/contacts`, {
     ...pick(formData, CONTACT_FIELDS),
     primary: formData.get("primary") === "on",
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
-  redirect(`/customers/${id}?tab=contacts&saved=contact`);
+  if (!response.ok) redirect(`${base}/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
+  redirect(`${base}/${id}?tab=contacts&saved=contact`);
 }
 
 export async function saveContact(formData) {
+  const base = customersBase(formData);
   const id = String(formData.get("accountId") || "");
   const contactId = String(formData.get("contactId") || "");
   const response = await callApi(`/v1/contacts/${contactId}`, {
@@ -263,25 +321,26 @@ export async function saveContact(formData) {
     body: { ...pick(formData, CONTACT_FIELDS), primary: formData.get("primary") === "on" },
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
-  redirect(`/customers/${id}?tab=contacts&saved=contact`);
+  if (!response.ok) redirect(`${base}/${id}?tab=contacts&error=${await errorText(response, "That contact could not be saved.")}`);
+  redirect(`${base}/${id}?tab=contacts&saved=contact`);
 }
 
 export async function deleteContact(formData) {
+  const base = customersBase(formData);
   const id = String(formData.get("accountId") || "");
   const contactId = String(formData.get("contactId") || "");
   const response = await callApi(`/v1/contacts/${contactId}`, { method: "DELETE" });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=contacts&error=${await errorText(response, "That contact could not be removed.")}`);
-  redirect(`/customers/${id}?tab=contacts&saved=removed`);
+  if (!response.ok) redirect(`${base}/${id}?tab=contacts&error=${await errorText(response, "That contact could not be removed.")}`);
+  redirect(`${base}/${id}?tab=contacts&saved=removed`);
 }
 
 export async function linkAsset(formData) {
   const id = String(formData.get("accountId") || "");
   const response = await authed(`/v1/accounts/${id}/devices`, { deviceId: Number(formData.get("deviceId")) });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be linked.")}`);
-  redirect(`/customers/${id}?tab=devices&saved=linked`);
+  if (!response.ok) redirect(`/remote/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be linked.")}`);
+  redirect(`/remote/customers/${id}?tab=devices&saved=linked`);
 }
 
 export async function assignAsset(formData) {
@@ -292,8 +351,8 @@ export async function assignAsset(formData) {
     body: { contactId: formData.get("contactId") || null },
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be assigned.")}`);
-  redirect(`/customers/${id}?tab=devices&saved=assigned`);
+  if (!response.ok) redirect(`/remote/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be assigned.")}`);
+  redirect(`/remote/customers/${id}?tab=devices&saved=assigned`);
 }
 
 export async function unlinkAsset(formData) {
@@ -301,8 +360,8 @@ export async function unlinkAsset(formData) {
   const deviceId = String(formData.get("deviceId") || "");
   const response = await callApi(`/v1/accounts/${id}/devices/${deviceId}`, { method: "DELETE" });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be unlinked.")}`);
-  redirect(`/customers/${id}?tab=devices&saved=unlinked`);
+  if (!response.ok) redirect(`/remote/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be unlinked.")}`);
+  redirect(`/remote/customers/${id}?tab=devices&saved=unlinked`);
 }
 
 export async function createTicket(formData) {
@@ -647,6 +706,20 @@ export async function endRemoteSessions(deviceId) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) return { ok: false, error: body.error || "The sessions were not ended." };
   return { ok: true, ended: Number(body.ended) || 0, remaining: Number(body.remaining?.total) || 0, error: "" };
+}
+
+export async function restartRemoteAgent(deviceId) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/agent/restart`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The agent was not restarted." };
+  return { ok: true, back: Boolean(body.back), remaining: Number(body.remaining?.total) || 0, error: "" };
 }
 
 export async function startRemoteSession(deviceId, user) {

@@ -14,6 +14,7 @@ import { sendMail } from "./mail.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { loadAllLicenses, loadLicense } from "./license-store.js";
 import { hasApp, hasFeature } from "./licensing.js";
+import { dateOnly, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
 
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
@@ -673,6 +674,14 @@ async function meshSessionList() {
 
 async function meshSessionsEnd(nodeId) {
   const result = meshJson(await meshScript("mesh-sessions.cjs", ["end", nodeId], 35000));
+  if (!result || result.error) {
+    throw Object.assign(new Error(result?.error || "Remote service did not answer."), { status: 502 });
+  }
+  return result;
+}
+
+async function meshAgentRestart(nodeId) {
+  const result = meshJson(await meshScript("mesh-sessions.cjs", ["restart", nodeId], 90000));
   if (!result || result.error) {
     throw Object.assign(new Error(result?.error || "Remote service did not answer."), { status: 502 });
   }
@@ -2741,9 +2750,10 @@ async function sweepBreaches() {
   try {
     const afterId = await breachBaseline();
     const tickets = await pool.query(
-      `SELECT t.id, t.org_id, t.subject, t.status, t.created_at, t.updated_at,
+      `SELECT t.id, t.org_id, t.subject, t.status, t.created_at, t.updated_at, c.sla_plan_id,
               ${TICKET_CLOCK_SQL}
        FROM tickets t
+       JOIN customers c ON c.id = t.customer_id
        WHERE t.id > $1
          AND t.status <> 'resolved'
          AND t.org_id = ANY($2::bigint[])
@@ -2756,9 +2766,11 @@ async function sweepBreaches() {
       [afterId, await orgsWithFeature("ticketing")],
     );
     const now = new Date();
+    const books = new Map();
     for (const ticket of tickets.rows) {
-      const sla = await orgSla(ticket.org_id);
-      const clock = slaClock(ticket, sla, now);
+      const key = String(ticket.org_id);
+      if (!books.has(key)) books.set(key, await slaBook(ticket.org_id));
+      const clock = slaClock(ticket, slaFor(books.get(key), ticket.sla_plan_id), now);
       if (!clock) continue;
       const responseLate = clock.responseElapsed > clock.responseMinutes;
       const resolveLate = clock.resolveElapsed > clock.resolveMinutes;
@@ -2841,13 +2853,24 @@ async function customerAccess(actor, res, { write = false } = {}) {
     licenseDenied(res, row, "expired", "customers", "Customers");
     return null;
   }
+  // App views follow the package, not the licence state, so an expired tenant can still read its customers.
+  const packaged = Array.isArray(ent?.apps) ? ent.apps : [];
   return {
     row,
     active,
-    remote: hasApp(ent, "remote"),
-    service: hasApp(ent, "servicedesk"),
+    remote: packaged.includes("remote"),
+    service: packaged.includes("servicedesk"),
     reporting: hasFeature(ent, "reporting"),
   };
+}
+
+function customerView(url, access, res) {
+  const resolved = resolveCustomerView(url.searchParams.get("view"), access);
+  if (resolved.status) {
+    send(res, resolved.status, resolved.body);
+    return null;
+  }
+  return resolved.view;
 }
 
 function customerFlags(access, actor) {
@@ -3126,6 +3149,25 @@ async function orgSla(orgId) {
   };
 }
 
+async function slaBook(orgId) {
+  const [base, plans] = await Promise.all([
+    orgSla(orgId),
+    pool.query(
+      "SELECT id, name, response_minutes, resolve_minutes FROM sla_plans WHERE org_id = $1 ORDER BY lower(name)",
+      [orgId],
+    ),
+  ]);
+  return {
+    base,
+    plans: new Map(plans.rows.map((row) => [String(row.id), {
+      id: Number(row.id),
+      name: row.name,
+      responseMinutes: row.response_minutes,
+      resolveMinutes: row.resolve_minutes,
+    }])),
+  };
+}
+
 function elapsedMinutes(from, to) {
   const start = new Date(from).getTime();
   const end = new Date(to).getTime();
@@ -3183,8 +3225,9 @@ async function dashboardSnapshot(orgId) {
       [orgId],
     ),
     pool.query(
-      `SELECT t.id, t.subject, t.status, t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
+      `SELECT t.id, t.subject, t.status, t.created_at, t.updated_at, c.sla_plan_id, ${TICKET_CLOCK_SQL}
        FROM tickets t
+       JOIN customers c ON c.id = t.customer_id
        WHERE t.org_id = $1 AND t.status = 'open'
        ORDER BY t.id`,
       [orgId],
@@ -3216,7 +3259,8 @@ async function dashboardSnapshot(orgId) {
   }
   const freshAfter = Date.now() - 3 * 60 * 1000;
   const now = new Date();
-  const sla = await orgSla(orgId);
+  const book = await slaBook(orgId);
+  const sla = book.base;
   return {
     org: org.rows[0] || null,
     canTicket: ticketingAllowed(row),
@@ -3236,7 +3280,7 @@ async function dashboardSnapshot(orgId) {
       id: Number(ticket.id),
       subject: ticket.subject,
       status: ticket.status,
-      clock: slaClock(ticket, sla, now),
+      clock: slaClock(ticket, slaFor(book, ticket.sla_plan_id), now),
     })),
     sla,
     compliance,
@@ -5649,6 +5693,31 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { ended, remaining });
     }
 
+    const deviceAgentRestartMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/agent\/restart$/);
+    if (req.method === "POST" && deviceAgentRestartMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceAgentRestartMatch[1]))) return;
+      const device = await pool.query(
+        "SELECT id, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceAgentRestartMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      if (!device.rows[0].mesh_node_id) return send(res, 409, { error: "This device has no remote agent yet." });
+      let result;
+      try {
+        result = await meshAgentRestart(device.rows[0].mesh_node_id);
+      } catch (error) {
+        return send(res, error.status || 502, { error: error.message });
+      }
+      const remaining = result.remaining || { total: 0 };
+      await writeAudit(actor.org_id, actor.id, "remote.agent_restart", "device", String(device.rows[0].id), {
+        back: Boolean(result.back),
+        remaining: Number(remaining.total) || 0,
+      });
+      return send(res, 200, { back: Boolean(result.back), remaining });
+    }
+
     const deviceRemoteMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/remote$/);
     if (req.method === "POST" && deviceRemoteMatch) {
       if (!requireActor(actor, res)) return;
@@ -5710,16 +5779,32 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/v1/accounts") {
       const access = await customerAccess(actor, res);
       if (!access) return;
+      const view = customerView(url, access, res);
+      if (view == null) return;
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
       const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const [accounts, contactTotal] = await Promise.all([
         pool.query(
           `SELECT c.*, p.name AS primary_name, p.email AS primary_email, p.phone AS primary_phone,
+                  sp.name AS sla_plan_name, os.org_id IS NOT NULL AS has_default_sla,
                   (SELECT count(*)::int FROM contacts ct WHERE ct.customer_id = c.id) AS contact_count,
                   (SELECT count(*)::int FROM devices d JOIN sites s ON s.id = d.site_id WHERE s.customer_id = c.id) AS device_count,
-                  (SELECT count(*)::int FROM tickets t WHERE t.customer_id = c.id AND t.status <> 'resolved') AS open_ticket_count
+                  (SELECT count(*)::int FROM devices d JOIN sites s ON s.id = d.site_id
+                   WHERE s.customer_id = c.id AND d.last_seen_at > now() - interval '60 seconds') AS online_count,
+                  (SELECT max(e.created_at) FROM audit_events e
+                   JOIN devices d ON e.target_id = d.id::text
+                   JOIN sites s ON s.id = d.site_id
+                   WHERE e.org_id = c.org_id AND e.target_type = 'device' AND e.action = 'remote.launch'
+                     AND s.customer_id = c.id) AS last_session_at,
+                  (SELECT count(*)::int FROM tickets t WHERE t.customer_id = c.id AND t.status <> 'resolved') AS open_ticket_count,
+                  (SELECT count(*)::int FROM tickets t
+                   WHERE t.customer_id = c.id AND t.status <> 'resolved'
+                     AND COALESCE(sp.resolve_minutes, os.resolve_minutes) IS NOT NULL
+                     AND t.created_at + make_interval(mins => COALESCE(sp.resolve_minutes, os.resolve_minutes)) < now()) AS overdue_count
            FROM customers c
            LEFT JOIN contacts p ON p.customer_id = c.id AND p.is_primary
+           LEFT JOIN sla_plans sp ON sp.id = c.sla_plan_id
+           LEFT JOIN org_slas os ON os.org_id = c.org_id
            WHERE c.org_id = $1
              AND ($2 = '' OR c.name ILIKE '%' || $2 || '%' ESCAPE '\\'
                   OR COALESCE(c.email, '') ILIKE '%' || $2 || '%' ESCAPE '\\'
@@ -5737,10 +5822,10 @@ const server = createServer(async (req, res) => {
             ? { name: row.primary_name, email: row.primary_email || null, phone: row.primary_phone || null }
             : null,
           contactCount: row.contact_count,
-          deviceCount: access.remote ? row.device_count : null,
-          openTicketCount: access.service ? row.open_ticket_count : null,
+          ...listFields(row, view, access),
         })),
         contactTotal: contactTotal.rows[0].total,
+        view,
         ...customerFlags(access, actor),
       });
     }
@@ -5748,6 +5833,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/v1/contacts") {
       const access = await customerAccess(actor, res);
       if (!access) return;
+      if (customerView(url, access, res) == null) return;
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
       const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
       const [contacts, accountTotal] = await Promise.all([
@@ -5864,19 +5950,21 @@ const server = createServer(async (req, res) => {
       const access = await customerAccess(actor, res, { write: req.method === "PUT" });
       if (!access) return;
       if (req.method === "PUT") {
-        const input = accountInput(await readJson(req));
+        const raw = await readJson(req);
+        const input = accountInput(raw);
         if (input.error) return send(res, 400, { error: input.error });
         const v = input.values;
+        const keepNotes = !raw || !Object.hasOwn(raw, "notes");
         if (await customerNameTaken(pool, actor.org_id, v.name, accountMatch[1])) {
           return send(res, 409, { error: "A customer with that name already exists." });
         }
         const updated = await pool.query(
           `UPDATE customers
            SET name = $1, kind = $2, website = $3, email = $4, phone = $5, alt_phone = $6, address = $7,
-               registration_number = $8, vat_number = $9, notes = $10, updated_at = now()
+               registration_number = $8, vat_number = $9, notes = CASE WHEN $13 THEN notes ELSE $10 END, updated_at = now()
            WHERE id = $11 AND org_id = $12
            RETURNING id`,
-          [v.name, v.kind, v.website, v.email, v.phone, v.altPhone, v.address, v.registrationNumber, v.vatNumber, v.notes, accountMatch[1], actor.org_id],
+          [v.name, v.kind, v.website, v.email, v.phone, v.altPhone, v.address, v.registrationNumber, v.vatNumber, v.notes, accountMatch[1], actor.org_id, keepNotes],
         ).catch((error) => {
           if (error.code === "23505" && error.constraint === "customers_org_name_key") return null;
           throw error;
@@ -5889,12 +5977,15 @@ const server = createServer(async (req, res) => {
       const account = await pool.query("SELECT * FROM customers WHERE id = $1 AND org_id = $2", [accountMatch[1], actor.org_id]);
       if (!account.rows[0]) return send(res, 404, { error: "Customer not found." });
       const accountId = account.rows[0].id;
-      const [contacts, tickets, devices, others, report] = await Promise.all([
+      const view = customerView(url, access, res);
+      if (view == null) return;
+      const { remote, desk } = viewScope(view, access);
+      const [contacts, tickets, devices, others, report, sessions, cross, slaRows] = await Promise.all([
         pool.query(
           "SELECT * FROM contacts WHERE customer_id = $1 ORDER BY is_primary DESC, lower(name)",
           [accountId],
         ),
-        access.service ? pool.query(
+        desk ? pool.query(
           `SELECT t.id, t.subject, t.status, t.priority, t.created_at, t.updated_at,
                   ct.name AS contact_name, d.hostname AS device_hostname, u.name AS assignee_name
            FROM tickets t
@@ -5906,10 +5997,10 @@ const server = createServer(async (req, res) => {
            LIMIT 200`,
           [accountId],
         ) : { rows: [] },
-        access.remote
+        remote
           ? pool.query(
             `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.agent_version,
-                    d.users, d.contact_id
+                    d.users, d.contact_id, d.mesh_node_id IS NOT NULL AS has_remote
              FROM devices d
              JOIN sites s ON s.id = d.site_id
              WHERE s.customer_id = $1 AND d.org_id = $2
@@ -5917,7 +6008,7 @@ const server = createServer(async (req, res) => {
             [accountId, actor.org_id],
           )
           : { rows: [] },
-        access.remote && access.active && canOperate(actor)
+        remote && access.active && canOperate(actor)
           ? pool.query(
             `SELECT d.id, d.hostname, d.display_name, c.name AS customer_name
              FROM devices d
@@ -5928,42 +6019,127 @@ const server = createServer(async (req, res) => {
             [actor.org_id, accountId],
           )
           : { rows: [] },
-        access.reporting
+        desk && (view === "desk" || access.reporting)
           ? pool.query(
             `SELECT count(*) FILTER (WHERE t.created_at > now() - interval '30 days')::int AS opened_30,
                     count(*) FILTER (WHERE t.status = 'resolved' AND t.updated_at > now() - interval '30 days')::int AS resolved_30,
                     count(*) FILTER (WHERE t.status <> 'resolved')::int AS open_now,
+                    count(*) FILTER (
+                      WHERE t.status <> 'resolved'
+                        AND COALESCE(sp.resolve_minutes, os.resolve_minutes) IS NOT NULL
+                        AND t.created_at + make_interval(mins => COALESCE(sp.resolve_minutes, os.resolve_minutes)) < now()
+                    )::int AS overdue_now,
                     count(*)::int AS total
              FROM tickets t
+             JOIN customers c ON c.id = t.customer_id
+             LEFT JOIN sla_plans sp ON sp.id = c.sla_plan_id
+             LEFT JOIN org_slas os ON os.org_id = c.org_id
              WHERE t.customer_id = $1 AND t.org_id = $2`,
             [accountId, actor.org_id],
           )
           : { rows: [] },
+        view === "remote"
+          ? pool.query(
+            `SELECT * FROM (
+               SELECT 'remote' AS kind, e.created_at, d.id AS device_id, COALESCE(d.display_name, d.hostname) AS device_name,
+                      u.name AS technician, e.detail->>'user' AS session_user, NULL::text AS status
+               FROM audit_events e
+               JOIN devices d ON e.target_id = d.id::text
+               JOIN sites s ON s.id = d.site_id
+               LEFT JOIN users u ON u.id = e.actor_user_id
+               WHERE e.org_id = $2 AND e.target_type = 'device' AND e.action = 'remote.launch' AND s.customer_id = $1
+               UNION ALL
+               SELECT 'support', ss.created_at, NULL, ss.hostname, u.name, NULL, ss.status
+               FROM support_sessions ss
+               JOIN tickets t ON t.id = ss.ticket_id
+               LEFT JOIN users u ON u.id = ss.created_by
+               WHERE ss.org_id = $2 AND t.customer_id = $1
+             ) x
+             ORDER BY created_at DESC
+             LIMIT 100`,
+            [accountId, actor.org_id],
+          )
+          : { rows: [] },
+        view === "remote" && access.service
+          ? pool.query(
+            "SELECT count(*)::int AS n FROM tickets WHERE customer_id = $1 AND org_id = $2 AND status <> 'resolved'",
+            [accountId, actor.org_id],
+          )
+          : view === "desk" && access.remote
+            ? pool.query(
+              "SELECT count(*)::int AS n FROM devices d JOIN sites s ON s.id = d.site_id WHERE s.customer_id = $1 AND d.org_id = $2",
+              [accountId, actor.org_id],
+            )
+            : { rows: [] },
+        view === "desk" ? slaBook(actor.org_id) : null,
       ]);
       const reportRow = report.rows[0];
+      let slaInfo = null;
+      if (slaRows) {
+        const book = slaRows;
+        const row = account.rows[0];
+        const plan = row.sla_plan_id != null ? book.plans.get(String(row.sla_plan_id)) : null;
+        const targets = plan || book.base;
+        slaInfo = {
+          planId: plan ? plan.id : null,
+          planName: plan ? plan.name : book.base ? "Default" : null,
+          responseMinutes: targets ? targets.responseMinutes : null,
+          resolveMinutes: targets ? targets.resolveMinutes : null,
+          defaultTargets: book.base,
+          plans: [...book.plans.values()],
+          contractStart: row.contract_start ? dateOnly(row.contract_start) : null,
+          contractEnd: row.contract_end ? dateOnly(row.contract_end) : null,
+          contractNotes: row.contract_notes || null,
+        };
+      }
+      const slaTargets = slaInfo && slaInfo.resolveMinutes ? { resolveMinutes: slaInfo.resolveMinutes } : null;
       return send(res, 200, {
         account: accountView(account.rows[0]),
+        view,
         report: reportRow
           ? {
-            ticketsOpened30: access.service ? reportRow.opened_30 : null,
-            ticketsResolved30: access.service ? reportRow.resolved_30 : null,
-            ticketsOpen: access.service ? reportRow.open_now : null,
-            ticketsTotal: access.service ? reportRow.total : null,
+            ticketsOpened30: reportRow.opened_30,
+            ticketsResolved30: reportRow.resolved_30,
+            ticketsOpen: reportRow.open_now,
+            ticketsOverdue: reportRow.overdue_now,
+            ticketsTotal: reportRow.total,
           }
           : null,
         contacts: contacts.rows.map(contactView),
-        tickets: tickets.rows.map((row) => ({
-          id: Number(row.id),
-          subject: row.subject,
-          status: row.status,
-          priority: row.priority,
-          contactName: row.contact_name || null,
-          deviceHostname: row.device_hostname,
-          assigneeName: row.assignee_name || null,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-        })),
-        devices: devices.rows.map((row) => {
+        ...(desk ? {
+          tickets: tickets.rows.map((row) => {
+            const due = view === "desk" ? ticketDue(row, slaTargets) : null;
+            return {
+              id: Number(row.id),
+              subject: row.subject,
+              status: row.status,
+              priority: row.priority,
+              contactName: row.contact_name || null,
+              deviceHostname: view === "desk" && !access.remote ? null : row.device_hostname,
+              assigneeName: row.assignee_name || null,
+              createdAt: row.created_at,
+              updatedAt: row.updated_at,
+              dueAt: due ? due.toISOString() : null,
+              overdue: due ? due.getTime() < Date.now() : false,
+            };
+          }),
+        } : {}),
+        ...(slaInfo ? { sla: slaInfo } : {}),
+        ...(view === "remote" ? {
+          sessions: sessions.rows.map((row) => ({
+            kind: row.kind,
+            at: row.created_at,
+            deviceId: row.device_id == null ? null : Number(row.device_id),
+            deviceName: row.device_name || null,
+            technician: row.technician || null,
+            user: row.session_user || null,
+            status: row.status || null,
+          })),
+          crossLink: access.service ? { openTickets: cross.rows[0]?.n || 0 } : null,
+          canRemote: remoteAccess(access.row).canRemote,
+        } : {}),
+        ...(view === "desk" ? { crossLink: access.remote ? { devices: cross.rows[0]?.n || 0 } : null } : {}),
+        ...(remote ? { devices: devices.rows.map((row) => {
           const users = Array.isArray(row.users) ? row.users : [];
           const suggested = row.contact_id == null ? suggestContact(users, contacts.rows) : null;
           return {
@@ -5978,13 +6154,14 @@ const server = createServer(async (req, res) => {
             users,
             contactId: row.contact_id == null ? null : Number(row.contact_id),
             suggestedContact: suggested ? { id: Number(suggested.id), name: suggested.name } : null,
+            hasRemote: row.has_remote === true,
           };
         }),
         linkable: others.rows.map((row) => ({
           id: Number(row.id),
           name: row.display_name || row.hostname,
           accountName: row.customer_name || null,
-        })),
+        })) } : {}),
         canAssets: access.remote,
         canOperate: canOperate(actor),
         ...customerFlags(access, actor),
@@ -6146,6 +6323,144 @@ const server = createServer(async (req, res) => {
         resolveMinutes,
       });
       return send(res, 200, { responseMinutes, resolveMinutes });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/sla-plans") {
+      if (!(await requireTicketing(actor, res))) return;
+      const [base, plans] = await Promise.all([
+        orgSla(actor.org_id),
+        pool.query(
+          `SELECT p.id, p.name, p.response_minutes, p.resolve_minutes,
+                  (SELECT count(*)::int FROM customers c WHERE c.sla_plan_id = p.id) AS customer_count
+           FROM sla_plans p
+           WHERE p.org_id = $1
+           ORDER BY lower(p.name)`,
+          [actor.org_id],
+        ),
+      ]);
+      return send(res, 200, {
+        default: base,
+        plans: plans.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          responseMinutes: row.response_minutes,
+          resolveMinutes: row.resolve_minutes,
+          customerCount: row.customer_count,
+        })),
+      });
+    }
+
+    const slaPlanMatch = url.pathname.match(/^\/v1\/sla-plans(?:\/(\d+))?$/);
+    if (slaPlanMatch && ((req.method === "POST" && !slaPlanMatch[1]) || ((req.method === "PUT" || req.method === "DELETE") && slaPlanMatch[1]))) {
+      if (!(await requireTicketing(actor, res))) return;
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can change SLA plans." });
+      if (req.method === "DELETE") {
+        const removed = await inTransaction(async (client) => {
+          const found = await client.query(
+            "SELECT id, name FROM sla_plans WHERE id = $1 AND org_id = $2 FOR UPDATE",
+            [slaPlanMatch[1], actor.org_id],
+          );
+          if (!found.rows[0]) return null;
+          const moved = await client.query(
+            "UPDATE customers SET sla_plan_id = NULL WHERE sla_plan_id = $1 AND org_id = $2",
+            [found.rows[0].id, actor.org_id],
+          );
+          await client.query("DELETE FROM sla_plans WHERE id = $1", [found.rows[0].id]);
+          return { ...found.rows[0], moved: moved.rowCount };
+        });
+        if (!removed) return send(res, 404, { error: "SLA plan not found." });
+        await writeAudit(actor.org_id, actor.id, "sla_plan.delete", "sla_plan", String(removed.id), {
+          name: removed.name,
+          customersMovedToDefault: removed.moved,
+        });
+        return send(res, 200, { ok: true });
+      }
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const responseMinutes = slaMinutes(body.responseMinutes);
+      const resolveMinutes = slaMinutes(body.resolveMinutes);
+      if (!name || name.length > 80) return send(res, 400, { error: "Enter a plan name (up to 80 characters)." });
+      if (name.toLowerCase() === "default") return send(res, 400, { error: "\"Default\" is the tenant target. Choose another name." });
+      if (responseMinutes == null || resolveMinutes == null) {
+        return send(res, 400, { error: "Enter response and resolve targets in minutes." });
+      }
+      const saved = await (req.method === "POST"
+        ? pool.query(
+          `INSERT INTO sla_plans (org_id, name, response_minutes, resolve_minutes)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [actor.org_id, name, responseMinutes, resolveMinutes],
+        )
+        : pool.query(
+          `UPDATE sla_plans SET name = $1, response_minutes = $2, resolve_minutes = $3, updated_at = now()
+           WHERE id = $4 AND org_id = $5 RETURNING id`,
+          [name, responseMinutes, resolveMinutes, slaPlanMatch[1], actor.org_id],
+        )).catch((error) => {
+        if (error.code === "23505") return null;
+        throw error;
+      });
+      if (!saved) return send(res, 409, { error: "A plan with that name already exists." });
+      if (!saved.rows[0]) return send(res, 404, { error: "SLA plan not found." });
+      await writeAudit(actor.org_id, actor.id, req.method === "POST" ? "sla_plan.create" : "sla_plan.update", "sla_plan", String(saved.rows[0].id), {
+        name,
+        responseMinutes,
+        resolveMinutes,
+      });
+      return send(res, req.method === "POST" ? 201 : 200, { id: Number(saved.rows[0].id) });
+    }
+
+    const accountSlaMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)\/sla$/);
+    if (req.method === "PUT" && accountSlaMatch) {
+      const access = await customerAccess(actor, res, { write: true });
+      if (!access) return;
+      if (!access.service) return send(res, 403, { error: "Service Desk is not in your package.", code: "app_not_entitled", app: "servicedesk" });
+      const body = await readJson(req);
+      const planId = body.planId == null || body.planId === "" ? null : Number(body.planId);
+      if (planId != null && !Number.isInteger(planId)) return send(res, 400, { error: "Choose an SLA plan." });
+      const day = (value) => {
+        if (value == null || value === "") return { value: null };
+        const text = String(value);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00Z`))) return { error: true };
+        return { value: text };
+      };
+      const start = day(body.contractStart);
+      const end = day(body.contractEnd);
+      if (start.error || end.error) return send(res, 400, { error: "Enter contract dates as YYYY-MM-DD." });
+      if (start.value && end.value && end.value < start.value) return send(res, 400, { error: "The contract can't end before it starts." });
+      const notes = typeof body.contractNotes === "string" ? body.contractNotes.trim() : "";
+      if (notes.length > 4000) return send(res, 400, { error: "Contract notes are too long." });
+      if (planId != null) {
+        const plan = await pool.query("SELECT id FROM sla_plans WHERE id = $1 AND org_id = $2", [planId, actor.org_id]);
+        if (!plan.rows[0]) return send(res, 400, { error: "Choose an SLA plan." });
+      }
+      const updated = await pool.query(
+        `UPDATE customers
+         SET sla_plan_id = $1, contract_start = $2, contract_end = $3, contract_notes = $4, updated_at = now()
+         WHERE id = $5 AND org_id = $6
+         RETURNING id`,
+        [planId, start.value, end.value, notes || null, accountSlaMatch[1], actor.org_id],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "Customer not found." });
+      await writeAudit(actor.org_id, actor.id, "customer.sla", "customer", String(updated.rows[0].id), {
+        planId: planId == null ? null : String(planId),
+        contractStart: start.value,
+        contractEnd: end.value,
+      });
+      return send(res, 200, { ok: true });
+    }
+
+    const accountNotesMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)\/notes$/);
+    if (req.method === "PUT" && accountNotesMatch) {
+      if (!(await customerAccess(actor, res, { write: true }))) return;
+      const body = await readJson(req);
+      const notes = typeof body.notes === "string" ? body.notes.trim() : "";
+      if (notes.length > 4000) return send(res, 400, { error: "Notes are too long." });
+      const updated = await pool.query(
+        "UPDATE customers SET notes = $1, updated_at = now() WHERE id = $2 AND org_id = $3 RETURNING id",
+        [notes || null, accountNotesMatch[1], actor.org_id],
+      );
+      if (!updated.rows[0]) return send(res, 404, { error: "Customer not found." });
+      await writeAudit(actor.org_id, actor.id, "customer.notes", "customer", String(updated.rows[0].id), { length: notes.length });
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/alerts") {
@@ -6693,7 +7008,7 @@ const server = createServer(async (req, res) => {
       if (!(await requireTicketing(actor, res))) return;
       const [tickets, customers, devices, users] = await Promise.all([
         pool.query(
-          `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+          `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
                   ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                   t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
                   u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
@@ -6737,13 +7052,12 @@ const server = createServer(async (req, res) => {
         ),
         pool.query("SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name", [actor.org_id]),
       ]);
-      const sla = await orgSla(actor.org_id);
+      const book = await slaBook(actor.org_id);
+      const sla = book.base;
       return send(res, 200, {
         me: Number(actor.id),
         tickets: tickets.rows.map((row) => {
-          const due = sla && row.status !== "resolved"
-            ? new Date(new Date(row.created_at).getTime() + sla.resolveMinutes * 60000)
-            : null;
+          const due = ticketDue(row, slaFor(book, row.sla_plan_id));
           return {
             ...ticketView(row),
             commentCount: row.comment_count,
@@ -6984,7 +7298,7 @@ const server = createServer(async (req, res) => {
         });
       }
       const ticket = await pool.query(
-        `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name,
+        `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
                 ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
                 d.mesh_node_id IS NOT NULL AS device_has_remote,
@@ -7044,7 +7358,7 @@ const server = createServer(async (req, res) => {
         [ticket.rows[0].id],
       );
       const job = latestJob.rows[0];
-      const sla = await orgSla(actor.org_id);
+      const sla = slaFor(await slaBook(actor.org_id), ticket.rows[0].sla_plan_id);
       return send(res, 200, {
         canRemote: remoteAccess(license.rows[0]).canRemote,
         canPatch: patchAllowed(license.rows[0]),

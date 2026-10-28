@@ -97,8 +97,8 @@ export default async function DevicesPage({ searchParams }) {
                   </td>
                   <td>{device.ipv4 || "—"}</td>
                   <td>
-                    {device.customerName && body.canTicket ? (
-                      <a href={`/customers/${device.customerId}?tab=devices`}>{device.customerName}</a>
+                    {device.customerName && device.customerId ? (
+                      <a href={`/remote/customers/${device.customerId}?tab=devices`}>{device.customerName}</a>
                     ) : device.customerName || "No account"}
                   </td>
                   <td>

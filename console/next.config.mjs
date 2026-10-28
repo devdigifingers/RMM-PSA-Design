@@ -14,12 +14,12 @@ const nextConfig = {
   experimental: { authInterrupts: true },
   async redirects() {
     return [
-      ["assets", "devices"],
-      ["details", "overview"],
-    ].map(([from, to]) => ({
+      ["assets", "/remote/customers/:id?tab=devices"],
+      ["details", "/customers/:id?tab=overview"],
+    ].map(([from, destination]) => ({
       source: "/customers/:id(\\d+)",
       has: [{ type: "query", key: "tab", value: from }],
-      destination: `/customers/:id?tab=${to}`,
+      destination,
       statusCode: 308,
     }));
   },

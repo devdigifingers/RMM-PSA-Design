@@ -494,6 +494,18 @@ table {
   white-space: normal;
 }
 
+.power-note .note-action {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .status-col {
   width: 56px;
 }
@@ -5860,6 +5872,8 @@ html[data-theme="dark"] .chip.presence-online { background: rgba(30, 157, 88, 0.
 .cust-tickets table { min-width: 860px; }
 .cust-table { flex: 1 1 auto; min-height: 0; margin-top: 14px; overflow-y: auto; }
 .cust-table table { min-width: 640px; }
+.cust-table thead th { white-space: normal; line-height: 1.25; }
+.cust-table td .cust-kind { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cust-name { display: inline-flex; align-items: center; gap: 12px; color: var(--text); text-decoration: none; }
 .cust-name:hover strong { color: var(--blue); }
 .cust-name > span:last-child { display: grid; gap: 2px; }
@@ -5871,6 +5885,29 @@ html[data-theme="dark"] .chip.presence-online { background: rgba(30, 157, 88, 0.
 .cust-stats div { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
 .cust-stats dt { color: var(--muted); font-size: 12.5px; }
 .cust-stats dd { margin: 0; font-size: 22px; font-weight: 600; }
+.cust-stats dd.cust-stat-text { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.cust-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.cust-action { display: inline-flex; align-items: center; height: 34px; padding: 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font-size: 13.5px; font-weight: 500; text-decoration: none; }
+.cust-action:hover { border-color: var(--blue); color: var(--blue); }
+.cust-cross { display: inline-flex; align-items: center; height: 24px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--blue); font-size: 12px; font-weight: 600; text-decoration: none; }
+.cust-cross:hover { border-color: var(--blue); }
+.cust-online { color: #1e8a50; font-weight: 600; }
+html[data-theme="dark"] .cust-online { color: #7fdcaa; }
+.cust-device-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; white-space: nowrap; }
+.cust-notes p { margin: 0; white-space: pre-wrap; }
+.sla-plans { margin-top: 20px; }
+.sla-plans h3 { margin: 18px 0 0; font-size: 15px; }
+.job form.stack.sla-form > label { grid-column: auto; }
+.job form.stack.sla-form > label.sla-wide { grid-column: 1 / -1; }
+.sla-plan-list { display: grid; gap: 8px; margin-top: 12px; }
+.sla-plan-edit { border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.sla-plan-edit summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 10px 14px; cursor: pointer; font-size: 13.5px; list-style: none; }
+.sla-plan-edit summary::-webkit-details-marker { display: none; }
+.sla-plan-edit summary span { color: var(--muted); }
+.sla-plan-edit summary .sla-plan-toggle { margin-left: auto; color: var(--blue); }
+.sla-plan-edit[open] summary { border-bottom: 1px solid var(--line); }
+.sla-plan-edit > form { margin: 12px 14px; }
+.sla-plan-edit > form.cust-remove { margin-top: 0; }
 .cust-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 24px; margin: 16px 0 0; }
 .cust-overview dt { color: var(--muted); font-size: 12.5px; }
 .cust-overview dd { margin: 2px 0 0; font-size: 14px; white-space: pre-wrap; }

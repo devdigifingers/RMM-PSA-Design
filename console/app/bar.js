@@ -2,10 +2,10 @@ import { cookies } from "next/headers";
 import { AccountMenu } from "./account-menu";
 import { accountFromSession, entitlements, licenseStatus } from "./account-data";
 import { logout } from "./actions";
+import { customerApps } from "./customers/shared";
 import { AppLauncher } from "./launcher";
-import Link from "next/link";
 import { BrandMark, Wordmark } from "./mark";
-import { NavLinks } from "./nav-links";
+import { BrandLink, NavLinks } from "./nav-links";
 import { Ribbon, SystemNotices } from "./notices";
 import { SearchConnect } from "./search-connect";
 import { SettingsMenu } from "./settings-menu";
@@ -23,10 +23,10 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
     <>
       <header className="topbar">
         <div className="brand-nav">
-          <Link className="brand-plate" href={platform ? "/control/tenants" : !allowed.remote && !allowed.service ? "/customers" : lastApp === "service" ? "/tickets" : "/devices"} aria-label="Digital Fingers home">
+          <BrandLink platform={Boolean(platform)} allowed={{ remote: allowed.remote, service: allowed.service }} lastApp={lastApp}>
             <Wordmark />
             <BrandMark className="brand-mark" />
-          </Link>
+          </BrandLink>
         </div>
         {!platform && allowed.remote ? <SearchConnect /> : <span className="topbar-spacer" />}
         {account?.user ? (
@@ -74,7 +74,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
             ["/audit", "Audit"],
           ].filter(Boolean) : []}
           serviceLinks={allowed.service ? [["/tickets", "Tickets"], ["/audit", "Audit"]] : []}
-          shared={account?.user ? [["/customers", "Customers"]] : []}
+          customers={account?.user ? customerApps(account) : null}
         />
       )}
       {notices.ribbon ? <Ribbon notice={notices.ribbon} /> : null}

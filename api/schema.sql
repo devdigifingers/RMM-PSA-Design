@@ -536,6 +536,25 @@ ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS unpublished_at timestamptz;
 ALTER TABLE ribbon_notices ADD COLUMN IF NOT EXISTS unpublished_by bigint REFERENCES users (id);
 CREATE INDEX IF NOT EXISTS audit_events_action_idx ON audit_events (action);
 
+CREATE TABLE IF NOT EXISTS sla_plans (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL,
+  response_minutes integer NOT NULL CHECK (response_minutes BETWEEN 1 AND 43200),
+  resolve_minutes integer NOT NULL CHECK (resolve_minutes BETWEEN 1 AND 43200),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS sla_plans_org_name_key ON sla_plans (org_id, lower(name));
+
+-- NULL sla_plan_id means the tenant default in org_slas.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS sla_plan_id bigint REFERENCES sla_plans (id);
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS contract_start date;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS contract_end date;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS contract_notes text;
+CREATE INDEX IF NOT EXISTS customers_sla_plan_id_idx ON customers (sla_plan_id);
+CREATE INDEX IF NOT EXISTS audit_events_target_idx ON audit_events (target_type, target_id);
+
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'audit_events is append-only';

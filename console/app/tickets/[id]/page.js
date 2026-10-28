@@ -174,7 +174,7 @@ function CustomerPanel({ summary, fallback }) {
           </div>
         ) : null}
       </dl>
-      <a href={`/customers/${customer.id}`}>Open customer</a>
+      <a href={`/desk/customers/${customer.id}`}>Open customer</a>
     </aside>
   );
 }

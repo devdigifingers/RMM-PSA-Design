@@ -21,7 +21,7 @@ export default async function NewTicketPage({ searchParams }) {
   const body = await response.json();
   const customers = body.customers || [];
   const devices = body.devices || [];
-  const back = params?.customer ? `/customers/${Number(params.customer)}?tab=tickets` : "/tickets";
+  const back = params?.customer ? `/desk/customers/${Number(params.customer)}?tab=tickets` : "/tickets";
 
   return (
     <div className="console">
@@ -32,7 +32,7 @@ export default async function NewTicketPage({ searchParams }) {
         {params?.error ? <p className="error">That ticket could not be saved.</p> : null}
         {customers.length === 0 ? (
           <p className="org-name">
-            Add a customer under <a href="/customers">Customers</a> before logging tickets.
+            Add a customer under <a href="/desk/customers">Customers</a> before logging tickets.
           </p>
         ) : (
           <section className="job desk-form">

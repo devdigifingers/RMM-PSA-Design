@@ -1,7 +1,45 @@
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
+import { forbidden, redirect } from "next/navigation";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
+
+// `remote` is Remote Desk's view of the customer record and `desk` is Service Desk's; the data is shared.
+export const CUSTOMER_APPS = {
+  remote: { base: "/remote/customers", name: "Remote Desk" },
+  desk: { base: "/desk/customers", name: "Service Desk" },
+};
+
+export function customersBase(app) {
+  return CUSTOMER_APPS[app]?.base || CUSTOMER_APPS.remote.base;
+}
+
+// Customers follow the package's apps even while the licence is inactive (read-only), so this ignores the licence state.
+export function customerApps(account) {
+  const apps = account?.license?.apps || [];
+  return { remote: apps.includes("remote"), desk: apps.includes("servicedesk") };
+}
+
+// `hint` wins when the tenant has that app; otherwise the last app used, then Remote Desk, then Service Desk.
+export async function preferredCustomersApp(account, hint) {
+  const { remote, desk } = customerApps(account);
+  if (!remote && !desk) return null;
+  if (hint === "remote" && remote) return "remote";
+  if (hint === "desk" && desk) return "desk";
+  const saved = (await cookies()).get("df_app")?.value;
+  if (saved === "service" && desk) return "desk";
+  if (saved === "remote" && remote) return "remote";
+  return remote ? "remote" : "desk";
+}
+
+export function queryString(params, drop = []) {
+  const out = new URLSearchParams();
+  for (const [key, value] of Object.entries(params || {})) {
+    if (drop.includes(key) || value == null) continue;
+    for (const item of Array.isArray(value) ? value : [value]) out.append(key, String(item));
+  }
+  const text = out.toString();
+  return text ? `?${text}` : "";
+}
 
 export const KINDS = [
   ["company", "Company"],
@@ -22,7 +60,11 @@ export async function apiGet(path) {
     cache: "no-store",
   });
   if (response.status === 401) redirect("/");
-  if (response.status === 403) redirect("/control/tenants");
+  if (response.status === 403) {
+    const body = await response.clone().json().catch(() => ({}));
+    if (body.code === "app_not_entitled") forbidden();
+    redirect("/control/tenants");
+  }
   return response;
 }
 
@@ -45,16 +87,17 @@ export function initials(name) {
     .toUpperCase();
 }
 
-export function CustomerSide({ active, accounts, contacts }) {
+export function CustomerSide({ app, active, accounts, contacts }) {
+  const base = customersBase(app);
   return (
     <aside className="desk-views">
       <p className="desk-views-title">Customers</p>
       <nav aria-label="Customers">
-        <a href="/customers" className={active === "accounts" ? "is-active" : undefined} aria-current={active === "accounts" ? "page" : undefined}>
+        <a href={base} className={active === "accounts" ? "is-active" : undefined} aria-current={active === "accounts" ? "page" : undefined}>
           <span>All customers</span>
           {accounts != null ? <span className="desk-count">{accounts}</span> : null}
         </a>
-        <a href="/customers/contacts" className={active === "contacts" ? "is-active" : undefined} aria-current={active === "contacts" ? "page" : undefined}>
+        <a href={`${base}/contacts`} className={active === "contacts" ? "is-active" : undefined} aria-current={active === "contacts" ? "page" : undefined}>
           <span>Contacts</span>
           {contacts != null ? <span className="desk-count">{contacts}</span> : null}
         </a>
@@ -63,7 +106,7 @@ export function CustomerSide({ active, accounts, contacts }) {
   );
 }
 
-export function AccountFields({ account }) {
+export function AccountFields({ account, withNotes = false }) {
   const value = (key) => account?.[key] || "";
   return (
     <div className="cust-fields">
@@ -105,12 +148,21 @@ export function AccountFields({ account }) {
         Physical address
         <textarea name="address" rows={3} maxLength={500} defaultValue={value("address")} />
       </label>
-      <label className="cust-wide">
-        Notes
-        <textarea name="notes" rows={4} maxLength={4000} defaultValue={value("notes")} />
-      </label>
+      {withNotes ? (
+        <label className="cust-wide">
+          Notes
+          <textarea name="notes" rows={4} maxLength={4000} defaultValue={value("notes")} />
+        </label>
+      ) : null}
     </div>
   );
+}
+
+export function minutesLabel(minutes) {
+  if (minutes == null) return "—";
+  if (minutes % 1440 === 0) return `${minutes / 1440} d`;
+  if (minutes % 60 === 0) return `${minutes / 60} h`;
+  return minutes > 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`;
 }
 
 export function ContactFields({ contact, prefix = "", requireName = true }) {

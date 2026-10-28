@@ -829,6 +829,11 @@
         };
         win.go.dfGuard = true;
       }
+      if (win && !win.dfPaste) {
+        win.dfPaste = true;
+        win.addEventListener("keydown", pasteGuard, true);
+        win.addEventListener("keyup", pasteGuard, true);
+      }
       page.body.style.background = "#000";
       fitDesk(true);
       ["deskarea1", "deskarea4"].forEach(function (id) {
@@ -924,6 +929,129 @@
       if (typeof win.desktop.m[name] === "function") win.desktop.m[name](event);
     }
 
+    function typeText(win, text) {
+      var m = win.desktop && win.desktop.m;
+      var plain = m && typeof m.SendStringUnicode === "function" && typeof m.SendKeyMsgKC === "function" &&
+        win.desktop.contype !== 2 && win.desktop.contype !== 4 && !(win.desktopsettings && win.desktopsettings.remotekeymap === true);
+      if (!plain) { win.showDeskTypeEx(text); return; }
+      text.replace(/\r\n?/g, "\n").split("\n").forEach(function (line, index) {
+        if (index > 0) { m.SendKeyMsgKC(m.KeyAction.DOWN, 13); m.SendKeyMsgKC(m.KeyAction.UP, 13); }
+        if (line) m.SendStringUnicode(line);
+      });
+    }
+
+    var clipWaiter = null;
+
+    function sendRemotePaste(m) {
+      m.SendKeyMsgKC(m.KeyAction.DOWN, 17);
+      m.SendKeyMsgKC(m.KeyAction.DOWN, 86);
+      m.SendKeyMsgKC(m.KeyAction.UP, 86);
+      m.SendKeyMsgKC(m.KeyAction.UP, 17);
+    }
+
+    function pasteViaClipboard(win, text) {
+      return new Promise(function (resolve) {
+        var desk = win.desktop;
+        var m = desk && desk.m;
+        if (!m || typeof m.SendKeyMsgKC !== "function" || desk.contype === 2) { resolve(false); return; }
+        if (desk.contype === 4) {
+          if (typeof m.setClipboard !== "function") { resolve(false); return; }
+          m.setClipboard(text);
+          setTimeout(function () { sendRemotePaste(m); resolve(true); }, 300);
+          return;
+        }
+        var server = win.meshserver;
+        if (!server || typeof server.send !== "function" || !win.currentNode) { resolve(false); return; }
+        if (!server.dfClipHook) {
+          var meshOnMessage = server.onMessage;
+          server.onMessage = function (srv, message) {
+            if (clipWaiter && message && message.action === "msg" && message.type === "setclip") {
+              var done = clipWaiter;
+              clipWaiter = null;
+              done(message.success !== false);
+            }
+            if (typeof meshOnMessage === "function") return meshOnMessage.apply(this, arguments);
+          };
+          server.dfClipHook = true;
+        }
+        var timer = setTimeout(function () { clipWaiter = null; resolve(false); }, 8000);
+        clipWaiter = function (ok) {
+          clearTimeout(timer);
+          if (ok && win.desktop && win.desktop.State == 3) sendRemotePaste(win.desktop.m);
+          resolve(ok);
+        };
+        server.send({ action: "msg", type: "setclip", nodeid: win.currentNode._id, data: text });
+      });
+    }
+
+    var pasting = false;
+    var swallowV = false;
+    var modHeld = false;
+
+    function isPasteKey(event) {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
+      return String(event.key || "").toLowerCase() === "v" || event.keyCode === 86;
+    }
+
+    function pasteGuard(event) {
+      if (event.key === "Control" || event.key === "Meta") modHeld = event.type === "keydown";
+      if (event.type === "keyup" && swallowV && (String(event.key || "").toLowerCase() === "v" || event.keyCode === 86)) {
+        swallowV = false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (event.type !== "keydown" || !isPasteKey(event)) return;
+      var tag = event.target && event.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (event.target && event.target.isContentEditable)) return;
+      if (event.target && event.target.closest && event.target.closest(".panel, .chat-win, .modal")) return;
+      if (document.querySelector(".fly.on") || !document.getElementById("ask").hidden) return;
+      var win = live();
+      if (!win || mode !== "view" || win.xxdialogMode || typeof win.showDeskTypeEx !== "function") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      swallowV = true;
+      modHeld = true;
+      if (pasting) return;
+      var source = (event.view && event.view.navigator && event.view.navigator.clipboard) || navigator.clipboard;
+      if (!source || typeof source.readText !== "function") {
+        toast("This browser can't read your clipboard. Use Session › Send Clipboard Keystrokes instead.");
+        return;
+      }
+      pasting = true;
+      source.readText().then(function (text) {
+        if (!text) { pasting = false; toast("Your clipboard is empty."); return; }
+        var started = Date.now();
+        (function typeWhenReleased() {
+          if (modHeld && Date.now() - started < 10000) { setTimeout(typeWhenReleased, 50); return; }
+          if (modHeld) { pasting = false; toast("Paste cancelled. Release Ctrl and press Ctrl+V again."); return; }
+          var target = live();
+          if (!target) { pasting = false; return; }
+          if (text.length > 1000000) {
+            pasting = false;
+            toast("That's over 1,000,000 characters. Copy it to the remote machine as a file instead.");
+            return;
+          }
+          pasteViaClipboard(target, text).then(function (ok) {
+            pasting = false;
+            var again = live();
+            if (!again) return;
+            if (!ok) {
+              if (text.length > 5000) toast("Couldn't set the remote clipboard, so the first 5,000 characters are being typed instead.");
+              typeText(again, text.slice(0, 5000));
+            }
+            focusDesk();
+          });
+        })();
+      }, function () {
+        pasting = false;
+        toast("Allow clipboard access for this site in your browser to paste with Ctrl+V, or use Session › Send Clipboard Keystrokes.");
+      });
+    }
+
+    window.addEventListener("keydown", pasteGuard, true);
+    window.addEventListener("keyup", pasteGuard, true);
+    window.addEventListener("blur", function () { modHeld = false; });
     window.addEventListener("keydown", function (event) { sendKey("down", event); });
     window.addEventListener("keyup", function (event) { sendKey("up", event); });
     window.addEventListener("keypress", function (event) { sendKey("press", event); });
@@ -1169,7 +1297,7 @@
       if (!win) return;
       function typeIt(text) {
         if (text && typeof win.showDeskTypeEx === "function") {
-          win.showDeskTypeEx(text.slice(0, 5000));
+          typeText(win, text.slice(0, 5000));
           focusDesk();
         } else if (typeof win.showDeskType === "function") {
           win.showDeskType("");

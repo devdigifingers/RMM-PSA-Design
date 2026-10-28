@@ -19,8 +19,8 @@ function finish(payload) {
 process.on("uncaughtException", () => finish({ error: "MeshCentral did not answer." }));
 
 if (!user || !pass || !process.env.MESH_URL) finish({ error: "Remote service is not configured." });
-if (kind !== "list" && kind !== "end") finish({ error: "Unknown session action." });
-if (kind === "end" && (!nodeId || nodeId.length > 300)) {
+if (kind !== "list" && kind !== "end" && kind !== "restart") finish({ error: "Unknown session action." });
+if ((kind === "end" || kind === "restart") && (!nodeId || nodeId.length > 300)) {
   finish({ error: "That device has no remote agent." });
 }
 
@@ -71,8 +71,12 @@ const ws = new WebSocket(url, {
 
 const timer = setTimeout(() => {
   ws.terminate();
+  if (kind === "restart" && step !== "find") finish({ restarted: true, back: false, remaining: lastSeen });
   finish({ error: "MeshCentral did not answer." });
-}, 30000);
+}, kind === "restart" ? 80000 : 30000);
+let dropped = false;
+let polls = 0;
+let lastSeen = { desktop: 0, terminal: 0, files: 0, other: 0, total: 0 };
 
 function done(payload) {
   clearTimeout(timer);
@@ -132,11 +136,34 @@ ws.on("message", (raw) => {
       done({ error: "This device is not in MeshCentral." });
       return;
     }
+    if (kind === "restart") {
+      if (!((node.conn || 0) & 1)) {
+        done({ error: "The agent is offline, so it can't be restarted remotely." });
+        return;
+      }
+      ws.send(JSON.stringify({ action: "msg", type: "console", nodeid: nodeId, value: "service restart" }));
+      step = "restart";
+      setTimeout(() => ws.send(JSON.stringify({ action: "nodes" })), 3000);
+      return;
+    }
     endTunnels(node.sessions);
     step = "check";
     setTimeout(() => {
       if (!settled) ws.send(JSON.stringify({ action: "nodes" }));
     }, ended ? 4000 : 0);
+    return;
+  }
+  if (step === "restart" && message.action === "nodes") {
+    const node = allNodes(message).find((item) => item._id === nodeId);
+    const online = Boolean(node && ((node.conn || 0) & 1));
+    lastSeen = summary(node && node.sessions);
+    if (!online) dropped = true;
+    polls += 1;
+    if (online && !lastSeen.total && (dropped || polls >= 2)) {
+      done({ restarted: true, back: true, remaining: lastSeen });
+      return;
+    }
+    setTimeout(() => { if (!settled) ws.send(JSON.stringify({ action: "nodes" })); }, 3000);
     return;
   }
   if (step === "check" && message.action === "nodes") {

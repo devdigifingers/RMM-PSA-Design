@@ -9,7 +9,15 @@ export function appForPath(path) {
   return suiteAppForPath(path)?.key || null;
 }
 
-export function NavLinks({ links, serviceLinks, shared = [], lastApp, label }) {
+// Which app's customer view to link to: the app in the URL when the package has it, else whichever one it has.
+function customersHref(app, customers) {
+  if (!customers?.remote && !customers?.desk) return null;
+  if (app === "service" && customers.desk) return "/desk/customers";
+  if (app === "remote" && customers.remote) return "/remote/customers";
+  return customers.remote ? "/remote/customers" : "/desk/customers";
+}
+
+export function NavLinks({ links, serviceLinks, customers = null, lastApp, label }) {
   const path = usePathname() || "";
   const fromPath = appForPath(path);
   const app = fromPath || lastApp;
@@ -19,11 +27,13 @@ export function NavLinks({ links, serviceLinks, shared = [], lastApp, label }) {
   }, [fromPath]);
 
   const shown = app === "service" && serviceLinks ? serviceLinks : links;
-  const item = ([href, text]) => {
+  const customersLink = customersHref(app, customers);
+  const shared = customersLink ? [[customersLink, "Customers", "/customers"]] : [];
+  const item = ([href, text, icon]) => {
     const on = path === href || path.startsWith(`${href}/`);
     return (
       <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
-        {ICONS[href] || ICONS["/devices"]}
+        {ICONS[icon || href] || ICONS["/devices"]}
         <span>{text}</span>
       </Link>
     );
@@ -34,6 +44,20 @@ export function NavLinks({ links, serviceLinks, shared = [], lastApp, label }) {
       {shown.length && shared.length ? <span className="app-rail-sep" aria-hidden="true" /> : null}
       {shared.map(item)}
     </nav>
+  );
+}
+
+export function BrandLink({ platform, allowed, lastApp, children }) {
+  const app = appForPath(usePathname() || "") || lastApp;
+  let href = "/customers";
+  if (platform) href = "/control/tenants";
+  else if (app === "service" && allowed.service) href = "/tickets";
+  else if (allowed.remote) href = "/devices";
+  else if (allowed.service) href = "/tickets";
+  return (
+    <Link className="brand-plate" href={href} aria-label="Digital Fingers home">
+      {children}
+    </Link>
   );
 }
 

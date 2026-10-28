@@ -29,7 +29,7 @@ export default async function DeskSetupPage({ searchParams }) {
         {params?.error ? <p className="error">Those SLA targets could not be saved.</p> : null}
         {params?.saved ? <p className="org-name">SLA targets saved.</p> : null}
         <section className="job desk-form">
-          <p className="org-name">Due dates on the ticket list are the creation time plus the resolve target. Accounts and contacts are under <a href="/customers">Customers</a>.</p>
+          <p className="org-name">Due dates on the ticket list are the creation time plus the resolve target. Customers and contacts are under <a href="/customers">Customers</a>.</p>
           <form className="stack" action={saveSla}>
             <label>
               Response minutes

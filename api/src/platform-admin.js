@@ -1,13 +1,11 @@
 import { pool } from "./db.js";
-import { FEATURE_KEYS, appsFor, resolve } from "./licensing.js";
+import { FEATURE_KEYS, appsFor } from "./licensing.js";
 import {
   licenseSnapshot,
   loadAllLicenses,
   loadLicense,
   lockedLicenseRow,
-  modulesFromFeatures,
   snapshotChanges,
-  syncLegacyFromPackage,
 } from "./license-store.js";
 import { InputError, csvCell, dayBound, noticeState } from "./admin-format.js";
 
@@ -323,7 +321,6 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
       if (!Object.keys(changes).length) return { affected, changed: false };
       const action = before.active && !after.active ? "package.deactivate" : "package.update";
       await audit(client, null, actor.id, action, "package", id, { changes, affectedTenants: affected });
-      for (const row of tenants.rows) await syncLegacyFromPackage(client, row.org_id);
       return { affected, changed: true };
     });
     if (!result) return h.send(res, 404, { error: "Package not found." });
@@ -390,7 +387,6 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
         [id, input.packageId, input.licenseType, input.seatsOverride, input.devicesOverride, input.sessionsOverride,
           input.featuresAdded, input.featuresRemoved, input.noExpiry, input.expiresAt, input.status, actor.id],
       );
-      await syncLegacyFromPackage(client, id);
       const after = licenseSnapshot(await lockedLicenseRow(client, id));
       const changes = snapshotChanges(before, after);
       if (!Object.keys(changes).length) return { changed: false };
@@ -424,23 +420,14 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
     try {
       const orgId = await tx(async (client) => {
         const pkgRow = await packageForAssignment(client, license.packageId, null);
-        const pkg = {
-          features: pkgRow.features,
-          defaultSeats: pkgRow.default_seats,
-          defaultDevices: pkgRow.default_devices,
-          defaultSessions: pkgRow.default_sessions,
-        };
-        const effective = resolve(pkg, license);
         const org = await client.query("INSERT INTO orgs (name, slug) VALUES ($1, $2) RETURNING id", [name, slug]);
         const id = Number(org.rows[0].id);
         const created = await client.query(
-          `INSERT INTO licenses (org_id, plan, seats, device_cap, expires_at, modules, support_concurrent,
-                                 package_id, seats_override, devices_override, sessions_override,
+          `INSERT INTO licenses (org_id, plan, expires_at, package_id, seats_override, devices_override, sessions_override,
                                  features_added, features_removed, no_expiry, status, updated_by)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, 'active', $15)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
            RETURNING *`,
-          [id, license.licenseType, effective.seats, effective.devices, license.expiresAt,
-            JSON.stringify(modulesFromFeatures(effective.features)), effective.sessions, license.packageId,
+          [id, license.licenseType, license.expiresAt, license.packageId,
             license.seatsOverride, license.devicesOverride, license.sessionsOverride, license.featuresAdded,
             license.featuresRemoved, license.noExpiry, actor.id],
         );

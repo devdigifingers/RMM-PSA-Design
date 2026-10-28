@@ -34,6 +34,8 @@ export default async function TicketPage({ params, searchParams }) {
           <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
           <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
         </p>
+        <div className="ticket-layout">
+        <div className="ticket-body">
         <p className="org-name">
           {ticket.customer.name} · {ticket.device ? ticket.device.hostname : "No specific device"}
         </p>
@@ -136,8 +138,44 @@ export default async function TicketPage({ params, searchParams }) {
             <button type="submit">Add comment</button>
           </form>
         </section>
+        </div>
+        <CustomerPanel summary={body.customerSummary} fallback={ticket.customer} />
+        </div>
       </main>
     </div>
+  );
+}
+
+function CustomerPanel({ summary, fallback }) {
+  const customer = summary || { id: fallback.id, name: fallback.name };
+  const contact = summary?.primaryContact;
+  return (
+    <aside className="job cust-panel" aria-label="Customer">
+      <h2>Customer</h2>
+      <dl>
+        <div>
+          <dt>Name</dt>
+          <dd>{customer.name}</dd>
+        </div>
+        <div>
+          <dt>Primary contact</dt>
+          <dd>{contact ? [contact.name, contact.email, contact.phone].filter(Boolean).join(" · ") : "None"}</dd>
+        </div>
+        {summary?.deviceCount != null ? (
+          <div>
+            <dt>Devices</dt>
+            <dd>{summary.deviceCount}</dd>
+          </div>
+        ) : null}
+        {summary?.openTicketCount != null ? (
+          <div>
+            <dt>Open tickets</dt>
+            <dd>{summary.openTicketCount}</dd>
+          </div>
+        ) : null}
+      </dl>
+      <a href={`/customers/${customer.id}`}>Open customer</a>
+    </aside>
   );
 }
 

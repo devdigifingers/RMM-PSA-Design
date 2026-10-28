@@ -23,7 +23,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
     <>
       <header className="topbar">
         <div className="brand-nav">
-          <Link className="brand-plate" href={platform ? "/control/tenants" : lastApp === "service" ? "/tickets" : "/devices"} aria-label="Digital Fingers home">
+          <Link className="brand-plate" href={platform ? "/control/tenants" : !allowed.remote && !allowed.service ? "/customers" : lastApp === "service" ? "/tickets" : "/devices"} aria-label="Digital Fingers home">
             <Wordmark />
             <BrandMark className="brand-mark" />
           </Link>
@@ -65,15 +65,16 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
       ) : (
         <NavLinks
           lastApp={lastApp}
-          links={[
+          links={allowed.remote || allowed.service ? [
             allowed.support ? ["/support", "Support"] : null,
             ["/devices", "Devices"],
             showDashboard ? ["/dashboard", "Dashboard"] : null,
             showAlerts ? ["/alerts", "Alerts"] : null,
             showPatches ? ["/patches", "Patches"] : null,
             ["/audit", "Audit"],
-          ].filter(Boolean)}
-          serviceLinks={[["/tickets", "Tickets"], ["/customers", "Customers"], ["/audit", "Audit"]]}
+          ].filter(Boolean) : []}
+          serviceLinks={allowed.service ? [["/tickets", "Tickets"], ["/audit", "Audit"]] : []}
+          shared={account?.user ? [["/customers", "Customers"]] : []}
         />
       )}
       {notices.ribbon ? <Ribbon notice={notices.ribbon} /> : null}

@@ -223,7 +223,7 @@ export async function createAccount(formData) {
     contact: pick(formData, CONTACT_FIELDS, "contact_"),
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/new?error=${await errorText(response, "That account could not be saved.")}`);
+  if (!response.ok) redirect(`/customers/new?error=${await errorText(response, "That customer could not be saved.")}`);
   const body = await response.json();
   redirect(`/customers/${body.id}?saved=created`);
 }
@@ -232,8 +232,16 @@ export async function saveAccount(formData) {
   const id = String(formData.get("accountId") || "");
   const response = await callApi(`/v1/accounts/${id}`, { method: "PUT", body: pick(formData, ACCOUNT_FIELDS) });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=details&error=${await errorText(response, "That account could not be saved.")}`);
-  redirect(`/customers/${id}?tab=details&saved=account`);
+  if (!response.ok) redirect(`/customers/${id}?tab=overview&error=${await errorText(response, "That customer could not be saved.")}`);
+  redirect(`/customers/${id}?tab=overview&saved=account`);
+}
+
+export async function deleteCustomer(formData) {
+  const id = String(formData.get("accountId") || "");
+  const response = await callApi(`/v1/accounts/${id}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/customers/${id}?tab=overview&error=${await errorText(response, "That customer could not be deleted.")}`);
+  redirect("/customers?saved=deleted");
 }
 
 export async function addContact(formData) {
@@ -272,8 +280,8 @@ export async function linkAsset(formData) {
   const id = String(formData.get("accountId") || "");
   const response = await authed(`/v1/accounts/${id}/devices`, { deviceId: Number(formData.get("deviceId")) });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be linked.")}`);
-  redirect(`/customers/${id}?tab=assets&saved=linked`);
+  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be linked.")}`);
+  redirect(`/customers/${id}?tab=devices&saved=linked`);
 }
 
 export async function assignAsset(formData) {
@@ -284,8 +292,8 @@ export async function assignAsset(formData) {
     body: { contactId: formData.get("contactId") || null },
   });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be assigned.")}`);
-  redirect(`/customers/${id}?tab=assets&saved=assigned`);
+  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be assigned.")}`);
+  redirect(`/customers/${id}?tab=devices&saved=assigned`);
 }
 
 export async function unlinkAsset(formData) {
@@ -293,8 +301,8 @@ export async function unlinkAsset(formData) {
   const deviceId = String(formData.get("deviceId") || "");
   const response = await callApi(`/v1/accounts/${id}/devices/${deviceId}`, { method: "DELETE" });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/customers/${id}?tab=assets&error=${await errorText(response, "That device could not be unlinked.")}`);
-  redirect(`/customers/${id}?tab=assets&saved=unlinked`);
+  if (!response.ok) redirect(`/customers/${id}?tab=devices&error=${await errorText(response, "That device could not be unlinked.")}`);
+  redirect(`/customers/${id}?tab=devices&saved=unlinked`);
 }
 
 export async function createTicket(formData) {

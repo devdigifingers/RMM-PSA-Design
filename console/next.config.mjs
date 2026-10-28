@@ -12,6 +12,17 @@ const everywhere = [
 const nextConfig = {
   poweredByHeader: false,
   experimental: { authInterrupts: true },
+  async redirects() {
+    return [
+      ["assets", "devices"],
+      ["details", "overview"],
+    ].map(([from, to]) => ({
+      source: "/customers/:id(\\d+)",
+      has: [{ type: "query", key: "tab", value: from }],
+      destination: `/customers/:id?tab=${to}`,
+      statusCode: 308,
+    }));
+  },
   async headers() {
     return [
       { source: "/:path*", headers: everywhere },

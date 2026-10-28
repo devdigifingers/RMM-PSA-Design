@@ -9,12 +9,8 @@ CREATE TABLE IF NOT EXISTS licenses (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   org_id bigint NOT NULL UNIQUE REFERENCES orgs (id),
   plan text NOT NULL,
-  seats integer NOT NULL CHECK (seats > 0),
-  device_cap integer NOT NULL CHECK (device_cap >= 0),
   expires_at timestamptz,
-  modules jsonb NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT licenses_modules_object CHECK (jsonb_typeof(modules) = 'object')
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS customers (
@@ -359,8 +355,6 @@ CREATE TABLE IF NOT EXISTS ribbon_dismissals (
   PRIMARY KEY (notice_id, user_id)
 );
 
-ALTER TABLE licenses ADD COLUMN IF NOT EXISTS support_concurrent integer NOT NULL DEFAULT 1;
-
 CREATE TABLE IF NOT EXISTS support_sessions (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   org_id bigint NOT NULL REFERENCES orgs (id),
@@ -416,6 +410,15 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_kind_check') THEN
     ALTER TABLE customers ADD CONSTRAINT customers_kind_check CHECK (kind IN ('company', 'sole_proprietor', 'other'));
+  END IF;
+END $$;
+
+-- Skipped while an org still has duplicate names; the API rejects new duplicates either way.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'customers_org_name_key')
+     AND NOT EXISTS (SELECT 1 FROM customers GROUP BY org_id, lower(name) HAVING count(*) > 1) THEN
+    CREATE UNIQUE INDEX customers_org_name_key ON customers (org_id, lower(name));
   END IF;
 END $$;
 
@@ -511,6 +514,19 @@ BEGIN
       features_added <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting']::text[]
       AND features_removed <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting']::text[]
     );
+  END IF;
+END $$;
+
+-- The package model replaced these; limits and module flags are now derived from the package.
+ALTER TABLE licenses DROP CONSTRAINT IF EXISTS licenses_modules_object;
+ALTER TABLE licenses DROP COLUMN IF EXISTS modules;
+ALTER TABLE licenses DROP COLUMN IF EXISTS seats;
+ALTER TABLE licenses DROP COLUMN IF EXISTS device_cap;
+ALTER TABLE licenses DROP COLUMN IF EXISTS support_concurrent;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM licenses WHERE package_id IS NULL) THEN
+    ALTER TABLE licenses ALTER COLUMN package_id SET NOT NULL;
   END IF;
 END $$;
 

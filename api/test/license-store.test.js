@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-process.env.LICENSE_V2 = "true";
-const { effectiveRow, modulesFromFeatures } = await import("../src/license-store.js");
+import { effectiveRow, modulesFromFeatures } from "../src/license-store.js";
 
 const NOW = new Date("2026-10-28T10:00:00Z");
 
 const suiteRow = (extra = {}) => ({
   plan: "operator",
-  seats: 1,
-  device_cap: 1,
-  support_concurrent: 0,
   expires_at: null,
-  modules: { core: true },
   package_id: 3,
   package_code: "SUITE",
   package_name: "Digital Fingers Suite",
@@ -31,8 +26,8 @@ const suiteRow = (extra = {}) => ({
   ...extra,
 });
 
-describe("effectiveRow with LICENSE_V2", () => {
-  it("replaces the old columns with the package entitlements", () => {
+describe("effectiveRow", () => {
+  it("derives limits and module flags from the package", () => {
     const row = effectiveRow(suiteRow(), NOW);
     assert.equal(row.seats, 25);
     assert.equal(row.device_cap, 100);
@@ -50,10 +45,12 @@ describe("effectiveRow with LICENSE_V2", () => {
     assert.equal(row.entitlements.active, false);
   });
 
-  it("falls back to the old columns when no package is assigned", () => {
-    const row = effectiveRow({ seats: 5, device_cap: 12, support_concurrent: 1, expires_at: null, modules: { core: true }, package_id: null }, NOW);
-    assert.equal(row.seats, 5);
-    assert.deepEqual(row.entitlements.features, ["enrollment"]);
+  it("grants nothing when no package is assigned", () => {
+    const row = effectiveRow({ plan: "standard", expires_at: null, package_id: null }, NOW);
+    assert.equal(row.seats, 0);
+    assert.equal(row.device_cap, 0);
+    assert.deepEqual(row.entitlements.features, []);
+    assert.equal(row.modules.core, false);
     assert.equal(row.package, null);
   });
 

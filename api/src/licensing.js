@@ -6,11 +6,8 @@ export const FEATURES = {
 
 export const FEATURE_KEYS = Object.values(FEATURES).flat();
 
-export const ADDON_FEATURES = ["reporting"];
-
-export const SEED_PACKAGE_CODES = ["REMOTE", "SERVICE", "SUITE"];
-
-export const LEGACY_MODULE_FEATURES = {
+// Module flags the route checks still read; they are derived from features and never stored.
+export const MODULE_FEATURES = {
   core: "enrollment",
   remote_desktop: "remote_sessions",
   remote_support: "remote_support",
@@ -70,28 +67,6 @@ export function hasApp(effective, app) {
   return Boolean(effective?.active && effective.apps.includes(app));
 }
 
-export function legacyFeatures(modules) {
-  const set = new Set();
-  for (const [module, feature] of Object.entries(LEGACY_MODULE_FEATURES)) {
-    if (modules?.[module] === true) set.add(feature);
-  }
-  return ordered(set);
-}
-
-export function legacyEffective(row, now = new Date()) {
-  const features = legacyFeatures(row?.modules);
-  const status = expired(row?.expires_at, now) ? "expired" : "active";
-  return {
-    features,
-    apps: appsFor(features),
-    seats: row.seats,
-    devices: row.device_cap,
-    sessions: row.support_concurrent,
-    status,
-    active: status === "active",
-  };
-}
-
 export function packageFromRow(row) {
   return {
     id: row.id == null ? null : Number(row.id),
@@ -119,71 +94,4 @@ export function licenseFromRow(row) {
     expiresAt: row.expires_at,
     status: row.status || "active",
   };
-}
-
-function sameSet(a, b) {
-  const left = featureSet(a);
-  const right = featureSet(b);
-  return left.size === right.size && [...left].every((key) => right.has(key));
-}
-
-export function planBackfill(row, packages) {
-  const features = legacyFeatures(row.modules);
-  const addons = features.filter((key) => ADDON_FEATURES.includes(key));
-  const base = features.filter((key) => !ADDON_FEATURES.includes(key));
-  const seed = base.length
-    ? packages.find((pkg) => !pkg.isCustom && SEED_PACKAGE_CODES.includes(pkg.code) && sameSet(pkg.features, base))
-    : null;
-  const noExpiry = !row.expires_at;
-  const common = {
-    featuresRemoved: [],
-    noExpiry,
-    expiresAt: noExpiry ? null : row.expires_at,
-    status: row.status === "suspended" ? "suspended" : "active",
-  };
-  if (seed) {
-    return {
-      package: seed,
-      customPackage: null,
-      license: {
-        ...common,
-        seatsOverride: row.seats === seed.defaultSeats ? null : row.seats,
-        devicesOverride: row.device_cap === seed.defaultDevices ? null : row.device_cap,
-        sessionsOverride: row.support_concurrent === seed.defaultSessions ? null : row.support_concurrent,
-        featuresAdded: addons,
-      },
-    };
-  }
-  const customPackage = {
-    code: `CUSTOM-${String(row.slug).toUpperCase()}`,
-    name: `${row.name} (custom)`,
-    features,
-    defaultSeats: row.seats,
-    defaultDevices: row.device_cap,
-    defaultSessions: row.support_concurrent,
-    active: true,
-    isCustom: true,
-  };
-  return {
-    package: customPackage,
-    customPackage,
-    license: {
-      ...common,
-      seatsOverride: null,
-      devicesOverride: null,
-      sessionsOverride: null,
-      featuresAdded: [],
-    },
-  };
-}
-
-export function effectiveDiff(before, after) {
-  const diffs = [];
-  if (!sameSet(before.features, after.features)) {
-    diffs.push({ field: "features", before: before.features, after: after.features });
-  }
-  for (const field of ["seats", "devices", "sessions", "active"]) {
-    if (before[field] !== after[field]) diffs.push({ field, before: before[field], after: after[field] });
-  }
-  return diffs;
 }

@@ -27,12 +27,12 @@ export default async function NewTicketPage({ searchParams }) {
     <div className="console">
       <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main">
-        <p className="desk-back"><a href={back}>{params?.customer ? "← Back to account" : "← All Tickets"}</a></p>
+        <p className="desk-back"><a href={back}>{params?.customer ? "← Back to customer" : "← All Tickets"}</a></p>
         <h1><AppTitle app="service-desk">New Ticket</AppTitle></h1>
         {params?.error ? <p className="error">That ticket could not be saved.</p> : null}
         {customers.length === 0 ? (
           <p className="org-name">
-            Add an account under <a href="/customers">Customers</a> before logging tickets.
+            Add a customer under <a href="/customers">Customers</a> before logging tickets.
           </p>
         ) : (
           <section className="job desk-form">

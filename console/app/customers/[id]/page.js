@@ -1,19 +1,31 @@
 import { notFound } from "next/navigation";
-import { addContact, assignAsset, deleteContact, linkAsset, saveAccount, saveContact, unlinkAsset } from "../../actions";
+import { formatWhen } from "../../account-data";
+import { addContact, assignAsset, deleteContact, deleteCustomer, linkAsset, saveAccount, saveContact, unlinkAsset } from "../../actions";
 import { ConsoleBar } from "../../bar";
-import { AccountFields, apiGet, ContactFields, CustomerSide, initials, kindLabel, SubLine } from "../shared";
+import { AccountFields, apiGet, ContactFields, CustomerSide, initials, kindLabel, ReadOnlyNote, SubLine } from "../shared";
 
 const SAVED = {
-  created: "Account created.",
-  account: "Account saved.",
+  created: "Customer created.",
+  account: "Customer saved.",
   contact: "Contact saved.",
   removed: "Contact removed.",
-  linked: "Device linked to this account.",
-  unlinked: "Device unlinked from this account.",
+  linked: "Device linked to this customer.",
+  unlinked: "Device unlinked from this customer.",
   assigned: "Device assignment saved.",
 };
 
 const PRESENCE = { online: "Online", rebooting: "Rebooting", offline: "Offline" };
+
+const OVERVIEW_FIELDS = [
+  ["website", "Website"],
+  ["email", "Email"],
+  ["phone", "Phone"],
+  ["altPhone", "Alternative contact number"],
+  ["registrationNumber", "Registration number"],
+  ["vatNumber", "VAT number"],
+  ["address", "Physical address"],
+  ["notes", "Notes"],
+];
 
 export default async function AccountPage({ params, searchParams }) {
   const { id } = await params;
@@ -21,35 +33,43 @@ export default async function AccountPage({ params, searchParams }) {
   const response = await apiGet(`/v1/accounts/${Number(id) || 0}`);
   if (response.status === 404) notFound();
   const body = await response.json();
-  const { account, contacts = [], tickets = [], devices = [], linkable = [] } = body;
+  const { account, contacts = [], tickets = [], devices = [], linkable = [], report } = body;
+  const apps = body.apps || {};
+  const readOnly = body.readOnly === true;
+  const manage = body.canOperate && !readOnly;
   const tabs = [
-    ["details", "Details", null],
+    ["overview", "Overview", null],
     ["contacts", "Contacts", contacts.length],
-    body.canAssets ? ["assets", "Assets", devices.length] : null,
-    ["tickets", "Tickets", tickets.length],
+    apps.remote ? ["devices", "Devices", devices.length] : null,
+    apps.servicedesk ? ["tickets", "Tickets", tickets.length] : null,
+    apps.reporting ? ["reports", "Reports", null] : null,
   ].filter(Boolean);
-  const tab = tabs.some(([key]) => key === query?.tab) ? query.tab : "details";
+  const tab = tabs.some(([key]) => key === query?.tab) ? query.tab : "overview";
   const primary = contacts.find((contact) => contact.primary);
   const devicesOf = (contact) => devices.filter((device) => device.contactId === contact.id);
+  const online = devices.filter((device) => device.presence === "online").length;
 
   return (
     <div className="console">
-      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
+      <ConsoleBar showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main desk">
         <CustomerSide active="accounts" />
         <section className="desk-list cust-page">
-          <p className="desk-back"><a href="/customers">← All Accounts</a></p>
+          <p className="desk-back"><a href="/customers">← All customers</a></p>
           <header className="cust-head">
             <span className="cust-avatar is-large" aria-hidden="true">{initials(account.name)}</span>
             <div>
               <h1>{account.name} <span className="chip">{kindLabel(account.kind)}</span></h1>
               <SubLine items={[account.website, account.email, account.phone, primary ? `Primary contact: ${primary.name}` : null]} />
             </div>
-            <a className="desk-new" href={`/tickets/new?customer=${account.id}`}>
-              <span aria-hidden="true">+</span> New Ticket
-            </a>
+            {apps.servicedesk ? (
+              <a className="desk-new" href={`/tickets/new?customer=${account.id}`}>
+                <span aria-hidden="true">+</span> New Ticket
+              </a>
+            ) : null}
           </header>
-          <nav className="cust-tabs" aria-label="Account sections">
+          <ReadOnlyNote show={readOnly} />
+          <nav className="cust-tabs" aria-label="Customer sections">
             {tabs.map(([key, label, count]) => (
               <a key={key} href={`/customers/${account.id}?tab=${key}`} className={tab === key ? "is-active" : undefined} aria-current={tab === key ? "page" : undefined}>
                 {label}
@@ -60,23 +80,65 @@ export default async function AccountPage({ params, searchParams }) {
           {query?.error ? <p className="error">{String(query.error)}</p> : null}
           {SAVED[query?.saved] ? <p className="org-name cust-saved">{SAVED[query.saved]}</p> : null}
 
-          {tab === "details" ? (
-            <form className="cust-form" action={saveAccount}>
-              <input type="hidden" name="accountId" value={account.id} />
-              <section className="job">
-                <AccountFields account={account} />
-              </section>
-              <div className="cust-actions">
-                <button type="submit">Save Account</button>
+          {tab === "overview" && readOnly ? (
+            <dl className="cust-overview">
+              {OVERVIEW_FIELDS.map(([key, label]) => (
+                <div key={key}>
+                  <dt>{label}</dt>
+                  <dd>{account[key] || "—"}</dd>
+                </div>
+              ))}
+              <div>
+                <dt>Created</dt>
+                <dd>{formatWhen(account.createdAt)}</dd>
               </div>
-            </form>
+            </dl>
+          ) : null}
+
+          {tab === "overview" && !readOnly ? (
+            <>
+              <form className="cust-form" action={saveAccount}>
+                <input type="hidden" name="accountId" value={account.id} />
+                <section className="job">
+                  <AccountFields account={account} />
+                </section>
+                <div className="cust-actions">
+                  <button type="submit">Save Customer</button>
+                </div>
+              </form>
+              {body.canDelete ? (
+                <form className="cust-danger" action={deleteCustomer}>
+                  <input type="hidden" name="accountId" value={account.id} />
+                  <p>
+                    <strong>Delete this customer</strong>
+                    <span className="org-name">Only possible once it has no tickets or devices. Its contacts are deleted with it.</span>
+                  </p>
+                  <label className="cust-check">
+                    <input type="checkbox" name="confirm" required />
+                    Delete {account.name}
+                  </label>
+                  <button type="submit" className="danger-link">Delete customer</button>
+                </form>
+              ) : null}
+            </>
           ) : null}
 
           {tab === "contacts" ? (
             <>
               <div className="cust-list is-boxed">
-                {contacts.length === 0 ? <p className="org-name cust-empty">No contacts on this account yet.</p> : null}
-                {contacts.map((contact) => (
+                {contacts.length === 0 ? <p className="org-name cust-empty">No contacts on this customer yet.</p> : null}
+                {readOnly ? contacts.map((contact) => (
+                  <div className="cust-row" key={contact.id}>
+                    <span className="cust-avatar is-person" aria-hidden="true">{initials(contact.name)}</span>
+                    <span className="cust-main">
+                      <strong>
+                        {contact.name}
+                        {contact.primary ? <span className="cust-primary">Primary</span> : null}
+                      </strong>
+                      <SubLine items={[contact.jobTitle, contact.email, contact.phone, contact.altPhone ? `Alt: ${contact.altPhone}` : null]} />
+                    </span>
+                  </div>
+                )) : contacts.map((contact) => (
                   <details className="cust-contact" key={contact.id}>
                     <summary className="cust-row">
                       <span className="cust-avatar is-person" aria-hidden="true">{initials(contact.name)}</span>
@@ -99,7 +161,7 @@ export default async function AccountPage({ params, searchParams }) {
                         <ContactFields contact={contact} />
                         <label className="cust-check">
                           <input type="checkbox" name="primary" defaultChecked={contact.primary} disabled={contact.primary} />
-                          Primary contact for this account
+                          Primary contact for this customer
                         </label>
                         {contact.primary ? <input type="hidden" name="primary" value="on" /> : null}
                         <div className="cust-actions">
@@ -115,26 +177,28 @@ export default async function AccountPage({ params, searchParams }) {
                   </details>
                 ))}
               </div>
-              <form className="cust-form" action={addContact}>
-                <input type="hidden" name="accountId" value={account.id} />
-                <section className="job">
-                  <h2>Add a contact</h2>
-                  <ContactFields />
-                  <label className="cust-check">
-                    <input type="checkbox" name="primary" defaultChecked={contacts.length === 0} />
-                    Primary contact for this account
-                  </label>
-                </section>
-                <div className="cust-actions">
-                  <button type="submit">Add Contact</button>
-                </div>
-              </form>
+              {readOnly ? null : (
+                <form className="cust-form" action={addContact}>
+                  <input type="hidden" name="accountId" value={account.id} />
+                  <section className="job">
+                    <h2>Add a contact</h2>
+                    <ContactFields />
+                    <label className="cust-check">
+                      <input type="checkbox" name="primary" defaultChecked={contacts.length === 0} />
+                      Primary contact for this customer
+                    </label>
+                  </section>
+                  <div className="cust-actions">
+                    <button type="submit">Add Contact</button>
+                  </div>
+                </form>
+              )}
             </>
           ) : null}
 
-          {tab === "assets" ? (
+          {tab === "devices" ? (
             <>
-              <p className="org-name">Devices from Remote Desk that belong to this account. Assign a device to the contact who uses it; leave servers and shared machines unassigned. When a contact logs a call, their own devices are offered first.</p>
+              <p className="org-name">Devices from Remote Desk that belong to this customer. Assign a device to the contact who uses it; leave servers and shared machines unassigned. When a contact logs a call, their own devices are offered first.</p>
               <div className="systems cust-assets">
                 <table>
                   <thead>
@@ -145,7 +209,7 @@ export default async function AccountPage({ params, searchParams }) {
                       <th>Logged on</th>
                       <th>Operating system</th>
                       <th>IP address</th>
-                      {body.canOperate ? <th aria-label="Actions" /> : null}
+                      {manage ? <th aria-label="Actions" /> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -178,7 +242,7 @@ export default async function AccountPage({ params, searchParams }) {
                         <td className="desk-clip" title={device.users.join(", ") || undefined}>{device.users.join(", ") || "—"}</td>
                         <td>{device.osName || "—"}</td>
                         <td>{device.ipv4 || "—"}</td>
-                        {body.canOperate ? (
+                        {manage ? (
                           <td>
                             <form action={unlinkAsset}>
                               <input type="hidden" name="accountId" value={account.id} />
@@ -192,7 +256,7 @@ export default async function AccountPage({ params, searchParams }) {
                   </tbody>
                 </table>
               </div>
-              {body.canOperate ? (
+              {manage ? (
                 <div className="cust-asset-tools">
                   <form className="cust-link" action={linkAsset}>
                     <input type="hidden" name="accountId" value={account.id} />
@@ -211,7 +275,7 @@ export default async function AccountPage({ params, searchParams }) {
                   </form>
                   <div className="cust-link">
                     <p>
-                      <strong>Add a new computer to this account</strong>
+                      <strong>Add a new computer to this customer</strong>
                       <span className="org-name">The installer enrols the computer straight onto {account.name}.</span>
                     </p>
                     <a className="deploy-download" href={`/agent/windows?customer=${account.id}`}>Download for Windows</a>
@@ -237,7 +301,7 @@ export default async function AccountPage({ params, searchParams }) {
                 </thead>
                 <tbody>
                   {tickets.length === 0 ? (
-                    <tr><td className="empty" colSpan={7}>No tickets for this account yet.</td></tr>
+                    <tr><td className="empty" colSpan={7}>No tickets for this customer yet.</td></tr>
                   ) : tickets.map((ticket) => (
                     <tr key={ticket.id}>
                       <td className="desk-id">#{ticket.id}</td>
@@ -252,6 +316,21 @@ export default async function AccountPage({ params, searchParams }) {
                 </tbody>
               </table>
             </div>
+          ) : null}
+
+          {tab === "reports" ? (
+            <>
+              <dl className="cust-stats">
+                <div><dt>Contacts</dt><dd>{contacts.length}</dd></div>
+                {apps.remote ? <div><dt>Devices</dt><dd>{devices.length}</dd></div> : null}
+                {apps.remote ? <div><dt>Devices online now</dt><dd>{online}</dd></div> : null}
+                {report?.ticketsOpen != null ? <div><dt>Open tickets</dt><dd>{report.ticketsOpen}</dd></div> : null}
+                {report?.ticketsOpened30 != null ? <div><dt>Tickets logged, last 30 days</dt><dd>{report.ticketsOpened30}</dd></div> : null}
+                {report?.ticketsResolved30 != null ? <div><dt>Tickets resolved, last 30 days</dt><dd>{report.ticketsResolved30}</dd></div> : null}
+                {report?.ticketsTotal != null ? <div><dt>Tickets all time</dt><dd>{report.ticketsTotal}</dd></div> : null}
+              </dl>
+              {body.canReport ? <p className="org-name">Scheduled reports for the whole tenant are on the <a href="/dashboard">Dashboard</a>.</p> : null}
+            </>
           ) : null}
         </section>
       </main>

@@ -10,7 +10,7 @@ export default async function ContactsPage({ searchParams }) {
 
   return (
     <div className="console">
-      <ConsoleBar showTickets showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
+      <ConsoleBar showAlerts={body.canMonitor} showPatches={body.canPatch} showDashboard={body.canReport} />
       <main className="main desk">
         <CustomerSide active="contacts" accounts={body.accountTotal} contacts={q ? null : contacts.length} />
         <section className="desk-list">
@@ -20,10 +20,10 @@ export default async function ContactsPage({ searchParams }) {
             </h1>
             <SearchBox q={q} placeholder="Search contacts" />
           </header>
-          <p className="org-name">Contacts are added on their account, so every contact belongs to one account.</p>
+          <p className="org-name">Contacts are added on their customer, so every contact belongs to one customer.</p>
           <div className="cust-list">
             {contacts.length === 0 ? (
-              <p className="org-name cust-empty">{q ? "No contacts match that search." : "No contacts yet. Open an account and add contacts on its Contacts tab."}</p>
+              <p className="org-name cust-empty">{q ? "No contacts match that search." : "No contacts yet. Open a customer and add contacts on its Contacts tab."}</p>
             ) : contacts.map((contact) => (
               <a className="cust-row" key={contact.id} href={`/customers/${contact.accountId}?tab=contacts`}>
                 <span className="cust-avatar is-person" aria-hidden="true">{initials(contact.name)}</span>

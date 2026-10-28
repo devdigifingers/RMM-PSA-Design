@@ -52,7 +52,7 @@ export function homeFor(account) {
   if (account?.user?.isPlatformAdmin) return "/control";
   if (hasApp(account, "remote")) return "/devices";
   if (hasApp(account, "servicedesk")) return "/tickets";
-  return "/subscription";
+  return "/customers";
 }
 
 export function navFlags(account) {

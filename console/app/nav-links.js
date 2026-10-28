@@ -9,7 +9,7 @@ export function appForPath(path) {
   return suiteAppForPath(path)?.key || null;
 }
 
-export function NavLinks({ links, serviceLinks, lastApp, label }) {
+export function NavLinks({ links, serviceLinks, shared = [], lastApp, label }) {
   const path = usePathname() || "";
   const fromPath = appForPath(path);
   const app = fromPath || lastApp;
@@ -19,17 +19,20 @@ export function NavLinks({ links, serviceLinks, lastApp, label }) {
   }, [fromPath]);
 
   const shown = app === "service" && serviceLinks ? serviceLinks : links;
+  const item = ([href, text]) => {
+    const on = path === href || path.startsWith(`${href}/`);
+    return (
+      <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
+        {ICONS[href] || ICONS["/devices"]}
+        <span>{text}</span>
+      </Link>
+    );
+  };
   return (
     <nav className="app-rail" aria-label={label || (app === "service" ? "Service Desk" : "Remote Desk")}>
-      {shown.map(([href, label]) => {
-        const on = path === href || path.startsWith(`${href}/`);
-        return (
-          <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
-            {ICONS[href] || ICONS["/devices"]}
-            <span>{label}</span>
-          </Link>
-        );
-      })}
+      {shown.map(item)}
+      {shown.length && shared.length ? <span className="app-rail-sep" aria-hidden="true" /> : null}
+      {shared.map(item)}
     </nav>
   );
 }

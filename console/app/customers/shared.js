@@ -22,8 +22,17 @@ export async function apiGet(path) {
     cache: "no-store",
   });
   if (response.status === 401) redirect("/");
-  if (response.status === 403) redirect("/devices?error=ticket");
+  if (response.status === 403) redirect("/control/tenants");
   return response;
+}
+
+export function ReadOnlyNote({ show }) {
+  if (!show) return null;
+  return (
+    <p className="cust-readonly" role="status">
+      The license is not active, so customers are read-only. <a href="/subscription">Manage Subscription</a>
+    </p>
+  );
 }
 
 export function initials(name) {
@@ -42,7 +51,7 @@ export function CustomerSide({ active, accounts, contacts }) {
       <p className="desk-views-title">Customers</p>
       <nav aria-label="Customers">
         <a href="/customers" className={active === "accounts" ? "is-active" : undefined} aria-current={active === "accounts" ? "page" : undefined}>
-          <span>Accounts</span>
+          <span>All customers</span>
           {accounts != null ? <span className="desk-count">{accounts}</span> : null}
         </a>
         <a href="/customers/contacts" className={active === "contacts" ? "is-active" : undefined} aria-current={active === "contacts" ? "page" : undefined}>
@@ -59,7 +68,7 @@ export function AccountFields({ account }) {
   return (
     <div className="cust-fields">
       <label className="cust-wide">
-        Account name
+        Customer name
         <input name="name" required maxLength={200} defaultValue={value("name")} />
       </label>
       <label>

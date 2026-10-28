@@ -12,11 +12,22 @@ export function NewTicketForm({ customers, devices, users, me, initialCustomer }
   const [contactId, setContactId] = useState(() => contacts.find((item) => item.primary)?.id || "");
   const contact = contacts.find((item) => item.id === contactId) || null;
   const groups = deviceGroups(devices, customerId, contact);
+  const [find, setFind] = useState("");
+  const needle = find.trim().toLowerCase();
+  const matches = needle ? customers.filter((item) => item.name.toLowerCase().includes(needle)) : customers;
+  const shown = matches.some((item) => item.id === customerId) ? matches : [customer, ...matches];
 
   function pickCustomer(value) {
     const next = customers.find((item) => item.id === value);
     setCustomerId(value);
     setContactId(next?.contacts?.find((item) => item.primary)?.id || "");
+  }
+
+  function search(value) {
+    setFind(value);
+    const term = value.trim().toLowerCase();
+    const first = term ? customers.find((item) => item.name.toLowerCase().includes(term)) : null;
+    if (first && first.id !== customerId) pickCustomer(first.id);
   }
 
   return (
@@ -25,10 +36,11 @@ export function NewTicketForm({ customers, devices, users, me, initialCustomer }
         Subject
         <input name="subject" required maxLength={200} />
       </label>
-      <label>
-        Account
+      <label className="ticket-customer">
+        <span>Customer</span>
+        <input type="search" placeholder="Search customers" value={find} onChange={(event) => search(event.target.value)} aria-label="Search customers" />
         <select name="customerId" required value={customerId} onChange={(event) => pickCustomer(Number(event.target.value))}>
-          {customers.map((item) => (
+          {shown.map((item) => (
             <option key={item.id} value={item.id}>{item.name}</option>
           ))}
         </select>

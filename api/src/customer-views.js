@@ -51,6 +51,12 @@ export function ticketDue(row, sla) {
   return new Date(new Date(row.created_at).getTime() + sla.resolveMinutes * 60000);
 }
 
+// The one overdue rule: not resolved and past the resolution target. Dashboard, ticket list and customer pages all use it.
+export function isOverdue(row, sla, now = new Date()) {
+  const due = ticketDue(row, sla);
+  return due ? due.getTime() < now.getTime() : false;
+}
+
 // node-postgres parses a `date` column as local midnight, so read it back with local fields.
 export function dateOnly(value) {
   if (!(value instanceof Date)) return String(value).slice(0, 10);

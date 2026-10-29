@@ -32,6 +32,13 @@ func defaultStatePath() string {
 }
 
 func start() error {
+	if len(os.Args) > 1 && os.Args[1] == "patch-helper" {
+		return runPatchHelper()
+	}
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println(agentVersion)
+		return nil
+	}
 	return run(context.Background())
 }
 
@@ -46,6 +53,19 @@ func prettyOS() string {
 		}
 	}
 	return "Linux"
+}
+
+func osRelease() (string, string) {
+	version := ""
+	if raw, err := os.ReadFile("/etc/os-release"); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(line, "VERSION_ID=") {
+				version = strings.Trim(strings.TrimPrefix(line, "VERSION_ID="), `"`)
+			}
+		}
+	}
+	kernel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	return version, strings.TrimSpace(string(kernel))
 }
 
 func runCommand(command string) (int, string) {
@@ -229,14 +249,24 @@ func readTrim(path string) string {
 	return strings.TrimSpace(string(raw))
 }
 
+func usesApt() bool {
+	_, err := os.Stat("/usr/bin/apt-get")
+	return err == nil
+}
+
 func installedPackages() ([]softwareItem, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "dpkg-query", "-W", "-f", "${Package}\t${Version}\n")
+	var cmd *exec.Cmd
+	if usesApt() {
+		cmd = exec.CommandContext(ctx, "dpkg-query", "-W", "-f", "${Package}\t${Version}\n")
+	} else {
+		cmd = exec.CommandContext(ctx, "rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n")
+	}
 	cmd.Env = []string{"LANG=C", "PATH=/usr/bin:/bin"}
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("dpkg-query: %w", err)
+		return nil, fmt.Errorf("package list: %w", err)
 	}
 	items := []softwareItem{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -253,6 +283,9 @@ func installedPackages() ([]softwareItem, error) {
 }
 
 func collectUpdates() (updateScan, error) {
+	if !usesApt() {
+		return collectDnfUpdates()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	list := exec.CommandContext(ctx, "apt", "list", "--upgradable")
@@ -264,9 +297,96 @@ func collectUpdates() (updateScan, error) {
 	return updateScan{Updates: cleanUpdates(parseAptUpgradable(out)), RebootPending: rebootRequired()}, nil
 }
 
+// dnf refreshes repository metadata into a root-owned cache, so the scan runs in the helper.
+func collectDnfUpdates() (updateScan, error) {
+	ok, out := helperCall("scan", 10*time.Minute, 256<<10)
+	if !ok {
+		return updateScan{}, fmt.Errorf("dnf check-update: %s", out)
+	}
+	items := parseDnfCheckUpdate([]byte(out))
+	if len(items) > 0 {
+		current := installedVersions(items)
+		for i := range items {
+			items[i].CurrentVersion = current[items[i].Name]
+			if items[i].CurrentVersion == "" {
+				items[i].CurrentVersion = "installed"
+			}
+		}
+	}
+	return updateScan{Updates: cleanUpdates(items), RebootPending: rebootRequired()}, nil
+}
+
+func installedVersions(items []updateItem) map[string]string {
+	args := []string{"-q", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\n"}
+	for _, item := range items {
+		args = append(args, item.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "rpm", args...)
+	cmd.Env = []string{"LANG=C", "PATH=/usr/bin:/bin"}
+	out, _ := cmd.Output()
+	versions := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, version, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if ok {
+			versions[name] = version
+		}
+	}
+	return versions
+}
+
+// parseDnfCheckUpdate reads "name.arch  version  repo" rows and stops at the obsoletes section.
+func parseDnfCheckUpdate(raw []byte) []updateItem {
+	items := []updateItem{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.HasPrefix(line, "Obsoleting") {
+			break
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 || strings.HasPrefix(line, " ") {
+			continue
+		}
+		dot := strings.LastIndex(fields[0], ".")
+		if dot <= 0 {
+			continue
+		}
+		name := fields[0][:dot]
+		if !linuxPackageName(name) || seen[name] || !strings.ContainsAny(fields[1], "0123456789") {
+			continue
+		}
+		seen[name] = true
+		items = append(items, updateItem{Name: name, AvailableVersion: fields[1], Category: "Update"})
+		if len(items) >= 200 {
+			break
+		}
+	}
+	return items
+}
+
 func rebootRequired() bool {
-	_, err := os.Stat("/var/run/reboot-required")
-	return err == nil
+	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
+		return true
+	}
+	if usesApt() {
+		return false
+	}
+	for _, args := range [][]string{{"needs-restarting", "-r"}, {"dnf", "needs-restarting", "-r"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Env = []string{"LANG=C", "PATH=/usr/bin:/bin"}
+		out, err := cmd.CombinedOutput()
+		cancel()
+		text := string(out)
+		if strings.Contains(text, "Reboot is required") {
+			return true
+		}
+		if err == nil || strings.Contains(text, "Reboot should not be necessary") {
+			return false
+		}
+	}
+	return false
 }
 
 func parseAptUpgradable(raw []byte) []updateItem {
@@ -307,26 +427,29 @@ func parseAptUpgradable(raw []byte) []updateItem {
 }
 
 func installDeploy(name string) (bool, bool, string) {
-	ok, detail := aptInstall(name)
+	if !linuxPackageName(name) {
+		return false, false, "That package name cannot be installed."
+	}
+	ok, detail := helperCall("install "+name, 11*time.Minute, 4000)
+	if ok && detail == "" {
+		detail = "Installed."
+	}
 	return ok, rebootRequired(), detail
 }
 
-func aptInstall(name string) (bool, string) {
-	if !aptPackageName(name) {
-		return false, "That package name cannot be installed."
-	}
-	conn, err := net.DialTimeout("unix", "/run/df-patch-helper.sock", 3*time.Second)
+func helperCall(request string, wait time.Duration, max int) (bool, string) {
+	conn, err := net.DialTimeout("unix", patchHelperSocket, 3*time.Second)
 	if err != nil {
 		return false, "The install helper is not available."
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(3 * time.Minute))
-	if _, err := conn.Write([]byte(name + "\n")); err != nil {
-		return false, "The install helper did not accept the package."
+	_ = conn.SetDeadline(time.Now().Add(wait))
+	if _, err := conn.Write([]byte(request + "\n")); err != nil {
+		return false, "The install helper did not accept the request."
 	}
 	var buf bytes.Buffer
-	tmp := make([]byte, 512)
-	for buf.Len() < 2000 {
+	tmp := make([]byte, 4096)
+	for buf.Len() < max {
 		n, readErr := conn.Read(tmp)
 		if n > 0 {
 			buf.Write(tmp[:n])
@@ -337,11 +460,7 @@ func aptInstall(name string) (bool, string) {
 	}
 	text := buf.String()
 	if strings.HasPrefix(text, "ok\n") {
-		detail := strings.TrimSpace(strings.TrimPrefix(text, "ok\n"))
-		if detail == "" {
-			detail = "Installed."
-		}
-		return true, detail
+		return true, strings.TrimSpace(strings.TrimPrefix(text, "ok\n"))
 	}
 	if strings.HasPrefix(text, "fail\n") {
 		detail := strings.TrimSpace(strings.TrimPrefix(text, "fail\n"))
@@ -374,14 +493,15 @@ func collectUsers() []string {
 	return names
 }
 
-func aptPackageName(name string) bool {
+// rpm names may contain capitals and underscores; neither may start with a dash.
+func linuxPackageName(name string) bool {
 	if name == "" || len(name) > 80 {
 		return false
 	}
 	for i, r := range name {
 		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-		case i > 0 && (r == '+' || r == '-' || r == '.'):
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case i > 0 && (r == '+' || r == '-' || r == '.' || r == '_'):
 		default:
 			return false
 		}

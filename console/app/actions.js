@@ -145,8 +145,49 @@ export async function scheduleExport(formData) {
   const response = await authed("/v1/report-schedules", {
     intervalMinutes: Number(formData.get("intervalMinutes")),
   });
-  if (!response.ok) redirect("/dashboard?error=export");
-  redirect("/dashboard");
+  if (!response.ok) redirect("/reports/exports?error=export");
+  redirect("/reports/exports?saved=export");
+}
+
+async function reportCall(path, method, body) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "That did not work. Try again." };
+  return { ok: true, ...result };
+}
+
+export async function createReportSubscription({ report, customerId, contactId, email }) {
+  return reportCall("/v1/report-subscriptions", "POST", {
+    report,
+    customerId: customerId || null,
+    contactId: contactId || null,
+    email: email || "",
+  });
+}
+
+export async function reportContacts() {
+  const result = await reportCall("/v1/report-subscriptions", "GET");
+  return result.ok ? { ok: true, contacts: result.contacts || [] } : result;
+}
+
+export async function deleteReportSubscription(id) {
+  return reportCall(`/v1/report-subscriptions/${Number(id)}`, "DELETE");
+}
+
+export async function sendReportNow(id) {
+  return reportCall(`/v1/report-subscriptions/${Number(id)}/send`, "POST");
+}
+
+export async function stopExportSchedule() {
+  return reportCall("/v1/report-schedules", "DELETE");
 }
 
 export async function createTicketFromAlert(formData) {
@@ -386,13 +427,74 @@ export async function bulkUpdateTickets(ids, changes) {
   if (list.length === 0) return { ok: false, error: "Choose at least one ticket." };
   const body = { ids: list };
   if (changes?.status) body.status = String(changes.status);
+  if (changes?.priority) body.priority = String(changes.priority);
   if (changes && Object.hasOwn(changes, "assigneeUserId")) {
     body.assigneeUserId = changes.assigneeUserId ? Number(changes.assigneeUserId) : null;
   }
+  if (changes && Object.hasOwn(changes, "category")) body.category = String(changes.category || "");
+  if (changes?.addTags) body.addTags = String(changes.addTags);
+  if (changes?.removeTags) body.removeTags = String(changes.removeTags);
   const response = await authed("/v1/tickets/bulk", body);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) return { ok: false, error: result.error || "Those tickets could not be updated." };
   return { ok: true, error: "", updated: result.updated || 0 };
+}
+
+export async function mergeTickets(targetId, ids) {
+  const list = (Array.isArray(ids) ? ids : []).map(Number).filter(Number.isInteger);
+  const response = await authed("/v1/tickets/merge", { targetId: Number(targetId), ids: list });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "Those tickets could not be merged." };
+  return { ok: true, error: "", merged: result.merged || 0 };
+}
+
+export async function saveTicketView(name, query, columns, shared) {
+  const response = await authed("/v1/ticket-views", {
+    name: String(name || ""),
+    query: String(query || ""),
+    columns: Array.isArray(columns) ? columns.map(String) : null,
+    shared: shared === true,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The view was not saved." };
+  return { ok: true, error: "", id: result.id };
+}
+
+export async function deleteTicketView(id) {
+  const response = await callApi(`/v1/ticket-views/${Number(id) || 0}`, { method: "DELETE" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The view was not removed." };
+  return { ok: true, error: "" };
+}
+
+export async function saveTicketColumns(columns) {
+  const body = columns === null ? { reset: true } : { columns: (Array.isArray(columns) ? columns : []).map(String) };
+  const response = await callApi("/v1/ticket-list/columns", { method: "PUT", body });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The columns were not saved." };
+  return { ok: true, error: "", columns: result.columns };
+}
+
+export async function assignTicketToMe(ticketId, me) {
+  return bulkUpdateTickets([ticketId], { assigneeUserId: me });
+}
+
+export async function createInstallCommand(customerId, maxUses) {
+  const response = await authed("/v1/enroll-tokens", {
+    kind: "command",
+    maxUses: Number(maxUses) || 1,
+    ...(Number(customerId) ? { customerId: Number(customerId) } : {}),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The install command was not created." };
+  return { ok: true, error: "", code: result.token, expiresAt: result.expiresAt };
+}
+
+export async function revokeInstallCommand(id) {
+  const response = await callApi(`/v1/enroll-tokens/${Number(id) || 0}`, { method: "DELETE" });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The install command was not revoked." };
+  return { ok: true, error: "" };
 }
 
 export async function updateTicket(formData) {
@@ -414,6 +516,8 @@ export async function updateTicket(formData) {
       assigneeUserId: formData.get("assigneeUserId") || null,
       ...(formData.has("contactId") ? { contactId: formData.get("contactId") || null } : {}),
       ...(deviceChanged ? { deviceId: formData.get("deviceId") || null } : {}),
+      ...(formData.has("category") ? { category: String(formData.get("category") || "") } : {}),
+      ...(formData.has("tags") ? { tags: String(formData.get("tags") || "") } : {}),
     }),
     cache: "no-store",
   });
@@ -506,6 +610,36 @@ export async function renameDevice(deviceId, name) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) return { ok: false, error: body.error || "The name was not saved." };
   return { ok: true, name: body.name };
+}
+
+export async function updateOutdatedAgents(customer) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/agent-update/outdated`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ customer: customer || null }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The updates were not queued." };
+  return { ok: true, queued: body.queued || 0, sent: body.sent || 0, failed: body.failed || [], version: body.version, linuxVersion: body.linuxVersion };
+}
+
+export async function setDeviceSite(deviceIds, site) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/site`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ deviceIds: deviceIds.map(Number), site }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The site was not saved." };
+  return { ok: true, site: body.site, updated: body.updated };
 }
 
 export async function deviceFiles(deviceId, path) {

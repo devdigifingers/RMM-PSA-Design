@@ -1,6 +1,6 @@
 [Unit]
 Description=Digital Fingers Linux agent
-After=network-online.target
+After=network-online.target df-patch-helper.service
 Wants=network-online.target
 
 [Service]

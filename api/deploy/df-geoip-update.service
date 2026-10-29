@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the MaxMind GeoLite2-City database used for device locations
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/GeoIP.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/geoipupdate -f /etc/GeoIP.conf -d /var/lib/GeoIP
+NoNewPrivileges=true

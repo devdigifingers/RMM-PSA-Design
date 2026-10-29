@@ -66,6 +66,7 @@ function sectionsFor({ platform, manage, allowed, flags }) {
         ["Password", "/account"],
         ["Multi-Factor Authentication (MFA)", "/settings/mfa"],
         manage ? ["IP Based Restriction", "/settings/ip-restriction"] : null,
+        ["Data & Privacy", "/settings/privacy"],
         ["Data Cleanup", null],
       ],
     },

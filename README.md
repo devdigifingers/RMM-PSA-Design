@@ -2,6 +2,8 @@
 
 Self-hosted, multi-tenant remote monitoring & management with **MeshCentral** as the remote engine, growing into service desk, monitoring, patch, and unified reporting.
 
+**Running the platform:** [docs/OPERATIONS.md](docs/OPERATIONS.md) · **What changed:** [docs/CHANGELOG.md](docs/CHANGELOG.md)
+
 ## Status
 
 **Planning complete (2026-10-01).** Servers are online, patched, and reachable by SSH.  

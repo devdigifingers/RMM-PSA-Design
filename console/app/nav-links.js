@@ -17,20 +17,22 @@ function customersHref(app, customers) {
   return customers.remote ? "/remote/customers" : "/desk/customers";
 }
 
-export function NavLinks({ links, serviceLinks, customers = null, lastApp, label }) {
+export function NavLinks({ links, serviceLinks, reportLinks, customers = null, lastApp, label }) {
   const path = usePathname() || "";
   const fromPath = appForPath(path);
   const app = fromPath || lastApp;
 
+  // Reports is opened from the other apps, so it does not replace the remembered home app.
   useEffect(() => {
-    if (fromPath) document.cookie = `df_app=${fromPath}; path=/; max-age=31536000; samesite=lax`;
+    if (fromPath && fromPath !== "reports") document.cookie = `df_app=${fromPath}; path=/; max-age=31536000; samesite=lax`;
   }, [fromPath]);
 
-  const shown = app === "service" && serviceLinks ? serviceLinks : links;
-  const customersLink = customersHref(app, customers);
+  const inReports = app === "reports" && reportLinks?.length;
+  const shown = inReports ? reportLinks : app === "service" && serviceLinks ? serviceLinks : links;
+  const customersLink = inReports ? null : customersHref(app, customers);
   const shared = customersLink ? [[customersLink, "Customers", "/customers"]] : [];
-  const item = ([href, text, icon]) => {
-    const on = path === href || path.startsWith(`${href}/`);
+  const item = ([href, text, icon, exact]) => {
+    const on = path === href || (!exact && path.startsWith(`${href}/`));
     return (
       <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
         {ICONS[icon || href] || ICONS["/devices"]}
@@ -39,7 +41,7 @@ export function NavLinks({ links, serviceLinks, customers = null, lastApp, label
     );
   };
   return (
-    <nav className="app-rail" aria-label={label || (app === "service" ? "Service Desk" : "Remote Desk")}>
+    <nav className="app-rail" aria-label={label || (inReports ? "Reports" : app === "service" ? "Service Desk" : "Remote Desk")}>
       {shown.map(item)}
       {shown.length && shared.length ? <span className="app-rail-sep" aria-hidden="true" /> : null}
       {shared.map(item)}
@@ -132,5 +134,48 @@ const ICONS = {
       <path d="M16 9a4 4 0 0 1 0 6M19.4 6a8 8 0 0 1 0 12" />
     </svg>
   ),
+  "/reports": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M3 3v16a2 2 0 0 0 2 2h16" />
+      <path d="M18 17V9M13 17V5M8 17v-3" />
+    </svg>
+  ),
+  "/reports/agents": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M21 12a9 9 0 1 1-9-9c2.5 0 4.8 1 6.5 2.7L21 8" />
+      <path d="M21 3v5h-5M12 8v4l3 2" />
+    </svg>
+  ),
+  "/reports/os": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect className="solid" x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M7 20h10M9 16v4M15 16v4" />
+    </svg>
+  ),
+  "/reports/locations": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M20 10c0 5-5.5 10.2-7.4 11.8a1 1 0 0 1-1.2 0C9.5 20.2 4 15 4 10a8 8 0 0 1 16 0" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  ),
+  "/reports/uptime": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M22 12h-2.5a2 2 0 0 0-1.9 1.5l-2.4 8.3a.3.3 0 0 1-.5 0L9.2 2.2a.3.3 0 0 0-.5 0l-2.4 8.3A2 2 0 0 1 4.5 12H2" />
+    </svg>
+  ),
+  "/reports/sessions": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect className="solid" x="2" y="4" width="20" height="13" rx="2" />
+      <path d="m10 8 5 2.5-5 2.5zM8 21h8" />
+    </svg>
+  ),
+  "/reports/exports": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect className="solid" x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18M9 15l2 2 4-4" />
+    </svg>
+  ),
 };
 ICONS["/control/audit"] = ICONS["/audit"];
+ICONS["/reports/patches"] = ICONS["/patches"];
+ICONS["/reports/service-desk"] = ICONS["/tickets"];

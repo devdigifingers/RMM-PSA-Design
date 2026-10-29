@@ -56,9 +56,29 @@ export default async function DeploymentPage() {
             <h2>macOS <em>Soon</em></h2>
             <p>A Mac agent is not available yet.</p>
           </section>
-          <section className="deploy-card is-soon">
-            <h2>Linux <em>Soon</em></h2>
-            <p>A Linux agent is not available yet.</p>
+          <section className="deploy-card">
+            <h2>Linux</h2>
+            <p>Ubuntu, Debian, Fedora, CentOS Stream, Rocky Linux and AlmaLinux on 64-bit Intel, AMD or ARM. The download contains a single-use enrolment key.</p>
+            <ol>
+              <li>Copy the download to the computer.</li>
+              <li>Run <code>tar xzf DigitalFingersAgent-linux.tar.gz</code> and <code>cd DigitalFingersAgent</code>.</li>
+              <li>Run <code>sudo ./install.sh</code>.</li>
+              <li>The computer appears under Devices within a minute.</li>
+            </ol>
+            {manage && !full ? (
+              <form className="deploy-form" method="get" action="/agent/linux">
+                {accounts.length ? (
+                  <label>
+                    Account
+                    <select name="customer" defaultValue="">
+                      <option value="">No account yet</option>
+                      {accounts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                    </select>
+                  </label>
+                ) : null}
+                <button type="submit" className="deploy-download">Download for Linux</button>
+              </form>
+            ) : null}
           </section>
         </div>
         <p className="org-name">For a one-off session without installing anything, use <a href="/support">Remote Support</a> instead.</p>

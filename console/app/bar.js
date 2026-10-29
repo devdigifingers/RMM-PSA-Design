@@ -31,6 +31,14 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
         {!platform && allowed.remote ? <SearchConnect /> : <span className="topbar-spacer" />}
         {account?.user ? (
           <div className="top-tools">
+            {account.user.isPlatformAdmin ? null : (
+              <a className="settings-btn downloads-btn" href="/downloads" aria-label="Downloads" title="Downloads">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M4.5 15.5v2.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </a>
+            )}
             <SettingsMenu
               platform={account.user.isPlatformAdmin === true}
               manage={(account.user.roles || []).some((role) => role === "owner" || role === "admin")}
@@ -60,6 +68,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
             ["/control/packages", "Packages"],
             ["/control/audit", "Audit"],
             ["/control/notices", "Notices"],
+            ["/control/system", "System"],
           ]}
         />
       ) : (
@@ -68,12 +77,23 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
           links={allowed.remote || allowed.service ? [
             allowed.support ? ["/support", "Support"] : null,
             ["/devices", "Devices"],
-            showDashboard ? ["/dashboard", "Dashboard"] : null,
+            ["/dashboard", "Dashboard"],
             showAlerts ? ["/alerts", "Alerts"] : null,
             showPatches ? ["/patches", "Patches"] : null,
             ["/audit", "Audit"],
           ].filter(Boolean) : []}
           serviceLinks={allowed.service ? [["/tickets", "Tickets"], ["/audit", "Audit"]] : []}
+          reportLinks={allowed.reports ? [
+            ["/reports", "Overview", "/reports", true],
+            ["/reports/agents", "Agents"],
+            ["/reports/os", "OS"],
+            ["/reports/locations", "Locations"],
+            ["/reports/patches", "Patches"],
+            ["/reports/uptime", "Uptime"],
+            ["/reports/sessions", "Sessions"],
+            allowed.ticketing ? ["/reports/service-desk", "Service Desk"] : null,
+            ["/reports/exports", "Scheduled"],
+          ].filter(Boolean) : []}
           customers={account?.user ? customerApps(account) : null}
         />
       )}
@@ -104,6 +124,8 @@ function appsAllowed(account) {
     service: apps.includes("servicedesk"),
     remote: apps.includes("remote"),
     support: features.includes("remote_support"),
+    reports: features.includes("reporting"),
+    ticketing: features.includes("ticketing"),
     apps,
   };
 }

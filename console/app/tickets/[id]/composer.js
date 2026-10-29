@@ -25,6 +25,7 @@ export function Composer({ ticketId, initialKind }) {
         name="body"
         rows={5}
         maxLength={4000}
+        autoFocus={initialKind === "reply" || initialKind === "note"}
         aria-label={note ? "Internal note" : "Reply"}
         placeholder={note ? "Only your team sees internal notes." : "Write a reply to the customer."}
       />

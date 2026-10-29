@@ -6,8 +6,26 @@ import { DeviceDetails } from "./details-window";
 import { OsMark } from "./os-mark";
 import { RemoteActions } from "./remote-actions";
 import { SessionFilter } from "./session-filter";
+import { BulkSite, CustomerFilter } from "./device-filters";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
+
+const FILTERS = ["customer", "status", "os", "build", "agent", "outdated", "country", "region", "city", "group", "site", "disk", "patch"];
+
+const STATUS_LABELS = { online: "Online", offline: "Offline", stale: "Not seen for 7+ days" };
+
+function filterLabel(key, value, customers) {
+  if (key === "customer") return value === "none" ? "No customer" : customers.find((item) => String(item.id) === value)?.name || "Customer";
+  if (key === "status") return STATUS_LABELS[value] || value;
+  if (key === "agent") return value === "outdated" ? "Outdated agents" : `Agent ${value}`;
+  if (key === "country") return value === "other" ? "Outside South Africa" : value === "ZA" ? "South Africa" : value === "Unknown" ? "Unknown location" : `Country ${value}`;
+  if (key === "outdated") return value === "1" ? "Outdated" : "Up to date";
+  if (key === "disk") return "Low disk";
+  if (key === "patch") return "Missing patches";
+  if (key === "site") return value === "none" ? "No site" : `Site ${value}`;
+  if (key === "build") return `Build ${value}`;
+  return value;
+}
 
 export default async function DevicesPage({ searchParams }) {
   const params = await searchParams;
@@ -15,8 +33,13 @@ export default async function DevicesPage({ searchParams }) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
+  const query = new URLSearchParams();
+  if (q) query.set("q", q);
+  for (const key of FILTERS) {
+    if (typeof params?.[key] === "string" && params[key]) query.set(key, params[key]);
+  }
 
-  const response = await fetch(`${apiUrl}/v1/devices?q=${encodeURIComponent(q)}`, {
+  const response = await fetch(`${apiUrl}/v1/devices?${query.toString()}`, {
     headers: { authorization: `Bearer ${token}` },
     cache: "no-store",
   });
@@ -24,6 +47,14 @@ export default async function DevicesPage({ searchParams }) {
   if (response.status === 403) redirect("/control");
   const body = await response.json();
   const devices = body.devices || [];
+  const customers = body.customers || [];
+  const active = Object.entries(body.filter || {});
+  const without = (key) => {
+    const next = new URLSearchParams(query);
+    next.delete(key);
+    const text = next.toString();
+    return text ? `/devices?${text}` : "/devices";
+  };
 
   return (
     <div className="console">
@@ -39,12 +70,28 @@ export default async function DevicesPage({ searchParams }) {
               </svg>
               <input name="q" placeholder="Search" defaultValue={q} aria-label="Search" />
             </label>
+            {active.map(([key, value]) => <input key={key} type="hidden" name={key} value={value} />)}
           </form>
+          <CustomerFilter customers={customers} value={body.filter?.customer || ""} />
           {body.canRemote ? <SessionFilter /> : null}
         </div>
         <p className="org-name">
-          {body.org?.name || "Your organisation"} · {body.deviceCount || 0} enrolled
+          {body.org?.name || "Your organisation"} · {active.length || q
+            ? `${body.deviceCount || 0} of ${body.enrolledCount ?? body.deviceCount ?? 0} enrolled`
+            : `${body.deviceCount || 0} enrolled`}
         </p>
+        {active.length ? (
+          <div className="active-filters" aria-label="Active filters">
+            {active.map(([key, value]) => (
+              <a key={key} className="active-filter" href={without(key)} aria-label={`Remove filter ${filterLabel(key, value, customers)}`}>
+                {filterLabel(key, value, customers)}
+                <span aria-hidden="true">×</span>
+              </a>
+            ))}
+            <a className="active-filters-clear" href={q ? `/devices?q=${encodeURIComponent(q)}` : "/devices"}>Clear filters</a>
+          </div>
+        ) : null}
+        <BulkSite />
         {remoteNote(body.remoteReason)}
         {params?.error === "ticket" && body.canTicket === false ? (
           <p className="org-name">Ticketing is not included on this license.</p>
@@ -65,11 +112,13 @@ export default async function DevicesPage({ searchParams }) {
         <table>
           <thead>
             <tr>
+              <th className="pick-col"><input type="checkbox" className="bulk-all" aria-label="Select all devices" /></th>
               <th className="status-col">Status</th>
               <th>Display name</th>
               <th>Hostname</th>
               <th>Address</th>
               <th>Account</th>
+              <th>Site / Location</th>
               <th>Operating system</th>
               <th>Active Users</th>
               <th>Last seen</th>
@@ -80,11 +129,14 @@ export default async function DevicesPage({ searchParams }) {
           <tbody>
             {devices.length === 0 ? (
               <tr>
-                <td className="empty" colSpan={10}>No devices enrolled yet.</td>
+                <td className="empty" colSpan={12}>
+                  {active.length || q ? "No devices match these filters." : <>No devices enrolled yet. <a href="/downloads">Download the agent installer</a>.</>}
+                </td>
               </tr>
             ) : (
               devices.map((device) => (
                 <tr key={device.id} data-device={device.id}>
+                  <td className="pick-col"><input type="checkbox" className="bulk-pick" value={device.id} aria-label={`Select ${device.displayName || device.hostname}`} /></td>
                   <td className="status-col"><Presence presence={device.presence} /></td>
                   <td>{device.displayName || device.hostname}</td>
                   <td>
@@ -102,6 +154,11 @@ export default async function DevicesPage({ searchParams }) {
                     ) : device.customerName || "No account"}
                   </td>
                   <td>
+                    {device.siteOverride
+                      ? <span className="site-tag" title="Site / Branch set on this device">{device.siteOverride}</span>
+                      : device.location || "Unknown"}
+                  </td>
+                  <td>
                     <span className="os-name">
                       {device.osName ? <OsMark osName={device.osName} /> : null}
                       {device.osName || "—"}
@@ -110,7 +167,7 @@ export default async function DevicesPage({ searchParams }) {
                   <td>{device.users?.length ? device.users.join(", ") : "—"}</td>
                   <td>{formatSeen(device.lastSeenAt)}</td>
                   <td>
-                    <span className={device.agentOutdated ? "agent-version agent-old" : "agent-version"} title={device.agentOutdated ? `Version ${body.latestAgent} is available` : undefined}>
+                    <span className={device.agentOutdated ? "agent-version agent-old" : "agent-version"} title={device.agentOutdated ? `Version ${device.agentLatest} is available` : undefined}>
                       {device.agentVersion || (device.agentOutdated ? "1.4.0 or older" : "—")}
                     </span>
                   </td>
@@ -121,8 +178,8 @@ export default async function DevicesPage({ searchParams }) {
                         hostname={device.hostname}
                         label={device.displayName || ""}
                         users={device.users || []}
-                        agent={body.canOperate && body.latestAgent && /windows/i.test(device.osName || "")
-                          ? { version: device.agentVersion, latest: body.latestAgent, outdated: device.agentOutdated }
+                        agent={body.canOperate && device.agentLatest
+                          ? { version: device.agentVersion, latest: device.agentLatest, outdated: device.agentOutdated, linux: !/windows/i.test(device.osName || "") }
                           : null}
                       />
                     ) : (
@@ -134,7 +191,7 @@ export default async function DevicesPage({ searchParams }) {
             )}
             {devices.length ? (
               <tr className="no-live">
-                <td className="empty" colSpan={10}>No remote sessions are open right now.</td>
+                <td className="empty" colSpan={12}>No remote sessions are open right now.</td>
               </tr>
             ) : null}
           </tbody>

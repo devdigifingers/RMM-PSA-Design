@@ -87,6 +87,7 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
     const result = await updateAgent(String(deviceId));
     if (!result.ok) setNote(result.error);
     else if (result.status === "current") setNote(`The agent is already on ${result.version}.`);
+    else if (result.status === "sent") setNote(`Agent ${result.version} sent. ${hostname} reports the new version within a minute or two.`);
     else setNote(`Agent ${result.version} sent. It installs on the next check-in when the PC is idle.`);
   }
 
@@ -213,8 +214,10 @@ export function RemoteActions({ deviceId, hostname, label = "", users, connectOn
         <ul className="remote-menu" style={{ top: spot.top, bottom: spot.bottom, left: spot.left, maxHeight: spot.maxHeight }}>
           <li className="power-confirm">
             <p>
-              Update the agent on {hostname} from {agent.version || "1.4.0 or older"} to {agent.latest}? The agent restarts
-              briefly. Remote desktop stays connected.
+              Update the agent on {hostname} from {agent.version || "1.4.0 or older"} to {agent.latest}?{" "}
+              {agent.linux
+                ? "It installs now through the remote desktop agent, which must be online. Monitoring pauses for a few seconds."
+                : "The agent restarts briefly. Remote desktop stays connected."}
             </p>
             <button type="button" onClick={() => setMenu(null)}>Cancel</button>
             <button type="button" onClick={sendAgentUpdate}>Update</button>

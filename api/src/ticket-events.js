@@ -5,6 +5,10 @@ export const EVENT_GROUPS = {
   assignee: "changes",
   contact: "changes",
   device: "changes",
+  category: "changes",
+  tags: "changes",
+  merged: "changes",
+  merged_from: "changes",
   reply: "replies",
   note: "notes",
   sla_breach: "sla",
@@ -57,6 +61,16 @@ export function ticketChanges(before, after) {
     const to = numeric ? idOrNull(after[key]) : after[key] ?? null;
     if (from !== to) changes.push({ kind, from, to });
   }
+  if (Object.hasOwn(after, "category")) {
+    const from = before.category || null;
+    const to = after.category || null;
+    if (from !== to) changes.push({ kind: "category", from, to });
+  }
+  if (Object.hasOwn(after, "tags")) {
+    const from = [...(before.tags || [])];
+    const to = [...(after.tags || [])];
+    if (from.join("\n") !== to.join("\n")) changes.push({ kind: "tags", from, to });
+  }
   return changes;
 }
 
@@ -78,6 +92,7 @@ export function timelineItem(row, lookups = {}) {
     automatic: row.actor_user_id == null,
     createdAt: row.created_at,
   };
+  if (detail.mergedFrom != null) item.mergedFrom = Number(detail.mergedFrom);
   if (row.kind === "reply" || row.kind === "note") {
     const comment = lookups.comments?.get(Number(detail.commentId));
     item.body = comment ? comment.body : "";
@@ -104,7 +119,7 @@ export function timelineItem(row, lookups = {}) {
     item.user = detail.user || null;
     return item;
   }
-  for (const key of ["from", "to", "minutes", "billable", "note", "command", "exitCode", "output", "template", "target", "subject"]) {
+  for (const key of ["from", "to", "minutes", "billable", "note", "command", "exitCode", "output", "template", "target", "subject", "into", "tickets"]) {
     if (Object.hasOwn(detail, key)) item[key] = detail[key];
   }
   return item;

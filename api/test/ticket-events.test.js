@@ -43,6 +43,14 @@ describe("ticket changes", () => {
     ]);
   });
 
+  it("records category and tag changes, and ignores unchanged tags", () => {
+    assert.deepEqual(ticketChanges({ category: null, tags: ["VPN"] }, { category: "Network", tags: ["VPN", "Urgent"] }), [
+      { kind: "category", from: null, to: "Network" },
+      { kind: "tags", from: ["VPN"], to: ["VPN", "Urgent"] },
+    ]);
+    assert.deepEqual(ticketChanges({ tags: ["VPN"] }, { tags: ["VPN"] }), []);
+  });
+
   it("gives every change kind a timeline group", () => {
     for (const kind of ["created", "status", "priority", "assignee", "contact", "device"]) assert.equal(EVENT_GROUPS[kind], "changes");
   });

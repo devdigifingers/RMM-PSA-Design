@@ -1,6 +1,3 @@
-import { requireEntitlement } from "../entitlement-guard";
-
-export default async function DashboardLayout({ children }) {
-  await requireEntitlement({ feature: "reporting" });
+export default function DashboardLayout({ children }) {
   return children;
 }

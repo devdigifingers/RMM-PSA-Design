@@ -7,6 +7,7 @@ import { AppTitle } from "../../mark";
 import { DeviceOptions, deviceGroups } from "../device-options";
 import { fileExtension, fileSize, formatWhen, workTime } from "../format";
 import { Composer } from "./composer";
+import { TicketShortcuts } from "./shortcuts";
 import { TicketTimer } from "./timer";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
@@ -68,7 +69,15 @@ export default async function TicketPage({ params, searchParams }) {
           <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
           <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
           {time.totalMinutes ? <span className="dash-chip">{`Time ${workTime(time.totalMinutes)}`}</span> : null}
+          {ticket.category ? <span className="dash-chip">{ticket.category}</span> : null}
+          {(ticket.tags || []).map((tag) => <span key={tag} className="desk-tag">{tag}</span>)}
         </p>
+        {ticket.mergedIntoId ? (
+          <p className="ticket-merged" role="note">
+            This ticket was merged into <a href={`/tickets/${ticket.mergedIntoId}`}>#{ticket.mergedIntoId}</a>. Carry on the conversation there.
+          </p>
+        ) : null}
+        <TicketShortcuts ticketId={ticket.id} me={body.me} assigned={ticket.assignee?.id === body.me} />
         <div className="ticket-layout">
           <div className="ticket-body">
             <p className="org-name">
@@ -121,7 +130,7 @@ export default async function TicketPage({ params, searchParams }) {
           <div className="ticket-side">
             <section className="job">
               <h2>Details</h2>
-              <form className="stack ticket-details" action={updateTicket}>
+              <form key={`details-${latestEvent}`} className="stack ticket-details" action={updateTicket}>
                 <input type="hidden" name="ticketId" value={ticket.id} />
                 <input type="hidden" name="currentDeviceId" value={ticket.device?.id || ""} />
                 <label>
@@ -164,6 +173,20 @@ export default async function TicketPage({ params, searchParams }) {
                   <select name="deviceId" defaultValue={ticket.device?.id || ""}>
                     <DeviceOptions groups={withCurrentDevice(deviceGroups(body.devices || [], ticket.customer.id, (body.contacts || []).find((item) => item.id === ticket.customer.contactId) || null), ticket.device)} />
                   </select>
+                </label>
+                <label>
+                  Category
+                  <input name="category" list="ticket-categories" defaultValue={ticket.category || ""} maxLength={60} placeholder="e.g. Network" />
+                  <datalist id="ticket-categories">
+                    {(body.categories || []).map((item) => <option key={item} value={item} />)}
+                  </datalist>
+                </label>
+                <label>
+                  Tags
+                  <input name="tags" list="ticket-tags" defaultValue={(ticket.tags || []).join(", ")} placeholder="Comma separated" />
+                  <datalist id="ticket-tags">
+                    {(body.tagChoices || []).map((item) => <option key={item} value={item} />)}
+                  </datalist>
                 </label>
                 <button type="submit">Save</button>
               </form>
@@ -259,6 +282,7 @@ function TimelineEntry({ item }) {
         <strong>{item.actor}</strong>
         <span>{eventLine(item)}</span>
         {note ? <span className="note-badge">Internal note</span> : null}
+        {item.mergedFrom ? <a className="desk-merged" href={`/tickets/${item.mergedFrom}`}>from #{item.mergedFrom}</a> : null}
         <time dateTime={item.createdAt}>{formatWhen(item.createdAt)}</time>
       </div>
       {item.body ? <p className="timeline-body">{item.body}</p> : null}
@@ -329,9 +353,26 @@ function eventLine(item) {
       return `removed ${workTime(item.minutes)} of logged time`;
     case "email":
       return item.template === "breach" ? "sent the SLA breach email to the team" : "sent the new ticket email to the team";
+    case "category":
+      return item.to ? `set the category to ${item.to}` : "cleared the category";
+    case "tags":
+      return tagChange(item.from || [], item.to || []);
+    case "merged":
+      return `merged this ticket into #${item.into}`;
+    case "merged_from":
+      return `merged ${(item.tickets || []).map((id) => `#${id}`).join(", ")} into this ticket`;
     default:
       return item.kind;
   }
+}
+
+function tagChange(from, to) {
+  const added = to.filter((tag) => !from.includes(tag));
+  const removed = from.filter((tag) => !to.includes(tag));
+  const parts = [];
+  if (added.length) parts.push(`added the tag${added.length > 1 ? "s" : ""} ${added.join(", ")}`);
+  if (removed.length) parts.push(`removed the tag${removed.length > 1 ? "s" : ""} ${removed.join(", ")}`);
+  return parts.join(" and ") || "updated the tags";
 }
 
 function CustomerPanel({ summary, fallback }) {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice } from "../actions";
+import { deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice, setDeviceSite } from "../actions";
 import { DiagnosticIcon, TileIcon } from "./diagnostic-icons";
 import { DIAGNOSTIC_TOOLS, diagnosticTool } from "./diagnostic-tools";
 import { DetailColumns } from "./details-window";
@@ -132,7 +132,12 @@ function ToolBody({ deviceId, osName, users, canRemote, selected, state, setStat
     return (
       <>
         {state.note ? <p className="diag-note">{state.note}</p> : null}
-        <Overview deviceId={deviceId} overview={state.overview} onRename={(name) => setState({ ...state, displayName: name, overview: { ...state.overview, device: state.overview.device.map((row) => row.label === "Device Name" ? { ...row, value: name } : row) } })} />
+        <Overview
+          deviceId={deviceId}
+          overview={state.overview}
+          onRename={(name) => setState({ ...state, displayName: name, overview: { ...state.overview, device: state.overview.device.map((row) => row.label === "Device Name" ? { ...row, value: name } : row) } })}
+          onSite={(site) => setState({ ...state, siteOverride: site, overview: { ...state.overview, device: state.overview.device.map((row) => row.label === "Site / Branch" ? { ...row, value: site } : row) } })}
+        />
       </>
     );
   }
@@ -146,29 +151,36 @@ function ToolBody({ deviceId, osName, users, canRemote, selected, state, setStat
   return <RowsTable columns={state.columns || []} rows={state.rows || []} query={query} />;
 }
 
-function Overview({ deviceId, overview, onRename }) {
-  const [editing, setEditing] = useState(false);
+const EDITABLE = {
+  "Device Name": { label: "Device name", action: "Rename" },
+  "Site / Branch": { label: "Site or branch", action: "Change", empty: "Not set", placeholder: "e.g. Durban branch" },
+};
+
+function Overview({ deviceId, overview, onRename, onSite }) {
+  const [editing, setEditing] = useState("");
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const current = overview.device.find((row) => row.label === "Device Name")?.value || "";
 
   async function save() {
-    const name = draft.trim();
-    if (!name) {
+    const value = draft.trim();
+    if (editing === "Device Name" && !value) {
       setError("Enter a device name.");
       return;
     }
     setSaving(true);
     setError("");
-    const result = await renameDevice(String(deviceId), name);
+    const result = editing === "Device Name"
+      ? await renameDevice(String(deviceId), value)
+      : await setDeviceSite([deviceId], value);
     setSaving(false);
     if (!result.ok) {
       setError(result.error);
       return;
     }
-    onRename(result.name);
-    setEditing(false);
+    if (editing === "Device Name") onRename(result.name);
+    else onSite(result.site);
+    setEditing("");
   }
 
   return (
@@ -189,28 +201,39 @@ function Overview({ deviceId, overview, onRename }) {
         <article className="overview-card">
           <h3><TileIcon name="device" />Device Specifications</h3>
           <dl>
-            {overview.device.map((row) => (
-              <div key={row.label} className={row.label === "Device Name" ? "name-line" : undefined}>
-                <dt>{row.label}</dt>
-                <dd>
-                  {row.label === "Device Name" && editing ? (
-                    <input value={draft} aria-label="Device name" onChange={(event) => setDraft(event.target.value)} />
-                  ) : row.value}
-                </dd>
-                {row.label === "Device Name" ? (
-                  <span className="rename-actions">
-                    {editing ? (
-                      <>
-                        <button type="button" onClick={() => { setEditing(false); setError(""); }}>Cancel</button>
-                        <button type="button" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-                      </>
-                    ) : (
-                      <button type="button" onClick={() => { setDraft(current); setEditing(true); setError(""); }}>Rename</button>
-                    )}
-                  </span>
-                ) : null}
-              </div>
-            ))}
+            {overview.device.map((row) => {
+              const edit = EDITABLE[row.label];
+              const open = editing === row.label;
+              return (
+                <div key={row.label} className={edit ? "name-line" : undefined}>
+                  <dt>{row.label}</dt>
+                  <dd>
+                    {open ? (
+                      <input
+                        value={draft}
+                        aria-label={edit.label}
+                        placeholder={edit.placeholder}
+                        maxLength={80}
+                        onChange={(event) => setDraft(event.target.value)}
+                        onKeyDown={(event) => { if (event.key === "Enter") save(); }}
+                      />
+                    ) : row.value || edit?.empty || ""}
+                  </dd>
+                  {edit ? (
+                    <span className="rename-actions">
+                      {open ? (
+                        <>
+                          <button type="button" onClick={() => { setEditing(""); setError(""); }}>Cancel</button>
+                          <button type="button" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+                        </>
+                      ) : (
+                        <button type="button" disabled={Boolean(editing)} onClick={() => { setDraft(row.value || ""); setEditing(row.label); setError(""); }}>{edit.action}</button>
+                      )}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            })}
           </dl>
           {error ? <p className="error">{error}</p> : null}
         </article>

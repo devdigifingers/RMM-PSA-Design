@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import tls from "node:tls";
 
@@ -31,7 +32,41 @@ function command(socket, line) {
   });
 }
 
-export async function sendMail({ to, subject, text }) {
+function headerSafe(value) {
+  return String(value || "").replace(/[\r\n"\\]/g, " ").slice(0, 200);
+}
+
+// attachments: [{ filename, contentType, content: Buffer }]
+export function mailBody({ text, attachments = [] }) {
+  const plain = String(text || "").replace(/\r?\n/g, "\r\n");
+  if (!attachments.length) {
+    return ["Content-Type: text/plain; charset=utf-8", "", plain];
+  }
+  const boundary = `df-${randomBytes(12).toString("hex")}`;
+  const parts = [
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    plain,
+  ];
+  for (const file of attachments) {
+    const name = headerSafe(file.filename) || "attachment";
+    parts.push(
+      `--${boundary}`,
+      `Content-Type: ${headerSafe(file.contentType) || "application/octet-stream"}; name="${name}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${name}"`,
+      "",
+      ...(Buffer.from(file.content).toString("base64").match(/.{1,76}/g) || []),
+    );
+  }
+  parts.push(`--${boundary}--`);
+  return parts;
+}
+
+export async function sendMail({ to, subject, text, attachments = [] }) {
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
   const user = process.env.SMTP_USER;
@@ -68,12 +103,10 @@ export async function sendMail({ to, subject, text }) {
       `From: Digital Fingers <${from}>`,
       `To: ${to}`,
       `Subject: ${safeSubject}`,
+      `Date: ${new Date().toUTCString()}`,
       "MIME-Version: 1.0",
-      "Content-Type: text/plain; charset=utf-8",
-      "",
-      String(text || "").replace(/\r?\n/g, "\r\n").replace(/^\./gm, ".."),
-      ".",
-    ].join("\r\n");
+      ...mailBody({ text, attachments }),
+    ].join("\r\n").replace(/^\./gm, "..") + "\r\n.";
     await command(secure, payload);
     await command(secure, "QUIT");
     secure.end();

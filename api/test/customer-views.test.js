@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { dateOnly, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "../src/customer-views.js";
+import { dateOnly, isOverdue, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "../src/customer-views.js";
 
 const REMOTE_ONLY = { remote: true, service: false };
 const SERVICE_ONLY = { remote: false, service: true };
@@ -104,6 +104,16 @@ describe("SLA plans", () => {
     assert.equal(ticketDue(row, { resolveMinutes: 120 }).toISOString(), "2026-10-28T10:00:00.000Z");
     assert.equal(ticketDue({ ...row, status: "resolved" }, { resolveMinutes: 120 }), null);
     assert.equal(ticketDue(row, null), null);
+  });
+
+  it("counts pending tickets as overdue and ignores response targets", () => {
+    const now = new Date("2026-10-28T11:00:00Z");
+    const sla = { responseMinutes: 15, resolveMinutes: 120 };
+    assert.equal(isOverdue({ status: "open", created_at: "2026-10-28T08:00:00Z" }, sla, now), true);
+    assert.equal(isOverdue({ status: "pending", created_at: "2026-10-28T08:00:00Z" }, sla, now), true);
+    assert.equal(isOverdue({ status: "resolved", created_at: "2026-10-28T08:00:00Z" }, sla, now), false);
+    assert.equal(isOverdue({ status: "open", created_at: "2026-10-28T10:30:00Z" }, sla, now), false);
+    assert.equal(isOverdue({ status: "open", created_at: "2026-10-28T08:00:00Z" }, null, now), false);
   });
 });
 

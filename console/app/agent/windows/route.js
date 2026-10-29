@@ -1,43 +1,12 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { fromConsole, refused } from "../../request-guard";
-
-const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
-const agentApiUrl = "https://api.digitalfingers.co.za";
+import { agentApiUrl, packageAccess, readAgentFile } from "../package";
 
 export async function GET(request) {
   if (!fromConsole(request, { navigation: true })) return refused();
-  const jar = await cookies();
-  const token = jar.get("df_session")?.value;
-  if (!token) redirect("/");
-  const check = await fetch(`${apiUrl}/v1/account`, {
-    headers: { authorization: `Bearer ${token}` },
-    cache: "no-store",
-  });
-  if (!check.ok) redirect("/");
-  const account = await check.json();
-  if (!account.org) {
-    return new Response("This login is not in an organisation, so it cannot enroll a computer.", { status: 403 });
-  }
-  const customerId = Number(new URL(request.url).searchParams.get("customer")) || null;
-  const enroll = await fetch(`${apiUrl}/v1/enroll-tokens`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(customerId ? { customerId } : {}),
-    cache: "no-store",
-  });
-  if (!enroll.ok) {
-    return new Response("A new enrollment could not be created.", { status: enroll.status });
-  }
-  const invite = await enroll.json();
-  const exe = await readAgent();
+  const access = await packageAccess(request);
+  if (access.error) return access.error;
+  const exe = await readAgentFile("DigitalFingersAgent.exe");
   if (!exe) return new Response("The Windows agent is not available yet.", { status: 404 });
-  const env = Buffer.from(
-    `DF_API_URL=${agentApiUrl}\r\nDF_ENROLL_TOKEN=${invite.token}\r\n`,
-    "utf8",
-  );
   const setup = Buffer.from(
     [
       "@echo off",
@@ -46,33 +15,22 @@ export async function GET(request) {
     ].join("\r\n"),
     "utf8",
   );
-  const zip = zipStore([
-    { name: "Install.cmd", data: setup },
-    { name: "df-agent.env", data: env },
-    { name: "DigitalFingersAgent.exe", data: exe },
-  ]);
-  return new Response(zip, {
+  const files = [{ name: "Install.cmd", data: setup }];
+  if (!access.update) {
+    files.push({
+      name: "df-agent.env",
+      data: Buffer.from(`DF_API_URL=${agentApiUrl}\r\nDF_ENROLL_TOKEN=${access.enrollToken}\r\n`, "utf8"),
+    });
+  }
+  files.push({ name: "DigitalFingersAgent.exe", data: exe });
+  const name = access.update ? "DigitalFingersAgentUpdate.zip" : "DigitalFingersAgent.zip";
+  return new Response(zipStore(files), {
     headers: {
       "content-type": "application/zip",
-      "content-disposition": 'attachment; filename="DigitalFingersAgent.zip"',
+      "content-disposition": `attachment; filename="${name}"`,
       "cache-control": "no-store",
     },
   });
-}
-
-async function readAgent() {
-  const candidates = [
-    path.join(process.cwd(), "agent-bin", "DigitalFingersAgent.exe"),
-    "/opt/df-console/agent-bin/DigitalFingersAgent.exe",
-  ];
-  for (const file of candidates) {
-    try {
-      return await readFile(file);
-    } catch {
-      // Try the next location.
-    }
-  }
-  return null;
 }
 
 function zipStore(files) {

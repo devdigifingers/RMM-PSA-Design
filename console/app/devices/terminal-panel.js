@@ -37,6 +37,29 @@ export function TerminalPanel({ deviceId, osName, users }) {
       term.open(host);
       fit.fit();
       term.focus();
+      // xterm sends Ctrl+V to the shell as ^V; returning false lets the browser fire its paste event,
+      // which xterm turns into input. Ctrl+C copies only when text is selected, else it interrupts.
+      term.attachCustomKeyEventHandler((event) => {
+        if (event.type !== "keydown" || !(event.ctrlKey || event.metaKey) || event.altKey) return true;
+        const key = event.key.toLowerCase();
+        if (key === "v") return false;
+        if (key === "c" && (event.shiftKey || term.hasSelection())) {
+          if (term.hasSelection()) navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
+          term.clearSelection();
+          event.preventDefault();
+          return false;
+        }
+        return true;
+      });
+      host.oncontextmenu = (event) => {
+        event.preventDefault();
+        if (term.hasSelection()) {
+          navigator.clipboard?.writeText(term.getSelection()).catch(() => {});
+          term.clearSelection();
+          return;
+        }
+        navigator.clipboard?.readText().then((text) => { if (text) term.paste(text); }).catch(() => {});
+      };
       const opened = await fetch(`/devices/${deviceId}/terminal`, {
         method: "POST",
         headers: { "content-type": "application/json" },

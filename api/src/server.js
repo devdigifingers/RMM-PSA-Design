@@ -14,8 +14,14 @@ import { sendMail } from "./mail.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { loadAllLicenses, loadLicense } from "./license-store.js";
 import { hasApp, hasFeature } from "./licensing.js";
-import { dateOnly, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
+import { dateOnly, isOverdue, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
+import { fleetVersions } from "./system-view.js";
+import { geoLocator, ipApiLocator, parseIp } from "./geoip.js";
+import { dailyStats, fillDays, osFamily } from "./daily-stats.js";
+import { reportPdf } from "./pdf.js";
+import { REPORTS, buildReport, localDay, previousMonth, reportByKey, reportCsv, reportJson, reportRange } from "./reports.js";
+import { deviceFacts, deviceFilterFrom, deviceMatches, overviewFrom } from "./dashboard-overview.js";
 import {
   ATTACHMENT_LIMIT,
   attachmentIds,
@@ -30,6 +36,24 @@ import {
   timerMinutes,
   timeTotals,
 } from "./ticket-events.js";
+import {
+  cleanCategory,
+  cleanColumns,
+  cleanTags,
+  cleanViewQuery,
+  csvCell,
+  DEFAULT_COLUMNS,
+  EXPORT_LIMIT,
+  filterTickets,
+  LIST_COLUMNS,
+  PAGE_SIZE,
+  pageOf,
+  parseListQuery,
+  slaState,
+  sortTickets,
+  ticketsCsv,
+  viewCounts,
+} from "./ticket-list.js";
 
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
 const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
@@ -124,13 +148,13 @@ function fileNameValue(value) {
   return name;
 }
 
-function readJson(req) {
+function readJson(req, limit = 65536) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 65536) {
+      if (size > limit) {
         reject(Object.assign(new Error("Request body is too large."), { status: 413 }));
         req.destroy();
         return;
@@ -483,10 +507,35 @@ function meshNodeMatch(rows, hostname, displayName) {
 const MESH_STAGING_GROUP = "Digital Fingers";
 const MESH_TENANT_CONSENT = 71;
 const MESH_SITE_RIGHTS = "nonewgroups,locksettings,nonewdevices";
-const MESH_GROUP_RIGHTS = {
-  admin: ["--managedevices", "--remotecontrol", "--agentconsole", "--wakedevices", "--notes", "--chatnotify"],
-  tech: ["--remotecontrol", "--chatnotify", "--noterminal", "--nofiles", "--noregistry", "--nosoftware", "--noamt", "--limitedevents"],
+// Group rights set through scripts/mesh-group-rights.cjs, since meshctrl has no flag for remote
+// commands (0x20000). Admins: manage devices, remote control, agent console, wake, notes, chat
+// notify and remote commands, which the session window needs for Display Resolution and the launch
+// tools. Technicians: remote control and chat notify only, with no terminal, files, registry,
+// software, AMT or full event log.
+const MESH_GROUP_RIGHT_BITS = {
+  admin: 4 | 8 | 16 | 64 | 128 | 16384 | 0x20000,
+  tech: 8 | 16384 | 512 | 1024 | 4194304 | 8388608 | 2048 | 8192,
 };
+const MESH_RIGHTS_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "mesh-group-rights.cjs");
+
+function linkMeshLogin(groupId, userName, role) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/local/bin/node", [MESH_RIGHTS_SCRIPT, groupId, `user//${userName}`, String(MESH_GROUP_RIGHT_BITS[role])], {
+      env: { MESH_URL: process.env.MESH_URL || "", MESH_USER: process.env.MESH_USER || "", MESH_PASSWORD: process.env.MESH_PASSWORD || "" },
+    });
+    const out = [];
+    const timer = setTimeout(() => child.kill("SIGKILL"), 25000);
+    child.stdout.on("data", (chunk) => out.push(chunk));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve(Buffer.concat(out).toString("utf8"));
+    });
+  });
+}
 
 function meshOk(text) {
   return /(^|\n)\s*ok\b/i.test(String(text || ""));
@@ -527,7 +576,7 @@ async function ensureTenantMesh(orgId) {
         "--realname", `${org.name} ${role === "admin" ? "admin" : "technician"}`, "--rights", MESH_SITE_RIGHTS,
       ]);
       if (!meshOk(added)) throw Object.assign(new Error("The remote service did not create the tenant login."), { status: 502 });
-      const linked = await meshControl(["AddUserToDeviceGroup", "--id", groupId, "--userid", `user//${name}`, ...MESH_GROUP_RIGHTS[role]]);
+      const linked = await linkMeshLogin(groupId, name, role);
       if (!meshLinked(linked)) throw Object.assign(new Error("The remote service did not give the tenant login its rights."), { status: 502 });
       users[role] = { user: name, pass: sealSecret(pass) };
       await pool.query("UPDATE orgs SET mesh_users = $2::jsonb WHERE id = $1", [org.id, JSON.stringify(users)]);
@@ -552,7 +601,7 @@ async function tenantDesktopUrl(orgId, actor, nodeId, tokenName, osName) {
 async function shareSupportGroup(orgId, groupId) {
   const org = await ensureTenantMesh(orgId);
   for (const role of ["admin", "tech"]) {
-    const linked = await meshControl(["AddUserToDeviceGroup", "--id", groupId, "--userid", `user//${org.mesh_users[role].user}`, ...MESH_GROUP_RIGHTS[role]]);
+    const linked = await linkMeshLogin(groupId, org.mesh_users[role].user, role);
     if (!meshLinked(linked)) throw Object.assign(new Error("The remote service did not share the support session."), { status: 502 });
   }
 }
@@ -1650,7 +1699,8 @@ function detailSections(device, info, groupName, clock = {}) {
     || null;
   const privateIp = primary?.ip || "";
   const networkRows = [
-    detailLine("Public IP Address", device.ipv4),
+    detailLine("Public IP Address", device.public_ip || device.ipv4),
+    detailLine("Location", locationLabel(device)),
     detailLine("Private IP Address", privateIp),
     detailLine("MAC Address", primary?.mac || cards.find((card) => card.mac)?.mac),
     detailLine("Network Adapters", cards.length ? String(cards.length) : ""),
@@ -1673,6 +1723,7 @@ function detailSections(device, info, groupName, clock = {}) {
         detailLine("Active Users", users.join(", ")),
         detailLine("Last Seen", seenLabel(device.last_seen_at)),
         detailLine("Customer", device.customer_name),
+        detailLine("Site / Branch", device.site_override),
       ],
     },
     {
@@ -1726,7 +1777,7 @@ function detailSections(device, info, groupName, clock = {}) {
       ],
     },
   ];
-  const outdated = /windows/i.test(device.os_name || "") && olderAgent(device.agent_version, device.latest_agent);
+  const outdated = Boolean(device.latest_agent) && olderAgent(device.agent_version, device.latest_agent);
   const right = [
     {
       key: "dfagent",
@@ -1775,6 +1826,12 @@ function detailSections(device, info, groupName, clock = {}) {
     right.push({ key: "storage", title: "Storage", icon: "storage", rows: storageRows });
   }
   return { left, right };
+}
+
+function locationLabel(device) {
+  if (!device.geo_updated_at) return "";
+  const place = [device.geo_city, device.geo_region, device.geo_country_name].filter(Boolean).join(", ");
+  return place || "Unknown";
 }
 
 function blank(value) {
@@ -1874,6 +1931,8 @@ function deviceOverview(device, info, raw) {
       { label: "Manufacturer", value: blank(system.Manufacturer || device.make) },
       { label: "System type", value: blank(systemType(architecture)) },
       { label: "Service tag", value: blank(system.Serial || info?.BIOS?.Serial || device.serial) },
+      { label: "Location", value: blank(locationLabel(device)) },
+      { label: "Site / Branch", value: device.site_override || "" },
     ],
     windowsTitle: windows ? "Windows Specifications" : "Operating System",
     windows: [
@@ -1913,6 +1972,16 @@ async function meshDesktopUrl(nodeId, tokenName, osName, creds) {
 }
 
 const AGENT_BIN_DIR = process.env.AGENT_BIN_DIR || "/opt/df-console/agent-bin";
+const COMMAND_USES = [1, 5, 10, 25];
+
+function enrollTokenUsable(row) {
+  return Boolean(
+    row
+      && !row.revoked_at
+      && row.use_count < row.max_uses
+      && new Date(row.expires_at).getTime() > Date.now(),
+  );
+}
 const AGENT_AUTO_UPDATE = process.env.AGENT_AUTO_UPDATE === "on";
 const AGENT_OFFER_GAP_MS = 30 * 60000;
 let agentReleaseCache = { at: 0, value: null };
@@ -2096,6 +2165,37 @@ function ipv4From(req) {
   const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
   if (/^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/.test(forwarded)) return forwarded;
   return "";
+}
+
+const geo = geoLocator(process.env.GEOIP_DB || "/var/lib/GeoIP/GeoLite2-City.mmdb");
+const ipApi = process.env.IP_API === "off" ? null : ipApiLocator({ key: process.env.IP_API_KEY || "" });
+
+function publicIpFrom(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return parseIp(forwarded) ? forwarded.toLowerCase() : "";
+}
+
+function osField(value) {
+  return typeof value === "string" ? value.replace(/[^\w .()-]/g, "").trim().slice(0, 60) : "";
+}
+
+// Looks the device up only when its public IP changed, it was never located,
+// or the last lookup is older than the monthly database refresh.
+async function locateDevice(deviceId, previousIp, current) {
+  const local = geo.available();
+  if (!current.public_ip || (!local && !ipApi)) return;
+  const stale = !current.geo_updated_at || Date.now() - new Date(current.geo_updated_at).getTime() > 35 * 86400000;
+  if (current.public_ip === previousIp && !stale) return;
+  const place = local ? geo.lookup(current.public_ip) : await ipApi.lookup(current.public_ip);
+  if (!place) return;
+  await pool.query(
+    `UPDATE devices
+     SET geo_country = NULLIF($2, ''), geo_country_name = NULLIF($3, ''), geo_region = NULLIF($4, ''),
+         geo_city = NULLIF($5, ''), geo_lat = $6, geo_lon = $7, geo_updated_at = now()
+     WHERE id = $1`,
+    [deviceId, place.country, place.countryName.slice(0, 80), place.region.slice(0, 80),
+      place.city.slice(0, 80), place.lat, place.lon],
+  );
 }
 
 async function storeHealthSample(orgId, deviceId, metrics) {
@@ -3245,11 +3345,303 @@ const TICKET_CLOCK_SQL = `
       AND e.detail->>'status' = 'resolved'
   ) AS resolved_at`;
 
-function csvCell(value) {
-  const raw = String(value ?? "");
-  const text = /^[=+\-@\t\r]/.test(raw) && !/^-?\d+(\.\d+)?$/.test(raw) ? `'${raw}` : raw;
-  if (/[",\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
-  return text;
+let linuxReleaseCache = { at: 0, value: null };
+const LINUX_ARCHES = ["amd64", "arm64"];
+
+async function linuxRelease() {
+  if (Date.now() - linuxReleaseCache.at < 60000) return linuxReleaseCache.value;
+  let value = null;
+  try {
+    const raw = JSON.parse(await readFile(join(AGENT_BIN_DIR, "linux", "linux.json"), "utf8"));
+    if (versionParts(raw.version)) {
+      const sha256 = {};
+      for (const arch of LINUX_ARCHES) {
+        const data = await readFile(join(AGENT_BIN_DIR, "linux", `df-agent-${arch}`)).catch(() => null);
+        if (data) sha256[arch] = createHash("sha256").update(data).digest("hex");
+      }
+      value = { version: raw.version, sha256 };
+    }
+  } catch {
+    value = null;
+  }
+  linuxReleaseCache = { at: Date.now(), value };
+  return value;
+}
+
+async function agentReleases() {
+  const [windows, linux] = await Promise.all([agentRelease(), linuxRelease()]);
+  return { windows: windows?.version || "", linux: linux?.version || "" };
+}
+
+function platformOf(osName) {
+  if (/windows/i.test(osName || "")) return "windows";
+  return osFamily(osName) === "Linux" ? "linux" : "";
+}
+
+async function releaseFor(osName) {
+  const platform = platformOf(osName);
+  if (platform === "windows") return agentRelease();
+  if (platform === "linux") return linuxRelease();
+  return null;
+}
+
+// Linux agents run unprivileged and cannot replace themselves, so the update runs as root through
+// the remote desktop agent. The script fetches the binary with a one-time ticket and checks its hash.
+function linuxUpdateScript(ticket, release, units) {
+  const link = `https://api.digitalfingers.co.za/v1/agent/update/linux?t=${ticket}&arch=`;
+  const unit = (name) => Buffer.from(units[name]).toString("base64");
+  return [
+    "set -e",
+    `case "$(uname -m)" in x86_64|amd64) a=amd64; h=${release.sha256.amd64 || "none"};; aarch64|arm64) a=arm64; h=${release.sha256.arm64 || "none"};; *) echo unsupported; exit 1;; esac`,
+    "f=$(mktemp /usr/local/bin/.df-agent.XXXXXX)",
+    `trap 'rm -f "$f"' EXIT`,
+    `if command -v curl >/dev/null 2>&1; then curl -fsS -o "$f" "${link}$a"; else wget -qO "$f" "${link}$a"; fi`,
+    `echo "$h  $f" | sha256sum -c --status`,
+    `chmod 755 "$f"; chown root:root "$f"; mv -f "$f" /usr/local/bin/df-agent`,
+    "getent group dfagent >/dev/null 2>&1 || groupadd --system dfagent",
+    "id dfagent >/dev/null 2>&1 || useradd --system --gid dfagent --no-create-home --home-dir /var/lib/df-agent --shell /usr/sbin/nologin dfagent",
+    "install -d -m 700 -o dfagent -g dfagent /var/lib/df-agent; chown -R dfagent:dfagent /var/lib/df-agent",
+    "[ -f /etc/df-agent.env ] || printf 'DF_API_URL=https://api.digitalfingers.co.za\\n' > /etc/df-agent.env",
+    "chown root:dfagent /etc/df-agent.env; chmod 640 /etc/df-agent.env",
+    `echo ${unit("df-agent.service")} | base64 -d > /etc/systemd/system/df-agent.service`,
+    `echo ${unit("df-patch-helper.service")} | base64 -d > /etc/systemd/system/df-patch-helper.service`,
+    "rm -f /usr/local/sbin/df-patch-helper.py",
+    "if command -v restorecon >/dev/null 2>&1; then restorecon -F /usr/local/bin/df-agent /etc/df-agent.env /etc/systemd/system/df-agent.service /etc/systemd/system/df-patch-helper.service || true; fi",
+    "systemctl daemon-reload",
+    "systemctl enable df-patch-helper df-agent >/dev/null 2>&1 || true",
+    "systemctl restart df-patch-helper df-agent",
+  ].join("\n");
+}
+
+async function fileDate(...parts) {
+  const info = await stat(join(...parts)).catch(() => null);
+  return info?.isFile() ? info.mtime.toISOString() : null;
+}
+
+// The control panel's System page: agent releases, the fleet across every tenant, and service health.
+async function systemOverview() {
+  const [windows, linux, devices, offers, recent, pending] = await Promise.all([
+    agentRelease(),
+    linuxRelease(),
+    pool.query("SELECT os_name, agent_version, last_seen_at FROM devices"),
+    pool.query(
+      `SELECT count(*)::int AS count, max(created_at) AS last FROM audit_events
+       WHERE action = 'agent.update.offer' AND created_at > now() - interval '24 hours'`,
+    ),
+    pool.query(
+      `SELECT e.action, e.detail, e.created_at, o.name AS org_name, d.hostname, u.email AS actor
+       FROM audit_events e
+       LEFT JOIN orgs o ON o.id = e.org_id
+       LEFT JOIN devices d ON e.target_type = 'device' AND d.id::text = e.target_id
+       LEFT JOIN users u ON u.id = e.actor_user_id
+       WHERE e.action LIKE 'agent.update.%'
+       ORDER BY e.created_at DESC LIMIT 15`,
+    ),
+    pool.query("SELECT count(*)::int AS count FROM devices WHERE agent_update_requested_at IS NOT NULL"),
+  ]);
+  const staged = await stat(join(AGENT_BIN_DIR, "next", "DigitalFingersAgent.exe")).catch(() => null);
+  const redisOk = await redis.ping().then((reply) => reply === "PONG").catch(() => false);
+  const geoPath = process.env.GEOIP_DB || "/var/lib/GeoIP/GeoLite2-City.mmdb";
+  const releases = { windows: windows?.version || "", linux: linux?.version || "" };
+  const online = devices.rows.filter((row) => row.last_seen_at && Date.now() - new Date(row.last_seen_at).getTime() < 60000).length;
+  return {
+    releases: {
+      windows: windows
+        ? { version: windows.version, publishedAt: await fileDate(AGENT_BIN_DIR, "windows.json"), sha256: windows.sha256 }
+        : null,
+      windowsStaged: staged?.isFile() ? { stagedAt: staged.mtime.toISOString(), bytes: staged.size } : null,
+      linux: linux
+        ? {
+            version: linux.version,
+            publishedAt: await fileDate(AGENT_BIN_DIR, "linux", "linux.json"),
+            arches: LINUX_ARCHES.filter((arch) => linux.sha256?.[arch]),
+          }
+        : null,
+    },
+    fleet: {
+      total: devices.rows.length,
+      online,
+      platforms: fleetVersions(devices.rows.map((row) => ({ platform: platformOf(row.os_name), agent_version: row.agent_version })), releases),
+    },
+    updates: {
+      autoUpdate: AGENT_AUTO_UPDATE,
+      offersToday: offers.rows[0]?.count || 0,
+      lastOfferAt: offers.rows[0]?.last || null,
+      waiting: pending.rows[0]?.count || 0,
+      recent: recent.rows.map((row) => ({
+        action: row.action.replace("agent.update.", ""),
+        at: row.created_at,
+        org: row.org_name || "",
+        device: row.hostname || "",
+        actor: row.actor || "",
+        from: row.detail?.from || "",
+        to: row.detail?.to || row.detail?.toLinux || "",
+        platform: row.detail?.platform || "",
+        count: Array.isArray(row.detail?.devices) ? row.detail.devices.length + (row.detail.linux?.length || 0) : null,
+        error: row.detail?.error || row.detail?.reason || "",
+        legacy: row.detail?.legacy === true,
+      })),
+    },
+    services: {
+      postgres: true,
+      redis: redisOk,
+      geoip: { loaded: geo.available(), updatedAt: await fileDate(geoPath) },
+      apiStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      node: process.version,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// Returns null when sent, or the reason it could not be.
+async function sendLinuxUpdate(row, orgId, release) {
+  if (!LINUX_ARCHES.some((arch) => release.sha256?.[arch])) return "No Linux agent build is published yet.";
+  const units = {};
+  for (const name of ["df-agent.service", "df-patch-helper.service"]) {
+    units[name] = await readFile(join(AGENT_BIN_DIR, "linux", name), "utf8").catch(() => "");
+    if (!units[name]) return "The Linux agent files are incomplete on the server.";
+  }
+  let node;
+  try {
+    node = await resolveMeshNode(row, orgId);
+  } catch {
+    return "The remote service did not answer.";
+  }
+  if (!node.nodeId) return "The remote desktop agent is not installed on this device, so the update must be installed by hand.";
+  if (!node.online) return "The remote desktop agent on this device is offline. Try again when it is online.";
+  const ticket = randomBytes(24).toString("base64url");
+  await redis.set(`agent-download-linux:${ticket}`, String(row.id), "EX", 1800);
+  try {
+    await meshControl(["RunCommand", "--id", node.nodeId, "--run", linuxUpdateScript(ticket, release, units)]);
+  } catch {
+    await redis.del(`agent-download-linux:${ticket}`);
+    return "The remote service did not accept the update.";
+  }
+  return null;
+}
+
+// customer: null for every customer, "none" for devices without one, or a customer id.
+function customerScope(value) {
+  if (value === "none") return "none";
+  return /^\d{1,18}$/.test(String(value || "")) ? String(value) : null;
+}
+
+async function fleetItems(orgId, { patch = false, customer = null } = {}) {
+  const [fleet, succeeded, releases] = await Promise.all([
+    pool.query(
+      `SELECT d.id, d.hostname, d.display_name, d.os_name, d.os_version, d.os_build, d.last_seen_at,
+              d.agent_version, d.metrics, d.ipv4, d.public_ip, d.users, d.geo_country, d.geo_country_name,
+              d.geo_region, d.geo_city, d.geo_updated_at, d.site_override,
+              ${patch ? "d.updates, d.software," : ""}
+              c.id AS customer_id, c.name AS customer_name
+       FROM devices d
+       LEFT JOIN sites s ON s.id = d.site_id
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE d.org_id = $1
+         AND ($2::text IS NULL OR ($2 = 'none' AND c.id IS NULL) OR c.id::text = $2)
+       ORDER BY d.hostname`,
+      [orgId, customer],
+    ),
+    patch
+      ? pool.query("SELECT device_id, package_name FROM patch_deploys WHERE org_id = $1 AND status = 'succeeded'", [orgId])
+      : { rows: [] },
+    agentReleases(),
+  ]);
+  const done = new Map();
+  for (const item of succeeded.rows) {
+    const key = String(item.device_id);
+    done.set(key, [...(done.get(key) || []), item.package_name]);
+  }
+  const now = Date.now();
+  const items = fleet.rows.map((row) => {
+    if (patch) {
+      const state = patchState(row.updates, row.software, done.get(String(row.id)) || []);
+      row.missing = state.missing.length;
+      row.patched = state.patched.length;
+      row.missing_names = state.missing;
+      delete row.software;
+    }
+    return { row, facts: deviceFacts(row, { now, releases }) };
+  });
+  return { items, releases };
+}
+
+let snapshotsRunning = false;
+
+async function writeDailySnapshots() {
+  if (snapshotsRunning) return;
+  snapshotsRunning = true;
+  try {
+    const due = await pool.query(
+      `SELECT o.id, (now() AT TIME ZONE 'Africa/Johannesburg')::date::text AS day
+       FROM orgs o
+       WHERE NOT EXISTS (
+         SELECT 1 FROM device_daily_stats s
+         WHERE s.org_id = o.id AND s.customer_id IS NULL
+           AND s.day = (now() AT TIME ZONE 'Africa/Johannesburg')::date
+           AND s.build_counts IS NOT NULL
+       )`,
+    );
+    for (const org of due.rows) {
+      const [fleet, succeeded] = await Promise.all([
+        pool.query(
+          `SELECT d.id, d.last_seen_at, d.agent_version, d.os_name, d.os_version, d.updates, d.software,
+                  d.geo_country, d.geo_region, d.geo_updated_at, s.customer_id
+           FROM devices d
+           LEFT JOIN sites s ON s.id = d.site_id
+           WHERE d.org_id = $1`,
+          [org.id],
+        ),
+        pool.query(
+          "SELECT device_id, package_name FROM patch_deploys WHERE org_id = $1 AND status = 'succeeded'",
+          [org.id],
+        ),
+      ]);
+      const done = new Map();
+      for (const row of succeeded.rows) {
+        const key = String(row.device_id);
+        done.set(key, [...(done.get(key) || []), row.package_name]);
+      }
+      const devices = fleet.rows.map((device) => {
+        const state = patchState(device.updates, device.software, done.get(String(device.id)) || []);
+        return { ...device, patched: state.patched.length, missing: state.missing.length, scanned: Array.isArray(device.updates) };
+      });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        for (const [key, stats] of dailyStats(devices)) {
+          // Rows from before build and compliance counts existed are completed once, then left alone.
+          await client.query(
+            `INSERT INTO device_daily_stats
+               (org_id, customer_id, day, device_count, online_count, seen_day_count, agent_versions,
+                os_counts, country_counts, region_counts, patched_count, missing_count,
+                build_counts, scanned_count, compliant_count)
+             VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+             ON CONFLICT (org_id, customer_id, day) DO UPDATE
+               SET build_counts = EXCLUDED.build_counts, scanned_count = EXCLUDED.scanned_count,
+                   compliant_count = EXCLUDED.compliant_count
+               WHERE device_daily_stats.build_counts IS NULL`,
+            [
+              org.id, key === "all" ? null : Number(key), org.day, stats.deviceCount, stats.onlineCount,
+              stats.seenDayCount, stats.agentVersions, stats.osCounts, stats.countryCounts,
+              stats.regionCounts, stats.patchedCount, stats.missingCount,
+              stats.buildCounts, stats.scannedCount, stats.compliantCount,
+            ],
+          );
+        }
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+  } catch (error) {
+    console.error(`daily snapshots: ${error.message}`);
+  } finally {
+    snapshotsRunning = false;
+  }
 }
 
 async function dashboardSnapshot(orgId) {
@@ -3499,6 +3891,298 @@ async function runDueExports() {
   }
 }
 
+const LOCAL_DAY_START = "($X::date::timestamp AT TIME ZONE 'Africa/Johannesburg')";
+
+function localRange(fromParam, toParam) {
+  return [
+    LOCAL_DAY_START.replace("$X", fromParam),
+    LOCAL_DAY_START.replace("$X::date", `(${toParam}::date + 1)`),
+  ];
+}
+
+async function snapshotTrend(orgId, customerId, from, to) {
+  const rows = await pool.query(
+    `SELECT day::text AS day, agent_versions, os_counts, build_counts, scanned_count, compliant_count, device_count
+     FROM device_daily_stats
+     WHERE org_id = $1 AND customer_id IS NOT DISTINCT FROM $2 AND day BETWEEN $3::date AND $4::date
+     ORDER BY day`,
+    [orgId, customerId, from, to],
+  );
+  return fillDays(rows.rows, from, to);
+}
+
+function customerSql(column, param) {
+  return `($${param}::text IS NULL OR ($${param} = 'none' AND ${column} IS NULL) OR ${column}::text = $${param})`;
+}
+
+// scope: { orgId, customer (null | "none" | id), from, to, drill, license }
+async function reportData(key, scope) {
+  const { orgId, customer, from, to } = scope;
+  const [start, end] = localRange("$3", "$4");
+  if (key === "agents" || key === "os") {
+    const { items, releases } = await fleetItems(orgId, { customer });
+    const trend = customer === "none" ? fillDays([], from, to) : await snapshotTrend(orgId, customer ? Number(customer) : null, from, to);
+    return { trend, items, releases, versions: overviewFrom(items, { releases }).agents.versions };
+  }
+  if (key === "locations") {
+    const { items } = await fleetItems(orgId, { customer });
+    return { items, drill: scope.drill };
+  }
+  if (key === "patches") {
+    const { items } = await fleetItems(orgId, { patch: true, customer });
+    const trends = [];
+    if (customer && customer !== "none") {
+      trends.push({ id: customer, name: scope.customerName, days: await snapshotTrend(orgId, Number(customer), from, to) });
+    } else if (!customer) {
+      trends.push({ id: "all", name: "All customers", days: await snapshotTrend(orgId, null, from, to) });
+      const top = await pool.query(
+        `SELECT c.id, c.name FROM customers c
+         JOIN device_daily_stats s ON s.customer_id = c.id AND s.org_id = c.org_id
+         WHERE c.org_id = $1 AND s.day BETWEEN $2::date AND $3::date
+         GROUP BY c.id, c.name ORDER BY max(s.device_count) DESC, lower(c.name) LIMIT 5`,
+        [orgId, from, to],
+      );
+      for (const row of top.rows) trends.push({ id: String(row.id), name: row.name, days: await snapshotTrend(orgId, Number(row.id), from, to) });
+    } else {
+      trends.push({ id: "none", name: "No customer", days: fillDays([], from, to) });
+    }
+    const missing = [];
+    for (const { row } of items) {
+      const details = new Map((Array.isArray(row.updates) ? row.updates : []).map((update) => [String(update?.name || "").trim(), update]));
+      for (const name of row.missing_names || []) {
+        const update = details.get(name) || {};
+        missing.push({
+          device: row.display_name || row.hostname,
+          customer: row.customer_name || "No customer",
+          name,
+          kb: update.kb ? (String(update.kb).toUpperCase().startsWith("KB") ? update.kb : `KB${update.kb}`) : "",
+          category: update.category || "",
+          severity: update.severity || "",
+          _id: Number(row.id),
+        });
+      }
+    }
+    missing.sort((a, b) => a.device.localeCompare(b.device) || a.name.localeCompare(b.name));
+    return { items, trends, missing };
+  }
+  if (key === "uptime") {
+    const params = [orgId, customer, from, to];
+    const [devices, daily, since] = await Promise.all([
+      pool.query(
+        `SELECT d.id, COALESCE(d.display_name, d.hostname) AS name, c.name AS customer,
+                sum(u.checks)::int AS checks, sum(u.online_checks)::int AS online, count(*)::int AS days
+         FROM device_uptime_daily u
+         JOIN devices d ON d.id = u.device_id AND d.org_id = u.org_id
+         LEFT JOIN sites s ON s.id = d.site_id
+         LEFT JOIN customers c ON c.id = s.customer_id
+         WHERE u.org_id = $1 AND ${customerSql("c.id", 2)} AND u.day BETWEEN $3::date AND $4::date
+         GROUP BY d.id, d.display_name, d.hostname, c.name`,
+        params,
+      ),
+      pool.query(
+        `SELECT u.day::text AS day, sum(u.checks)::int AS checks, sum(u.online_checks)::int AS online
+         FROM device_uptime_daily u
+         JOIN devices d ON d.id = u.device_id AND d.org_id = u.org_id
+         LEFT JOIN sites s ON s.id = d.site_id
+         WHERE u.org_id = $1 AND ${customerSql("s.customer_id", 2)} AND u.day BETWEEN $3::date AND $4::date
+         GROUP BY u.day`,
+        params,
+      ),
+      pool.query("SELECT min(day)::text AS since FROM device_uptime_daily WHERE org_id = $1", [orgId]),
+    ]);
+    return { devices: devices.rows, daily: daily.rows, since: since.rows[0]?.since || null };
+  }
+  if (key === "sessions") {
+    const rows = await pool.query(
+      `SELECT rs.status, rs.started_at, rs.connected_at, rs.last_seen_at, rs.ended_at, rs.ticket_id,
+              u.name AS technician, c.name AS customer, rs.device_name AS device, 'Remote Desk' AS kind,
+              rs.ticket_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM ticket_time_entries te
+                WHERE te.ticket_id = rs.ticket_id AND te.org_id = rs.org_id AND te.billable
+              ) AS billable
+       FROM remote_sessions rs
+       LEFT JOIN users u ON u.id = rs.user_id
+       LEFT JOIN customers c ON c.id = rs.customer_id AND c.org_id = rs.org_id
+       WHERE rs.org_id = $1 AND ${customerSql("rs.customer_id", 2)}
+         AND rs.started_at >= ${start} AND rs.started_at < ${end}
+       UNION ALL
+       SELECT CASE WHEN ss.ended_at IS NULL THEN 'live' ELSE 'ended' END, ss.joined_at, ss.joined_at, NULL, ss.ended_at, ss.ticket_id,
+              u.name, c.name, COALESCE(ss.hostname, 'Support session'), 'Support code',
+              ss.ticket_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM ticket_time_entries te
+                WHERE te.ticket_id = ss.ticket_id AND te.org_id = ss.org_id AND te.billable
+              )
+       FROM support_sessions ss
+       LEFT JOIN users u ON u.id = ss.created_by
+       LEFT JOIN tickets t ON t.id = ss.ticket_id AND t.org_id = ss.org_id
+       LEFT JOIN customers c ON c.id = t.customer_id
+       WHERE ss.org_id = $1 AND ss.joined_at IS NOT NULL AND ${customerSql("t.customer_id", 2)}
+         AND ss.joined_at >= ${start} AND ss.joined_at < ${end}`,
+      [orgId, customer, from, to],
+    );
+    return { sessions: rows.rows };
+  }
+  if (key === "service-desk") {
+    const params = [orgId, customer, from, to];
+    const [tickets, resolved, time, book] = await Promise.all([
+      pool.query(
+        `SELECT t.id, t.status, t.created_at, t.updated_at, c.name AS customer, c.sla_plan_id, ${TICKET_CLOCK_SQL}
+         FROM tickets t
+         JOIN customers c ON c.id = t.customer_id
+         WHERE t.org_id = $1 AND t.merged_into_id IS NULL AND ${customerSql("c.id", 2)}
+           AND t.created_at >= ${start} AND t.created_at < ${end}`,
+        params,
+      ),
+      pool.query(
+        `SELECT (COALESCE(r.resolved_at, r.updated_at) AT TIME ZONE 'Africa/Johannesburg')::date::text AS day, count(*)::int AS count
+         FROM (
+           SELECT t.updated_at, ${TICKET_CLOCK_SQL}
+           FROM tickets t
+           WHERE t.org_id = $1 AND t.status = 'resolved' AND t.merged_into_id IS NULL AND ${customerSql("t.customer_id", 2)}
+         ) r
+         WHERE COALESCE(r.resolved_at, r.updated_at) >= ${start} AND COALESCE(r.resolved_at, r.updated_at) < ${end}
+         GROUP BY 1`,
+        params,
+      ),
+      pool.query(
+        `SELECT c.name AS customer, te.minutes, te.billable
+         FROM ticket_time_entries te
+         JOIN tickets t ON t.id = te.ticket_id AND t.org_id = te.org_id
+         JOIN customers c ON c.id = t.customer_id
+         WHERE te.org_id = $1 AND ${customerSql("c.id", 2)}
+           AND COALESCE(te.started_at, te.created_at) >= ${start} AND COALESCE(te.started_at, te.created_at) < ${end}`,
+        params,
+      ),
+      slaBook(orgId),
+    ]);
+    return {
+      tickets: tickets.rows.map((row) => {
+        const sla = slaFor(book, row.sla_plan_id);
+        return { ...row, response_target: sla?.responseMinutes || null, resolve_target: sla?.resolveMinutes || null };
+      }),
+      resolved: resolved.rows,
+      time: time.rows,
+    };
+  }
+  throw new Error(`unknown report ${key}`);
+}
+
+async function customerName(orgId, customer) {
+  if (customer == null) return "All customers";
+  if (customer === "none") return "No customer";
+  const row = await pool.query("SELECT name FROM customers WHERE id = $1 AND org_id = $2", [customer, orgId]);
+  return row.rows[0]?.name || null;
+}
+
+// Throws { status } for a bad customer or a report the package does not include.
+async function makeReport(key, { orgId, orgName, customer, from, to, drill, license }) {
+  const meta = reportByKey(key);
+  if (!meta) throw Object.assign(new Error("Report not found."), { status: 404 });
+  if (meta.needs === "ticketing" && !ticketingAllowed(license)) {
+    throw Object.assign(new Error("Service Desk reports need Service Desk in your package."), { status: 403 });
+  }
+  const name = await customerName(orgId, customer);
+  if (name == null) throw Object.assign(new Error("Customer not found."), { status: 404 });
+  const data = await reportData(key, { orgId, customer, from, to, drill, customerName: name });
+  return buildReport(key, data, { from, to, customerName: name, orgName, now: Date.now() });
+}
+
+function reportFileName(report, extension) {
+  const slug = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  return `${[slug(report.title), report.customerName === "All customers" ? "" : slug(report.customerName), report.from, report.to].filter(Boolean).join("_")}.${extension}`;
+}
+
+// 07:00 South African time on the 1st of next month.
+function nextMonthlyRun(now = Date.now()) {
+  const today = localDay(now);
+  const year = Number(today.slice(0, 4));
+  const month = Number(today.slice(5, 7));
+  return new Date(Date.UTC(year, month, 1, 5, 0, 0));
+}
+
+async function deliverSubscription(sub, { period } = {}) {
+  const range = period || previousMonth();
+  const license = (await licenseQuery(sub.org_id)).rows[0];
+  const log = async (status, detail, bytes = null) => {
+    await pool.query(
+      `INSERT INTO report_deliveries (org_id, subscription_id, report_key, customer_id, email, period_from, period_to, status, detail, pdf_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [sub.org_id, sub.id, sub.report_key, sub.customer_id, sub.email, range.from, range.to, status, detail, bytes],
+    );
+    await writeAudit(sub.org_id, sub.actor_id || null, "report.email", "report_subscription", String(sub.id), {
+      report: sub.report_key, status, from: range.from, to: range.to,
+    });
+    return { status, detail };
+  };
+  if (!reportingAllowed(license)) return log("skipped", "Reports is not in the package.");
+  let report;
+  try {
+    const org = await pool.query("SELECT name FROM orgs WHERE id = $1", [sub.org_id]);
+    report = await makeReport(sub.report_key, {
+      orgId: sub.org_id,
+      orgName: org.rows[0]?.name || "",
+      customer: sub.customer_id == null ? null : String(sub.customer_id),
+      from: range.from,
+      to: range.to,
+      drill: {},
+      license,
+    });
+  } catch (error) {
+    return log("skipped", error.status ? error.message : "The report could not be built.");
+  }
+  const pdf = reportPdf(report);
+  const month = new Date(`${range.from}T12:00:00Z`).toLocaleDateString("en-ZA", { month: "long", year: "numeric", timeZone: "UTC" });
+  try {
+    const sent = await sendMail({
+      to: sub.email,
+      subject: `${report.title} report for ${report.customerName}, ${month}`,
+      text: [
+        `Hello${sub.contact_name ? ` ${sub.contact_name}` : ""},`,
+        "",
+        `Attached is the ${report.title} report for ${report.customerName} for ${month}.`,
+        "",
+        report.orgName || "Digital Fingers",
+      ].join("\n"),
+      attachments: [{ filename: reportFileName(report, "pdf"), contentType: "application/pdf", content: pdf }],
+    });
+    if (!sent) return log("failed", "Email is not set up on the server.", pdf.length);
+    return log("sent", null, pdf.length);
+  } catch (error) {
+    return log("failed", `The mail server did not accept the message (${String(error.message).slice(0, 80)}).`, pdf.length);
+  }
+}
+
+let subscriptionTickRunning = false;
+
+async function runDueSubscriptions() {
+  if (subscriptionTickRunning) return;
+  subscriptionTickRunning = true;
+  try {
+    for (let i = 0; i < 20; i += 1) {
+      const claimed = await pool.query(
+        `UPDATE report_subscriptions rs
+         SET next_run_at = $1
+         FROM (
+           SELECT id FROM report_subscriptions
+           WHERE paused_at IS NULL AND next_run_at <= now()
+           ORDER BY next_run_at, id
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED
+         ) due
+         WHERE rs.id = due.id
+         RETURNING rs.*, (SELECT name FROM contacts ct WHERE ct.id = rs.contact_id) AS contact_name`,
+        [nextMonthlyRun()],
+      );
+      if (!claimed.rows[0]) break;
+      await deliverSubscription(claimed.rows[0]).catch((error) => console.error(`report email: ${error.message}`));
+    }
+  } catch (error) {
+    console.error(error.message);
+  } finally {
+    subscriptionTickRunning = false;
+  }
+}
+
 async function writeAudit(orgId, actorId, action, targetType, targetId, detail) {
   await pool.query(
     `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
@@ -3519,6 +4203,58 @@ async function ticketChangeEvents(orgId, ticketId, before, after, options) {
   for (const change of ticketChanges(before, after)) {
     await ticketEvent(orgId, ticketId, change.kind, { ...options, detail: { from: change.from, to: change.to } });
   }
+}
+
+async function ticketListRows(orgId) {
+  const [tickets, book] = await Promise.all([
+    pool.query(
+      `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
+              ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
+              t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
+              u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
+              t.category, t.tags, t.merged_into_id,
+              (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count,
+              GREATEST(t.updated_at, (SELECT max(tc.created_at) FROM ticket_comments tc WHERE tc.ticket_id = t.id)) AS last_activity_at,
+              (SELECT MIN(tc.created_at)
+               FROM ticket_comments tc
+               JOIN users ru ON ru.id = tc.author_user_id AND ru.org_id = t.org_id
+               WHERE tc.ticket_id = t.id AND tc.kind = 'reply') AS first_response_at,
+              CASE
+                WHEN EXISTS (SELECT 1 FROM alerts a WHERE a.ticket_id = t.id) THEN 'alert'
+                WHEN EXISTS (SELECT 1 FROM support_sessions ss WHERE ss.ticket_id = t.id) THEN 'support'
+                WHEN t.created_by IS NULL THEN 'automatic'
+                ELSE 'console'
+              END AS channel
+       FROM tickets t
+       JOIN customers c ON c.id = t.customer_id
+       LEFT JOIN devices d ON d.id = t.device_id
+       LEFT JOIN users u ON u.id = t.assignee_user_id
+       ${TICKET_CONTACT_JOIN}
+       WHERE t.org_id = $1
+       ORDER BY t.id DESC
+       LIMIT ${EXPORT_LIMIT}`,
+      [orgId],
+    ),
+    slaBook(orgId),
+  ]);
+  const now = new Date();
+  return tickets.rows.map((row) => {
+    const targets = slaFor(book, row.sla_plan_id);
+    const due = ticketDue(row, targets);
+    const view = ticketView(row);
+    return {
+      ...view,
+      commentCount: row.comment_count,
+      lastActivityAt: row.last_activity_at || row.updated_at,
+      dueAt: due ? due.toISOString() : null,
+      overdue: isOverdue(row, targets, now),
+      channel: row.channel,
+      category: row.category || null,
+      tags: row.tags || [],
+      mergedIntoId: row.merged_into_id == null ? null : Number(row.merged_into_id),
+      sla: slaState({ ...view, firstResponseAt: row.first_response_at }, targets, now),
+    };
+  });
 }
 
 const ATTACHMENT_DIR = process.env.ATTACHMENT_DIR || "/var/lib/df-api/attachments";
@@ -3642,6 +4378,47 @@ async function ticketInOrg(ticketId, orgId, db = pool) {
 let ticketSessionSweepRunning = false;
 const liveTicketSessions = new Set();
 
+// A launch that never shows up in Mesh within 3 minutes is closed as "not connected".
+async function trackRemoteSessions(rows, live) {
+  const now = Date.now();
+  for (const row of rows) {
+    if (row.mesh_node_id && live[row.mesh_node_id]) {
+      await pool.query(
+        `UPDATE remote_sessions
+         SET status = 'live', connected_at = COALESCE(connected_at, now()), last_seen_at = now()
+         WHERE id = $1 AND status IN ('launched', 'live')`,
+        [row.id],
+      );
+    } else if (row.status === "live") {
+      await pool.query("UPDATE remote_sessions SET status = 'ended', ended_at = now() WHERE id = $1 AND status = 'live'", [row.id]);
+    } else if (now - new Date(row.started_at).getTime() >= 3 * 60000) {
+      await pool.query("UPDATE remote_sessions SET status = 'ended', ended_at = started_at WHERE id = $1 AND status = 'launched'", [row.id]);
+    }
+  }
+}
+
+let uptimeSampleRunning = false;
+
+async function sampleUptime() {
+  if (uptimeSampleRunning) return;
+  uptimeSampleRunning = true;
+  try {
+    await pool.query(
+      `INSERT INTO device_uptime_daily (org_id, device_id, day, checks, online_checks)
+       SELECT org_id, id, (now() AT TIME ZONE 'Africa/Johannesburg')::date, 1,
+              CASE WHEN last_seen_at > now() - interval '60 seconds' THEN 1 ELSE 0 END
+       FROM devices
+       ON CONFLICT (device_id, day) DO UPDATE
+         SET checks = device_uptime_daily.checks + 1,
+             online_checks = device_uptime_daily.online_checks + EXCLUDED.online_checks`,
+    );
+  } catch (error) {
+    console.error(`uptime sample: ${error.message}`);
+  } finally {
+    uptimeSampleRunning = false;
+  }
+}
+
 // Mesh does not report when a viewer closes, so the end time is when the device stops showing a session.
 async function sweepTicketSessions() {
   if (ticketSessionSweepRunning) return;
@@ -3659,8 +4436,15 @@ async function sweepTicketSessions() {
            WHERE x.ticket_id = e.ticket_id AND x.kind = 'remote_end' AND x.detail->>'startId' = e.id::text
          )`,
     );
-    if (open.rows.length === 0) return;
+    const tracked = await pool.query(
+      `SELECT rs.id, rs.status, rs.started_at, d.mesh_node_id
+       FROM remote_sessions rs
+       LEFT JOIN devices d ON d.id = rs.device_id AND d.org_id = rs.org_id
+       WHERE rs.status IN ('launched', 'live')`,
+    );
+    if (open.rows.length === 0 && tracked.rows.length === 0) return;
     const live = await meshSessionList();
+    await trackRemoteSessions(tracked.rows, live);
     const now = Date.now();
     for (const row of open.rows) {
       const key = String(row.id);
@@ -4730,6 +5514,11 @@ const server = createServer(async (req, res) => {
 
     if (await handlePlatformAdmin(req, res, url, actor, platformHelpers())) return;
 
+    if (req.method === "GET" && url.pathname === "/v1/platform/system") {
+      if (!requirePlatform(actor, res)) return;
+      return send(res, 200, await systemOverview());
+    }
+
     const platformPassword = url.pathname.match(/^\/v1\/platform\/users\/(\d+)\/password$/);
     if (req.method === "POST" && platformPassword) {
       if (!requirePlatform(actor, res)) return;
@@ -4766,14 +5555,80 @@ const server = createServer(async (req, res) => {
         if (!account.rows[0]) return send(res, 400, { error: "Choose an account in this organisation." });
         customerId = account.rows[0].id;
       }
+      const command = body.kind === "command";
+      const maxUses = command ? Number(body.maxUses) : 1;
+      if (command && !COMMAND_USES.includes(maxUses)) {
+        return send(res, 400, { error: "Choose how many computers may use the command." });
+      }
       const token = randomBytes(32).toString("base64url");
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      await pool.query(
-        `INSERT INTO enroll_tokens (org_id, token_hash, created_by, expires_at, customer_id)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [actor.org_id, sha256(token), actor.id, expiresAt.toISOString(), customerId],
+      const created = await pool.query(
+        `INSERT INTO enroll_tokens (org_id, token_hash, created_by, expires_at, customer_id, max_uses, kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        [actor.org_id, sha256(token), actor.id, expiresAt.toISOString(), customerId, maxUses, command ? "command" : "package"],
       );
-      return send(res, 201, { token, expiresAt: expiresAt.toISOString() });
+      const id = Number(created.rows[0].id);
+      if (command) {
+        await writeAudit(actor.org_id, actor.id, "enroll.command.create", "enroll_token", String(id), { maxUses, customerId });
+      }
+      return send(res, 201, { id, token, expiresAt: expiresAt.toISOString() });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/enroll-tokens") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id || !canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can see install commands." });
+      const rows = await pool.query(
+        `SELECT t.id, t.max_uses, t.use_count, t.expires_at, t.created_at, c.name AS customer_name, u.name AS created_by_name
+         FROM enroll_tokens t
+         LEFT JOIN customers c ON c.id = t.customer_id
+         LEFT JOIN users u ON u.id = t.created_by
+         WHERE t.org_id = $1 AND t.kind = 'command' AND t.revoked_at IS NULL
+           AND t.expires_at > now() AND t.use_count < t.max_uses
+         ORDER BY t.created_at DESC
+         LIMIT 50`,
+        [actor.org_id],
+      );
+      return send(res, 200, {
+        commands: rows.rows.map((row) => ({
+          id: Number(row.id),
+          maxUses: row.max_uses,
+          useCount: row.use_count,
+          expiresAt: row.expires_at,
+          createdAt: row.created_at,
+          customer: row.customer_name || null,
+          createdBy: row.created_by_name || null,
+        })),
+      });
+    }
+
+    const enrollTokenMatch = url.pathname.match(/^\/v1\/enroll-tokens\/(\d+)$/);
+    if (req.method === "DELETE" && enrollTokenMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id || !canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can revoke install commands." });
+      const revoked = await pool.query(
+        `UPDATE enroll_tokens SET revoked_at = now()
+         WHERE id = $1 AND org_id = $2 AND kind = 'command' AND revoked_at IS NULL
+         RETURNING id`,
+        [enrollTokenMatch[1], actor.org_id],
+      );
+      if (!revoked.rows[0]) return send(res, 404, { error: "That install command was not found." });
+      await writeAudit(actor.org_id, actor.id, "enroll.command.revoke", "enroll_token", enrollTokenMatch[1], {});
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/agent/install-check") {
+      const body = await readJson(req);
+      const token = typeof body.token === "string" ? body.token.trim() : "";
+      if (!token || token.length > 100) return send(res, 401, { error: "This install command is not valid." });
+      const row = await pool.query(
+        "SELECT expires_at, use_count, max_uses, revoked_at FROM enroll_tokens WHERE token_hash = $1",
+        [sha256(token)],
+      );
+      if (!enrollTokenUsable(row.rows[0])) {
+        return send(res, 401, { error: "This install command has expired, was revoked or has been used up. Create a new one under Downloads." });
+      }
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/agent/update/windows") {
@@ -4799,6 +5654,25 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/agent/update/linux") {
+      const arch = String(url.searchParams.get("arch") || "");
+      if (!LINUX_ARCHES.includes(arch)) return send(res, 400, { error: "Unknown processor type." });
+      const key = `agent-download-linux:${String(url.searchParams.get("t") || "").slice(0, 64)}`;
+      const deviceId = await redis.get(key);
+      if (deviceId) await redis.del(key);
+      if (!deviceId) return send(res, 401, { error: "This update link has expired or was already used." });
+      const file = join(AGENT_BIN_DIR, "linux", `df-agent-${arch}`);
+      const info = await stat(file).catch(() => null);
+      if (!info?.isFile()) return send(res, 404, { error: "No Linux agent build is published." });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(info.size),
+        "cache-control": "no-store",
+      });
+      createReadStream(file).pipe(res);
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/agent/enroll") {
       const body = await readJson(req);
       const token = typeof body.token === "string" ? body.token.trim() : "";
@@ -4811,14 +5685,14 @@ const server = createServer(async (req, res) => {
       try {
         await client.query("BEGIN");
         const tokenRow = await client.query(
-          `SELECT id, org_id, created_by, expires_at, used_at, customer_id
+          `SELECT id, org_id, created_by, expires_at, customer_id, use_count, max_uses, revoked_at
            FROM enroll_tokens
            WHERE token_hash = $1
            FOR UPDATE`,
           [sha256(token)],
         );
         const invite = tokenRow.rows[0];
-        if (!invite || invite.used_at || new Date(invite.expires_at).getTime() < Date.now()) {
+        if (!enrollTokenUsable(invite)) {
           await client.query("ROLLBACK");
           return send(res, 401, { error: "Enroll token is not valid." });
         }
@@ -4851,7 +5725,13 @@ const server = createServer(async (req, res) => {
            RETURNING id`,
           [invite.org_id, hostname, osName || null, sha256(deviceToken), site.rows[0]?.id || null],
         );
-        await client.query("UPDATE enroll_tokens SET used_at = now() WHERE id = $1", [invite.id]);
+        await client.query(
+          `UPDATE enroll_tokens
+           SET use_count = use_count + 1,
+               used_at = CASE WHEN use_count + 1 >= max_uses THEN now() ELSE used_at END
+           WHERE id = $1`,
+          [invite.id],
+        );
         await client.query(
           `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
            VALUES ($1, $2, 'device.enroll', 'device', $3, $4::jsonb)`,
@@ -4887,7 +5767,8 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/v1/agent/heartbeat") {
       const device = await deviceFrom(req);
       if (!device) return send(res, 401, { error: "Device login required." });
-      const body = await readJson(req);
+      // A full software inventory (up to 4000 packages) does not fit the default limit.
+      const body = await readJson(req, 1 << 20);
       const hostname = cleanHostname(body.hostname);
       const osName = typeof body.osName === "string" ? body.osName.trim() : "";
       const metrics = metricsFrom(body);
@@ -4895,9 +5776,16 @@ const server = createServer(async (req, res) => {
       const asset = assetFrom(body);
       const users = usersFrom(body);
       const agentVersion = versionParts(body.agentVersion) ? body.agentVersion : "";
+      const uptime = Number(metrics?.uptimeSeconds);
+      const publicIp = publicIpFrom(req);
       const saved = await pool.query(
         `UPDATE devices
          SET last_seen_at = now(),
+             os_version = COALESCE(NULLIF($17, ''), os_version),
+             os_build = COALESCE(NULLIF($18, ''), os_build),
+             last_boot_at = CASE WHEN $19::bigint IS NULL THEN last_boot_at
+                                 ELSE date_trunc('minute', now() - make_interval(secs => $19::bigint)) END,
+             public_ip = COALESCE(NULLIF($20, ''), public_ip),
              hostname = COALESCE(NULLIF($2, ''), hostname),
              display_name = COALESCE(NULLIF(display_name, ''), NULLIF($2, ''), hostname),
              os_name = COALESCE(NULLIF($3, ''), os_name),
@@ -4912,9 +5800,11 @@ const server = createServer(async (req, res) => {
              updates_checked_at = CASE WHEN $5::boolean THEN now() ELSE updates_checked_at END,
              reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END,
              agent_version = COALESCE(NULLIF($16, ''), agent_version)
-         WHERE id = $1
+         FROM (SELECT public_ip AS previous_ip FROM devices WHERE id = $1) prior
+         WHERE devices.id = $1
          RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
-                   agent_update_requested_at, agent_update_offered_at`,
+                   agent_update_requested_at, agent_update_offered_at,
+                   public_ip, geo_updated_at, prior.previous_ip`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -4932,8 +5822,16 @@ const server = createServer(async (req, res) => {
           users ? JSON.stringify(users) : "[]",
           body.rebootPending === true,
           agentVersion,
+          osField(body.osVersion),
+          osField(body.osBuild),
+          Number.isFinite(uptime) && uptime >= 0 && uptime < 10 * 365 * 86400 ? Math.floor(uptime) : null,
+          publicIp,
         ],
       );
+      if (saved.rows[0]) {
+        locateDevice(device.id, saved.rows[0].previous_ip, saved.rows[0])
+          .catch((error) => console.error(`geoip update: ${error.message}`));
+      }
       const scanAt = saved.rows[0]?.update_scan_requested_at;
       const checkedAt = saved.rows[0]?.updates_checked_at;
       const scanUpdates = scanAt && (!checkedAt || scanAt > checkedAt) ? scanAt.toISOString() : "";
@@ -5042,22 +5940,21 @@ const server = createServer(async (req, res) => {
       const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [actor.org_id]);
       const license = await licenseQuery(actor.org_id);
       const access = remoteAccess(license.rows[0]);
-      const q = String(url.searchParams.get("q") || "").trim().slice(0, 200);
-      const needle = q.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
-      const result = await pool.query(
-        `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.ipv4, d.users, d.agent_version,
-                c.id AS customer_id, c.name AS customer_name
-         FROM devices d
-         LEFT JOIN sites s ON s.id = d.site_id
-         LEFT JOIN customers c ON c.id = s.customer_id
-         WHERE d.org_id = $1
-           AND ($2 = '' OR d.hostname ILIKE '%' || $2 || '%' ESCAPE '\\'
-                OR COALESCE(d.display_name, '') ILIKE '%' || $2 || '%' ESCAPE '\\')
-         ORDER BY d.hostname`,
-        [actor.org_id, needle],
-      );
-      const release = await agentRelease();
+      const q = String(url.searchParams.get("q") || "").trim().slice(0, 200).toLowerCase();
+      const filter = deviceFilterFrom(url.searchParams);
+      const { items } = await fleetItems(actor.org_id, { patch: filter.patch === "missing" && patchAllowed(license.rows[0]) });
+      const enrolled = items.length;
+      const shown = items.filter((item) => deviceMatches(item.facts, filter)
+        && (!q || `${item.row.hostname} ${item.row.display_name || ""}`.toLowerCase().includes(q)));
+      const result = { rows: shown.map((item) => item.row) };
+      const factsById = new Map(shown.map((item) => [String(item.row.id), item.facts]));
+      const customers = await pool.query("SELECT id, name FROM customers WHERE org_id = $1 ORDER BY name", [actor.org_id]);
+      const [release, linux] = await Promise.all([agentRelease(), linuxRelease()]);
+      const latestFor = (osName) => ({ windows: release?.version, linux: linux?.version })[platformOf(osName)] || null;
       return send(res, 200, {
+        filter,
+        enrolledCount: enrolled,
+        customers: customers.rows.map((row) => ({ id: Number(row.id), name: row.name })),
         org: org.rows[0] || null,
         latestAgent: release?.version || null,
         canRemote: access.canRemote,
@@ -5080,7 +5977,10 @@ const server = createServer(async (req, res) => {
           ipv4: row.ipv4 || null,
           lastSeenAt: row.last_seen_at,
           agentVersion: row.agent_version || null,
-          agentOutdated: /windows/i.test(row.os_name || "") && olderAgent(row.agent_version, release?.version),
+          agentLatest: latestFor(row.os_name),
+          agentOutdated: Boolean(latestFor(row.os_name)) && olderAgent(row.agent_version, latestFor(row.os_name)),
+          siteOverride: row.site_override || null,
+          location: factsById.get(String(row.id))?.group || "Unknown",
         })),
       });
     }
@@ -5092,7 +5992,8 @@ const server = createServer(async (req, res) => {
       const license = await licenseQuery(actor.org_id);
       const device = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
-                d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name
+                d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name,
+                d.public_ip, d.geo_city, d.geo_region, d.geo_country_name, d.geo_updated_at, d.site_override
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -5131,7 +6032,7 @@ const server = createServer(async (req, res) => {
       } catch {
         note = "MeshCentral did not answer.";
       }
-      row.latest_agent = (await agentRelease())?.version || "";
+      row.latest_agent = (await releaseFor(row.os_name))?.version || "";
       const sections = detailSections(row, meshInfo, groupName, clock);
       const presence = presenceFrom(row.last_seen_at);
       return send(res, 200, {
@@ -5141,11 +6042,39 @@ const server = createServer(async (req, res) => {
         presenceLabel: presence === "online" ? "Online" : presence === "rebooting" ? "Rebooting" : "Offline",
         canRemote: remoteAccess(license.rows[0]).canRemote,
         users: Array.isArray(row.users) ? row.users : [],
+        siteOverride: row.site_override || "",
         note,
         overview: deviceOverview(row, meshInfo, rawInfo),
         left: sections.left,
         right: sections.right,
       });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/devices/site") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const ids = Array.isArray(body.deviceIds)
+        ? [...new Set(body.deviceIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+        : [];
+      if (!ids.length || ids.length > 500) return send(res, 400, { error: "Choose between 1 and 500 devices." });
+      const site = typeof body.site === "string" ? body.site.trim().replace(/\s+/g, " ") : "";
+      if (site.length > 80 || /[\u0000-\u001f<>]/.test(site)) {
+        return send(res, 400, { error: "Enter a site or branch name of up to 80 characters." });
+      }
+      const updated = await pool.query(
+        `UPDATE devices SET site_override = NULLIF($1, '')
+         WHERE org_id = $2 AND id = ANY($3::bigint[])
+         RETURNING id`,
+        [site, actor.org_id, ids],
+      );
+      if (!updated.rows.length) return send(res, 404, { error: "Device not found." });
+      const changed = updated.rows.map((row) => Number(row.id));
+      await writeAudit(actor.org_id, actor.id, "device.site", "device", changed.length === 1 ? String(changed[0]) : "bulk", {
+        site: site || null,
+        devices: changed,
+      });
+      return send(res, 200, { site, updated: changed.length });
     }
 
     const deviceNameMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/name$/);
@@ -5791,16 +6720,28 @@ const server = createServer(async (req, res) => {
         return send(res, 403, { error: "Only an owner or admin can update the agent." });
       }
       const device = await pool.query(
-        "SELECT id, os_name, agent_version FROM devices WHERE id = $1 AND org_id = $2",
+        "SELECT id, hostname, display_name, mesh_node_id, os_name, agent_version FROM devices WHERE id = $1 AND org_id = $2",
         [agentUpdateMatch[1], actor.org_id],
       );
       const row = device.rows[0];
       if (!row) return send(res, 404, { error: "Device not found." });
-      if (!/windows/i.test(row.os_name || "")) return send(res, 400, { error: "Agent updates are only available for Windows." });
-      const release = await agentRelease();
+      const platform = platformOf(row.os_name);
+      if (!platform) return send(res, 400, { error: "Agent updates are available for Windows and Linux." });
+      const release = await releaseFor(row.os_name);
       if (!release) return send(res, 503, { error: "No agent build is published yet." });
       if (!olderAgent(row.agent_version, release.version)) {
         return send(res, 200, { status: "current", version: row.agent_version });
+      }
+      if (platform === "linux") {
+        const problem = await sendLinuxUpdate(row, actor.org_id, release);
+        await writeAudit(actor.org_id, actor.id, "agent.update.request", "device", String(row.id), {
+          from: row.agent_version || "older",
+          to: release.version,
+          platform,
+          ...(problem ? { error: problem } : {}),
+        });
+        if (problem) return send(res, 409, { error: problem });
+        return send(res, 202, { status: "sent", platform, version: release.version });
       }
       await pool.query(
         "UPDATE devices SET agent_update_requested_at = now() WHERE id = $1",
@@ -6009,9 +6950,10 @@ const server = createServer(async (req, res) => {
         `df-${device.rows[0].id}-${Date.now()}`,
         device.rows[0].os_name,
       );
-      await pool.query(
+      const launched = await pool.query(
         `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-         VALUES ($1, $2, 'remote.launch', 'device', $3, $4::jsonb)`,
+         VALUES ($1, $2, 'remote.launch', 'device', $3, $4::jsonb)
+         RETURNING id`,
         [
           actor.org_id,
           actor.id,
@@ -6022,6 +6964,14 @@ const server = createServer(async (req, res) => {
           }),
         ],
       );
+      await pool.query(
+        `INSERT INTO remote_sessions (org_id, device_id, customer_id, user_id, ticket_id, device_name, audit_event_id)
+         SELECT d.org_id, d.id, s.customer_id, $3, $4, COALESCE(d.display_name, d.hostname), $5
+         FROM devices d
+         LEFT JOIN sites s ON s.id = d.site_id
+         WHERE d.id = $1 AND d.org_id = $2`,
+        [device.rows[0].id, actor.org_id, actor.id, ticketId, launched.rows[0].id],
+      ).catch((error) => console.error(`remote session: ${error.message}`));
       if (ticketId != null) {
         await ticketEvent(actor.org_id, ticketId, "remote_start", {
           actorId: actor.id,
@@ -6406,7 +7356,7 @@ const server = createServer(async (req, res) => {
               createdAt: row.created_at,
               updatedAt: row.updated_at,
               dueAt: due ? due.toISOString() : null,
-              overdue: due ? due.getTime() < Date.now() : false,
+              overdue: view === "desk" ? isOverdue(row, slaTargets) : false,
             };
           }),
         } : {}),
@@ -6870,6 +7820,146 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/dashboard/overview") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const license = (await licenseQuery(actor.org_id)).rows[0];
+      const monitor = monitoringAllowed(license);
+      const patch = patchAllowed(license);
+      const ticketing = ticketingAllowed(license);
+      const customers = await pool.query(
+        "SELECT id, name FROM customers WHERE org_id = $1 ORDER BY name",
+        [actor.org_id],
+      );
+      let customer = customerScope(url.searchParams.get("customer"));
+      if (customer && customer !== "none" && !customers.rows.some((row) => String(row.id) === customer)) customer = null;
+      const { items, releases } = await fleetItems(actor.org_id, { patch, customer });
+      const overview = overviewFrom(items, { releases, monitor, patch });
+      let tickets = null;
+      if (ticketing) {
+        const book = await slaBook(actor.org_id);
+        const unresolved = await pool.query(
+          `SELECT t.id, t.status, t.created_at, c.sla_plan_id
+           FROM tickets t
+           JOIN customers c ON c.id = t.customer_id
+           WHERE t.org_id = $1 AND t.status <> 'resolved'
+             AND ($2::text IS NULL OR c.id::text = $2)`,
+          [actor.org_id, customer === "none" ? "-1" : customer],
+        );
+        const now = new Date();
+        const overdue = unresolved.rows.filter((ticket) => isOverdue(ticket, slaFor(book, ticket.sla_plan_id), now)).length;
+        tickets = {
+          open: unresolved.rows.filter((ticket) => ticket.status === "open").length,
+          overdue,
+          sla: Boolean(book.base) || book.plans.size > 0,
+        };
+      }
+      let alerts = null;
+      if (monitor) {
+        const scope = `($2::text IS NULL OR ($2 = 'none' AND s.customer_id IS NULL) OR s.customer_id::text = $2)`;
+        const [recent, byCustomer] = await Promise.all([
+          pool.query(
+            `SELECT a.id, a.metric, a.value, a.threshold, a.created_at, d.id AS device_id,
+                    COALESCE(NULLIF(d.display_name, ''), d.hostname) AS device_name
+             FROM alerts a
+             JOIN devices d ON d.id = a.device_id AND d.org_id = a.org_id
+             LEFT JOIN sites s ON s.id = d.site_id
+             WHERE a.org_id = $1 AND ${scope}
+             ORDER BY a.id DESC
+             LIMIT 5`,
+            [actor.org_id, customer],
+          ),
+          pool.query(
+            `SELECT s.customer_id, count(*)::int AS count
+             FROM alerts a
+             JOIN devices d ON d.id = a.device_id AND d.org_id = a.org_id
+             JOIN sites s ON s.id = d.site_id
+             WHERE a.org_id = $1 AND a.created_at > now() - interval '7 days' AND ${scope}
+             GROUP BY s.customer_id
+             ORDER BY count DESC
+             LIMIT 5`,
+            [actor.org_id, customer],
+          ),
+        ]);
+        const names = new Map(customers.rows.map((row) => [String(row.id), row.name]));
+        alerts = {
+          recent: recent.rows.map((row) => ({
+            id: Number(row.id),
+            deviceId: Number(row.device_id),
+            device: row.device_name,
+            metric: ALERT_LABELS[row.metric] || row.metric,
+            value: row.value,
+            threshold: row.threshold,
+            createdAt: row.created_at,
+          })),
+          topCustomers: byCustomer.rows.map((row) => ({
+            id: Number(row.customer_id),
+            name: names.get(String(row.customer_id)) || "Customer",
+            count: row.count,
+          })),
+        };
+      }
+      const org = await pool.query("SELECT name FROM orgs WHERE id = $1", [actor.org_id]);
+      return send(res, 200, {
+        ...overview,
+        orgName: org.rows[0]?.name || "",
+        customer,
+        customers: customers.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+        tickets,
+        alerts,
+        canMonitor: monitor,
+        canPatch: patch,
+        canTicket: ticketing,
+        canReport: reportingAllowed(license),
+        canUpdateAgents: canOperate(actor),
+        generatedAt: new Date().toISOString(),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/devices/agent-update/outdated") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "agent.update.deny", "device", "bulk", { reason: "role" });
+        return send(res, 403, { error: "Only an owner or admin can update agents." });
+      }
+      const body = await readJson(req);
+      const [release, linux] = await Promise.all([agentRelease(), linuxRelease()]);
+      if (!release && !linux) return send(res, 503, { error: "No agent build is published yet." });
+      const { items } = await fleetItems(actor.org_id, { customer: customerScope(body.customer) });
+      const updatable = items.filter((item) => item.facts.updatable);
+      const ids = updatable.filter((item) => item.facts.platform === "windows").map((item) => Number(item.row.id));
+      const linuxIds = updatable.filter((item) => item.facts.platform === "linux").map((item) => Number(item.row.id));
+      if (ids.length) {
+        await pool.query(
+          "UPDATE devices SET agent_update_requested_at = now() WHERE org_id = $1 AND id = ANY($2::bigint[])",
+          [actor.org_id, ids],
+        );
+      }
+      const sent = [];
+      const failed = [];
+      if (linuxIds.length && linux) {
+        const rows = await pool.query(
+          "SELECT id, hostname, display_name, mesh_node_id, os_name, agent_version FROM devices WHERE org_id = $1 AND id = ANY($2::bigint[])",
+          [actor.org_id, linuxIds],
+        );
+        for (const row of rows.rows) {
+          const problem = await sendLinuxUpdate(row, actor.org_id, linux);
+          if (problem) failed.push({ id: Number(row.id), hostname: row.hostname, error: problem });
+          else sent.push(Number(row.id));
+        }
+      }
+      if (!ids.length && !linuxIds.length) return send(res, 200, { queued: 0, sent: 0, failed: [], version: release?.version || "" });
+      await writeAudit(actor.org_id, actor.id, "agent.update.bulk", "device", "bulk", {
+        to: release?.version || "",
+        toLinux: linux?.version || "",
+        devices: ids,
+        linux: sent,
+        ...(failed.length ? { failed: failed.map((item) => item.id) } : {}),
+      });
+      return send(res, 202, { queued: ids.length, sent: sent.length, failed, version: release?.version || "", linuxVersion: linux?.version || "" });
+    }
+
     if (req.method === "GET" && url.pathname === "/v1/dashboard") {
       if (!(await requireReporting(actor, res))) return;
       const snapshot = await dashboardSnapshot(actor.org_id);
@@ -6901,6 +7991,184 @@ const server = createServer(async (req, res) => {
         if (error.code === "23505") return send(res, 409, { error: "That org already has an export schedule." });
         throw error;
       }
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/reports") {
+      if (!(await requireReporting(actor, res))) return;
+      const license = (await licenseQuery(actor.org_id)).rows[0];
+      const customers = await pool.query("SELECT id, name FROM customers WHERE org_id = $1 ORDER BY lower(name)", [actor.org_id]);
+      const ticketing = ticketingAllowed(license);
+      return send(res, 200, {
+        reports: REPORTS.map(({ key, title, description, needs }) => ({ key, title, description, available: needs !== "ticketing" || ticketing })),
+        customers: customers.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+        canManage: canOperate(actor),
+      });
+    }
+
+    const reportMatch = url.pathname.match(/^\/v1\/reports\/([a-z-]{2,20})$/);
+    if (req.method === "GET" && reportMatch) {
+      if (!(await requireReporting(actor, res))) return;
+      const format = String(url.searchParams.get("format") || "json");
+      if (!["json", "csv", "pdf"].includes(format)) return send(res, 400, { error: "Choose json, csv or pdf." });
+      const rawCustomer = String(url.searchParams.get("customer") || "");
+      const customer = customerScope(rawCustomer);
+      if (rawCustomer && customer == null) return send(res, 404, { error: "Customer not found." });
+      const { from, to } = reportRange(url.searchParams.get("from"), url.searchParams.get("to"));
+      const drill = {
+        country: String(url.searchParams.get("country") || "").trim().slice(0, 100),
+        region: String(url.searchParams.get("region") || "").trim().slice(0, 100),
+      };
+      if (!drill.country) drill.region = "";
+      const [license, org] = await Promise.all([
+        licenseQuery(actor.org_id),
+        pool.query("SELECT name FROM orgs WHERE id = $1", [actor.org_id]),
+      ]);
+      let report;
+      try {
+        report = await makeReport(reportMatch[1], {
+          orgId: actor.org_id, orgName: org.rows[0]?.name || "", customer, from, to, drill, license: license.rows[0],
+        });
+      } catch (error) {
+        if (error.status) return send(res, error.status, { error: error.message });
+        throw error;
+      }
+      if (format === "json") return send(res, 200, reportJson(report));
+      await writeAudit(actor.org_id, actor.id, "report.download", "report", report.key, { format, from, to, customer });
+      const body = format === "csv" ? Buffer.from(reportCsv(report), "utf8") : reportPdf(report);
+      res.writeHead(200, {
+        "content-type": format === "csv" ? "text/csv; charset=utf-8" : "application/pdf",
+        "content-disposition": `attachment; filename="${reportFileName(report, format)}"`,
+        "content-length": body.length,
+        "cache-control": "no-store",
+      });
+      res.end(body);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/report-subscriptions") {
+      if (!(await requireReporting(actor, res))) return;
+      const [subs, deliveries, contacts, schedule] = await Promise.all([
+        pool.query(
+          `SELECT rs.id, rs.report_key, rs.customer_id, c.name AS customer_name, rs.contact_id, ct.name AS contact_name,
+                  rs.email, rs.next_run_at, rs.created_at, u.name AS created_by_name
+           FROM report_subscriptions rs
+           LEFT JOIN customers c ON c.id = rs.customer_id
+           LEFT JOIN contacts ct ON ct.id = rs.contact_id
+           LEFT JOIN users u ON u.id = rs.created_by
+           WHERE rs.org_id = $1
+           ORDER BY rs.id`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT d.id, d.report_key, c.name AS customer_name, d.email, d.period_from::text, d.period_to::text,
+                  d.status, d.detail, d.pdf_bytes, d.created_at
+           FROM report_deliveries d
+           LEFT JOIN customers c ON c.id = d.customer_id
+           WHERE d.org_id = $1
+           ORDER BY d.id DESC
+           LIMIT 50`,
+          [actor.org_id],
+        ),
+        pool.query(
+          `SELECT ct.id, ct.customer_id, ct.name, ct.email, ct.is_primary
+           FROM contacts ct
+           WHERE ct.org_id = $1 AND ct.email IS NOT NULL AND btrim(ct.email) <> ''
+           ORDER BY ct.is_primary DESC, lower(ct.name)`,
+          [actor.org_id],
+        ),
+        latestExport(actor.org_id),
+      ]);
+      const title = (key) => reportByKey(key)?.title || key;
+      return send(res, 200, {
+        subscriptions: subs.rows.map((row) => ({
+          id: Number(row.id), report: row.report_key, reportTitle: title(row.report_key),
+          customerId: row.customer_id == null ? null : Number(row.customer_id), customerName: row.customer_name || "All customers",
+          contactName: row.contact_name || null, email: row.email, nextRunAt: row.next_run_at, createdBy: row.created_by_name || null,
+        })),
+        deliveries: deliveries.rows.map((row) => ({
+          id: Number(row.id), report: row.report_key, reportTitle: title(row.report_key), customerName: row.customer_name || "All customers",
+          email: row.email, from: row.period_from, to: row.period_to, status: row.status, detail: row.detail,
+          pdfBytes: row.pdf_bytes, createdAt: row.created_at,
+        })),
+        contacts: contacts.rows.map((row) => ({ id: Number(row.id), customerId: Number(row.customer_id), name: row.name, email: row.email, primary: row.is_primary })),
+        schedule: schedule ? { ...schedule, latest: schedule.latest ? { ...schedule.latest, csv: undefined } : null } : null,
+        canManage: canOperate(actor),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/report-subscriptions") {
+      if (!(await requireReporting(actor, res, { deny: true }))) return;
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can schedule emailed reports." });
+      const body = await readJson(req);
+      const meta = reportByKey(String(body.report || ""));
+      if (!meta) return send(res, 400, { error: "Choose a report." });
+      const license = (await licenseQuery(actor.org_id)).rows[0];
+      if (meta.needs === "ticketing" && !ticketingAllowed(license)) return send(res, 403, { error: "Service Desk reports need Service Desk in your package." });
+      let customerId = null;
+      if (body.customerId != null && body.customerId !== "") {
+        const found = await pool.query("SELECT id FROM customers WHERE id = $1 AND org_id = $2", [Number(body.customerId) || 0, actor.org_id]);
+        if (!found.rows[0]) return send(res, 404, { error: "Customer not found." });
+        customerId = Number(found.rows[0].id);
+      }
+      let contactId = null;
+      let email = String(body.email || "").trim().toLowerCase();
+      if (body.contactId != null && body.contactId !== "") {
+        const contact = await pool.query(
+          "SELECT id, customer_id, email FROM contacts WHERE id = $1 AND org_id = $2",
+          [Number(body.contactId) || 0, actor.org_id],
+        );
+        const row = contact.rows[0];
+        if (!row) return send(res, 404, { error: "Contact not found." });
+        if (customerId != null && Number(row.customer_id) !== customerId) return send(res, 400, { error: "That contact belongs to a different customer." });
+        if (!row.email) return send(res, 400, { error: "That contact has no email address." });
+        contactId = Number(row.id);
+        email = String(row.email).trim().toLowerCase();
+      }
+      if (!/^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/.test(email) || email.length > 254) {
+        return send(res, 400, { error: "Enter a valid email address." });
+      }
+      const inserted = await pool.query(
+        `INSERT INTO report_subscriptions (org_id, report_key, customer_id, contact_id, email, next_run_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, next_run_at`,
+        [actor.org_id, meta.key, customerId, contactId, email, nextMonthlyRun(), actor.id],
+      );
+      await writeAudit(actor.org_id, actor.id, "report.subscribe", "report_subscription", String(inserted.rows[0].id), {
+        report: meta.key, customerId, contactId,
+      });
+      return send(res, 201, { id: Number(inserted.rows[0].id), nextRunAt: inserted.rows[0].next_run_at });
+    }
+
+    const subscriptionMatch = url.pathname.match(/^\/v1\/report-subscriptions\/(\d{1,18})(\/send)?$/);
+    if (subscriptionMatch && ((req.method === "DELETE" && !subscriptionMatch[2]) || (req.method === "POST" && subscriptionMatch[2]))) {
+      if (!(await requireReporting(actor, res, { deny: true }))) return;
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can change emailed reports." });
+      const found = await pool.query(
+        `SELECT rs.*, (SELECT name FROM contacts ct WHERE ct.id = rs.contact_id) AS contact_name
+         FROM report_subscriptions rs WHERE rs.id = $1 AND rs.org_id = $2`,
+        [subscriptionMatch[1], actor.org_id],
+      );
+      if (!found.rows[0]) return send(res, 404, { error: "Scheduled report not found." });
+      if (req.method === "DELETE") {
+        await pool.query("DELETE FROM report_subscriptions WHERE id = $1 AND org_id = $2", [found.rows[0].id, actor.org_id]);
+        await writeAudit(actor.org_id, actor.id, "report.unsubscribe", "report_subscription", String(found.rows[0].id), {
+          report: found.rows[0].report_key,
+        });
+        return send(res, 200, { ok: true });
+      }
+      const result = await deliverSubscription({ ...found.rows[0], actor_id: actor.id });
+      return send(res, result.status === "sent" ? 200 : 502, { status: result.status, error: result.detail || undefined });
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/v1/report-schedules") {
+      if (!(await requireReporting(actor, res, { deny: true }))) return;
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can stop the export." });
+      const removed = await pool.query("SELECT id FROM report_schedules WHERE org_id = $1", [actor.org_id]);
+      if (!removed.rows[0]) return send(res, 404, { error: "No export is scheduled." });
+      await pool.query("DELETE FROM report_runs WHERE org_id = $1", [actor.org_id]);
+      await pool.query("DELETE FROM report_schedules WHERE org_id = $1", [actor.org_id]);
+      await writeAudit(actor.org_id, actor.id, "report.unschedule", "org", String(actor.org_id), {});
+      return send(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/report-runs/latest") {
@@ -7295,32 +8563,28 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { id: Number(updated.rows[0].id), status: "queued" });
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/tickets/export") {
+      if (!(await requireTicketing(actor, res))) return;
+      const filters = parseListQuery(url.searchParams);
+      const picked = new Set(String(url.searchParams.get("ids") || "").split(",").map(Number).filter((id) => Number.isInteger(id) && id > 0));
+      const all = await ticketListRows(actor.org_id);
+      const matched = picked.size ? all.filter((ticket) => picked.has(ticket.id)) : filterTickets(all, filters, Number(actor.id));
+      const rows = sortTickets(matched, filters.sort, filters.dir).slice(0, EXPORT_LIMIT);
+      await writeAudit(actor.org_id, actor.id, "ticket.export", "ticket", null, { count: rows.length });
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="tickets-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "cache-control": "no-store",
+      });
+      return res.end(ticketsCsv(rows));
+    }
+
     if (req.method === "GET" && url.pathname === "/v1/tickets") {
       if (!(await requireTicketing(actor, res))) return;
-      const [tickets, customers, devices, users] = await Promise.all([
-        pool.query(
-          `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
-                  ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
-                  t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
-                  u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
-                  (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count,
-                  GREATEST(t.updated_at, (SELECT max(tc.created_at) FROM ticket_comments tc WHERE tc.ticket_id = t.id)) AS last_activity_at,
-                  CASE
-                    WHEN EXISTS (SELECT 1 FROM alerts a WHERE a.ticket_id = t.id) THEN 'alert'
-                    WHEN EXISTS (SELECT 1 FROM support_sessions ss WHERE ss.ticket_id = t.id) THEN 'support'
-                    WHEN t.created_by IS NULL THEN 'automatic'
-                    ELSE 'console'
-                  END AS channel
-           FROM tickets t
-           JOIN customers c ON c.id = t.customer_id
-           LEFT JOIN devices d ON d.id = t.device_id
-           LEFT JOIN users u ON u.id = t.assignee_user_id
-           ${TICKET_CONTACT_JOIN}
-           WHERE t.org_id = $1
-           ORDER BY t.id DESC
-           LIMIT 2000`,
-          [actor.org_id],
-        ),
+      const me = Number(actor.id);
+      const filters = parseListQuery(url.searchParams);
+      const [all, customers, devices, users, views, prefs] = await Promise.all([
+        ticketListRows(actor.org_id),
         pool.query(
           `SELECT c.id, c.name,
                   COALESCE(json_agg(json_build_object('id', ct.id, 'name', ct.name, 'primary', ct.is_primary)
@@ -7342,22 +8606,51 @@ const server = createServer(async (req, res) => {
           [actor.org_id],
         ),
         pool.query("SELECT id, name, email FROM users WHERE org_id = $1 ORDER BY name", [actor.org_id]),
+        pool.query(
+          `SELECT v.id, v.name, v.query, v.columns, v.shared, v.user_id, u.name AS owner_name
+           FROM ticket_saved_views v
+           JOIN users u ON u.id = v.user_id
+           WHERE v.org_id = $1 AND (v.shared OR v.user_id = $2)
+           ORDER BY v.shared, lower(v.name)`,
+          [actor.org_id, actor.id],
+        ),
+        pool.query("SELECT columns FROM ticket_list_prefs WHERE user_id = $1 AND org_id = $2", [actor.id, actor.org_id]),
       ]);
       const book = await slaBook(actor.org_id);
       const sla = book.base;
+      const matched = sortTickets(filterTickets(all, filters, me), filters.sort, filters.dir);
+      const page = pageOf(matched, filters.page);
+      const categories = new Map();
+      const tags = new Map();
+      for (const ticket of all) {
+        if (ticket.category) categories.set(ticket.category.toLowerCase(), ticket.category);
+        for (const tag of ticket.tags) tags.set(tag.toLowerCase(), tag);
+      }
+      const license = (await licenseQuery(actor.org_id)).rows[0];
       return send(res, 200, {
-        me: Number(actor.id),
-        tickets: tickets.rows.map((row) => {
-          const due = ticketDue(row, slaFor(book, row.sla_plan_id));
-          return {
-            ...ticketView(row),
-            commentCount: row.comment_count,
-            lastActivityAt: row.last_activity_at || row.updated_at,
-            dueAt: due ? due.toISOString() : null,
-            overdue: due ? due.getTime() < Date.now() : false,
-            channel: row.channel,
-          };
-        }),
+        me,
+        tickets: page.items,
+        total: page.total,
+        page: page.page,
+        pages: page.pages,
+        pageSize: PAGE_SIZE,
+        counts: viewCounts(all, me),
+        categories: [...categories.values()].sort((a, b) => a.localeCompare(b)),
+        tags: [...tags.values()].sort((a, b) => a.localeCompare(b)),
+        columns: cleanColumns(prefs.rows[0]?.columns) || DEFAULT_COLUMNS,
+        defaultColumns: DEFAULT_COLUMNS,
+        allColumns: LIST_COLUMNS,
+        views: views.rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name,
+          query: row.query,
+          columns: cleanColumns(row.columns),
+          shared: row.shared,
+          ownerName: row.owner_name,
+          mine: Number(row.user_id) === me,
+          canDelete: Number(row.user_id) === me || (row.shared && canOperate(actor)),
+        })),
+        canOperate: canOperate(actor),
         customers: customers.rows.map((row) => ({
           id: Number(row.id),
           name: row.name,
@@ -7366,9 +8659,9 @@ const server = createServer(async (req, res) => {
         devices: devices.rows.map(deviceChoice),
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
         sla,
-        canPatch: patchAllowed((await licenseQuery(actor.org_id)).rows[0]),
-        canReport: reportingAllowed((await licenseQuery(actor.org_id)).rows[0]),
-        canMonitor: monitoringAllowed((await licenseQuery(actor.org_id)).rows[0]),
+        canPatch: patchAllowed(license),
+        canReport: reportingAllowed(license),
+        canMonitor: monitoringAllowed(license),
       });
     }
 
@@ -7481,45 +8774,194 @@ const server = createServer(async (req, res) => {
       const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number))].filter(Number.isInteger) : [];
       if (ids.length === 0 || ids.length > 200) return send(res, 400, { error: "Choose up to 200 tickets." });
       const status = body.status == null || body.status === "" ? null : body.status;
+      const priority = body.priority == null || body.priority === "" ? null : body.priority;
       const assign = Object.hasOwn(body, "assigneeUserId");
       const assigneeUserId = !assign || body.assigneeUserId == null || body.assigneeUserId === "" ? null : Number(body.assigneeUserId);
+      const setCategory = Object.hasOwn(body, "category");
+      const category = setCategory ? cleanCategory(body.category) : null;
+      const addTags = cleanTags(body.addTags);
+      const removeTags = cleanTags(body.removeTags).map((tag) => tag.toLowerCase());
       if (status !== null && !TICKET_STATUSES.has(status)) return send(res, 400, { error: "Choose a status." });
-      if (status === null && !assign) return send(res, 400, { error: "Choose a change." });
+      if (priority !== null && !TICKET_PRIORITIES.has(priority)) return send(res, 400, { error: "Choose a priority." });
+      if (status === null && priority === null && !assign && !setCategory && !addTags.length && !removeTags.length) {
+        return send(res, 400, { error: "Choose a change." });
+      }
       if (assigneeUserId != null) {
         const assignee = await pool.query("SELECT id FROM users WHERE id = $1 AND org_id = $2", [assigneeUserId, actor.org_id]);
         if (!assignee.rows[0]) return send(res, 400, { error: "Choose an assignee in this organisation." });
       }
-      const updated = await pool.query(
-        `WITH old AS (
-           SELECT id, status, assignee_user_id FROM tickets
-           WHERE org_id = $4 AND id = ANY($5::bigint[])
-           FOR UPDATE
-         )
-         UPDATE tickets t
-         SET status = COALESCE($1, t.status),
-             assignee_user_id = CASE WHEN $2::boolean THEN $3::bigint ELSE t.assignee_user_id END,
-             updated_at = now()
-         FROM old
-         WHERE t.id = old.id
-         RETURNING t.id, t.status, t.priority, t.assignee_user_id, old.status AS old_status, old.assignee_user_id AS old_assignee`,
-        [status, assign, assigneeUserId, actor.org_id, ids],
-      );
-      for (const row of updated.rows) {
-        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(row.id), {
-          status: row.status,
-          priority: row.priority,
-          assigneeUserId: row.assignee_user_id == null ? null : Number(row.assignee_user_id),
+      const updated = await inTransaction(async (client) => {
+        const old = await client.query(
+          `SELECT id, status, priority, assignee_user_id, category, tags FROM tickets
+           WHERE org_id = $1 AND id = ANY($2::bigint[])
+           ORDER BY id
+           FOR UPDATE`,
+          [actor.org_id, ids],
+        );
+        const rows = [];
+        for (const row of old.rows) {
+          let tags = row.tags || [];
+          if (removeTags.length) tags = tags.filter((tag) => !removeTags.includes(tag.toLowerCase()));
+          if (addTags.length) tags = cleanTags([...tags, ...addTags]);
+          const saved = await client.query(
+            `UPDATE tickets
+             SET status = COALESCE($1, status),
+                 priority = COALESCE($2, priority),
+                 assignee_user_id = CASE WHEN $3::boolean THEN $4::bigint ELSE assignee_user_id END,
+                 category = CASE WHEN $5::boolean THEN $6 ELSE category END,
+                 tags = $7::text[],
+                 updated_at = now()
+             WHERE id = $8
+             RETURNING id, status, priority, assignee_user_id, category, tags`,
+            [status, priority, assign, assigneeUserId, setCategory, category, tags, row.id],
+          );
+          rows.push({ before: row, after: saved.rows[0] });
+        }
+        return rows;
+      });
+      for (const { before, after } of updated) {
+        await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(after.id), {
+          status: after.status,
+          priority: after.priority,
+          assigneeUserId: after.assignee_user_id == null ? null : Number(after.assignee_user_id),
+          category: after.category,
+          tags: after.tags,
           bulk: true,
         });
         await ticketChangeEvents(
           actor.org_id,
-          row.id,
-          { status: row.old_status, assigneeUserId: row.old_assignee },
-          { ...(status !== null ? { status: row.status } : {}), ...(assign ? { assigneeUserId: row.assignee_user_id } : {}) },
+          after.id,
+          {
+            status: before.status,
+            priority: before.priority,
+            assigneeUserId: before.assignee_user_id,
+            category: before.category,
+            tags: before.tags || [],
+          },
+          {
+            ...(status !== null ? { status: after.status } : {}),
+            ...(priority !== null ? { priority: after.priority } : {}),
+            ...(assign ? { assigneeUserId: after.assignee_user_id } : {}),
+            ...(setCategory ? { category: after.category } : {}),
+            ...(addTags.length || removeTags.length ? { tags: after.tags } : {}),
+          },
           { actorId: actor.id },
         );
       }
-      return send(res, 200, { updated: updated.rows.length });
+      return send(res, 200, { updated: updated.length });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/tickets/merge") {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const targetId = Number(body.targetId);
+      const sources = Array.isArray(body.ids)
+        ? [...new Set(body.ids.map(Number))].filter((id) => Number.isInteger(id) && id !== targetId)
+        : [];
+      if (!Number.isInteger(targetId) || sources.length === 0 || sources.length > 20) {
+        return send(res, 400, { error: "Choose the ticket to keep and up to 20 others to merge into it." });
+      }
+      const outcome = await inTransaction(async (client) => {
+        const found = await client.query(
+          `SELECT id, customer_id, merged_into_id FROM tickets
+           WHERE org_id = $1 AND id = ANY($2::bigint[])
+           ORDER BY id
+           FOR UPDATE`,
+          [actor.org_id, [targetId, ...sources]],
+        );
+        if (found.rows.length !== sources.length + 1) return { rollback: true, status: 404, error: "Ticket not found." };
+        if (found.rows.some((row) => row.merged_into_id != null)) {
+          return { rollback: true, status: 409, error: "One of those tickets was already merged." };
+        }
+        const target = found.rows.find((row) => Number(row.id) === targetId);
+        if (found.rows.some((row) => String(row.customer_id) !== String(target.customer_id))) {
+          return { rollback: true, status: 409, error: "Only tickets for the same customer can be merged." };
+        }
+        for (const sourceId of sources) {
+          await client.query(
+            `INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
+             SELECT org_id, $2, kind, actor_user_id, actor_label, detail || jsonb_build_object('mergedFrom', $1::bigint), created_at
+             FROM ticket_events
+             WHERE ticket_id = $1 AND org_id = $3 AND kind <> 'created'`,
+            [sourceId, targetId, actor.org_id],
+          );
+          await client.query("UPDATE ticket_comments SET ticket_id = $2 WHERE ticket_id = $1", [sourceId, targetId]);
+          await client.query("UPDATE ticket_attachments SET ticket_id = $2 WHERE ticket_id = $1 AND org_id = $3", [sourceId, targetId, actor.org_id]);
+          await client.query("UPDATE ticket_time_entries SET ticket_id = $2 WHERE ticket_id = $1 AND org_id = $3", [sourceId, targetId, actor.org_id]);
+          await client.query("DELETE FROM ticket_timers WHERE ticket_id = $1", [sourceId]);
+          const closed = await client.query(
+            `UPDATE tickets t SET status = 'resolved', merged_into_id = $2, updated_at = now()
+             FROM (SELECT status FROM tickets WHERE id = $1) old
+             WHERE t.id = $1
+             RETURNING old.status AS old_status`,
+            [sourceId, targetId],
+          );
+          await ticketEvent(actor.org_id, sourceId, "merged", { actorId: actor.id, detail: { into: targetId }, db: client });
+          if (closed.rows[0].old_status !== "resolved") {
+            await ticketEvent(actor.org_id, sourceId, "status", {
+              actorId: actor.id,
+              detail: { from: closed.rows[0].old_status, to: "resolved" },
+              db: client,
+            });
+          }
+        }
+        await client.query("UPDATE tickets SET updated_at = now() WHERE id = $1", [targetId]);
+        await ticketEvent(actor.org_id, targetId, "merged_from", { actorId: actor.id, detail: { tickets: sources }, db: client });
+        return { ok: true };
+      });
+      if (outcome.error) return send(res, outcome.status, { error: outcome.error });
+      await writeAudit(actor.org_id, actor.id, "ticket.merge", "ticket", String(targetId), { merged: sources });
+      return send(res, 200, { targetId, merged: sources.length });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/ticket-views") {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const body = await readJson(req);
+      const name = String(body.name || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      if (!name) return send(res, 400, { error: "Name the view." });
+      const shared = body.shared === true;
+      if (shared && !canOperate(actor)) return send(res, 403, { error: "Only operators can share views with the team." });
+      const count = await pool.query("SELECT count(*)::int AS n FROM ticket_saved_views WHERE user_id = $1", [actor.id]);
+      if (count.rows[0].n >= 50) return send(res, 400, { error: "You can keep up to 50 saved views." });
+      const created = await pool.query(
+        `INSERT INTO ticket_saved_views (org_id, user_id, name, query, columns, shared)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id`,
+        [actor.org_id, actor.id, name, cleanViewQuery(body.query), cleanColumns(body.columns), shared],
+      );
+      await writeAudit(actor.org_id, actor.id, "ticket_view.create", "ticket_view", String(created.rows[0].id), { name, shared });
+      return send(res, 201, { id: Number(created.rows[0].id) });
+    }
+
+    const ticketViewMatch = url.pathname.match(/^\/v1\/ticket-views\/(\d+)$/);
+    if (req.method === "DELETE" && ticketViewMatch) {
+      if (!(await requireTicketing(actor, res, { deny: true }))) return;
+      const removed = await pool.query(
+        `DELETE FROM ticket_saved_views
+         WHERE id = $1 AND org_id = $2 AND (user_id = $3 OR (shared AND $4::boolean))
+         RETURNING id, name`,
+        [ticketViewMatch[1], actor.org_id, actor.id, canOperate(actor)],
+      );
+      if (!removed.rows[0]) return send(res, 404, { error: "View not found." });
+      await writeAudit(actor.org_id, actor.id, "ticket_view.delete", "ticket_view", ticketViewMatch[1], { name: removed.rows[0].name });
+      return send(res, 200, { ok: true });
+    }
+
+    if (req.method === "PUT" && url.pathname === "/v1/ticket-list/columns") {
+      if (!(await requireTicketing(actor, res))) return;
+      const body = await readJson(req);
+      const columns = body.reset === true ? null : cleanColumns(body.columns);
+      if (body.reset === true) {
+        await pool.query("DELETE FROM ticket_list_prefs WHERE user_id = $1", [actor.id]);
+        return send(res, 200, { columns: DEFAULT_COLUMNS });
+      }
+      if (!columns) return send(res, 400, { error: "Keep the Subject column." });
+      await pool.query(
+        `INSERT INTO ticket_list_prefs (user_id, org_id, columns) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id) DO UPDATE SET columns = EXCLUDED.columns, updated_at = now()`,
+        [actor.id, actor.org_id, columns],
+      );
+      return send(res, 200, { columns });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/attachments") {
@@ -7736,9 +9178,13 @@ const server = createServer(async (req, res) => {
         if ((contactId != null && !Number.isInteger(contactId)) || (deviceId != null && !Number.isInteger(deviceId))) {
           return send(res, 400, { error: "Choose a contact and device." });
         }
+        const changeCategory = Object.hasOwn(body, "category");
+        const changeTags = Object.hasOwn(body, "tags");
+        const category = changeCategory ? cleanCategory(body.category) : null;
+        const tags = changeTags ? cleanTags(body.tags) : null;
         const outcome = await inTransaction(async (client) => {
           const current = await client.query(
-            `SELECT id, customer_id, status, priority, assignee_user_id, contact_id, device_id
+            `SELECT id, customer_id, status, priority, assignee_user_id, contact_id, device_id, category, tags
              FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE`,
             [ticketMatch[1], actor.org_id],
           );
@@ -7757,9 +9203,14 @@ const server = createServer(async (req, res) => {
             `UPDATE tickets
              SET status = $1, priority = $2, assignee_user_id = $3, updated_at = now(),
                  contact_id = CASE WHEN $4::boolean THEN $5::bigint ELSE contact_id END,
-                 device_id = CASE WHEN $6::boolean THEN $7::bigint ELSE device_id END
+                 device_id = CASE WHEN $6::boolean THEN $7::bigint ELSE device_id END,
+                 category = CASE WHEN $9::boolean THEN $10 ELSE category END,
+                 tags = CASE WHEN $11::boolean THEN $12::text[] ELSE tags END
              WHERE id = $8`,
-            [status, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id],
+            [
+              status, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id,
+              changeCategory, category, changeTags, tags || [],
+            ],
           );
           const before = current.rows[0];
           await ticketChangeEvents(
@@ -7771,6 +9222,8 @@ const server = createServer(async (req, res) => {
               assigneeUserId: before.assignee_user_id,
               contactId: before.contact_id,
               deviceId: before.device_id,
+              category: before.category,
+              tags: before.tags || [],
             },
             {
               status,
@@ -7778,6 +9231,8 @@ const server = createServer(async (req, res) => {
               assigneeUserId,
               ...(changeContact ? { contactId } : {}),
               ...(changeDevice ? { deviceId } : {}),
+              ...(changeCategory ? { category } : {}),
+              ...(changeTags ? { tags } : {}),
             },
             { actorId: actor.id, db: client },
           );
@@ -7796,10 +9251,13 @@ const server = createServer(async (req, res) => {
           assigneeUserId,
           ...(changeContact ? { contactId } : {}),
           ...(changeDevice ? { deviceId } : {}),
+          ...(changeCategory ? { category } : {}),
+          ...(changeTags ? { tags } : {}),
         });
       }
       const ticket = await pool.query(
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
+                t.category, t.tags, t.merged_into_id,
                 ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
                 d.display_name AS device_display_name, d.users AS device_users,
@@ -7831,7 +9289,7 @@ const server = createServer(async (req, res) => {
         [actor.org_id],
       );
       const view = ticketView(ticket.rows[0]);
-      const [accountContacts, deviceChoices, customerCounts] = await Promise.all([
+      const [accountContacts, deviceChoices, customerCounts, labels] = await Promise.all([
         pool.query(
           "SELECT id, name, email, phone, is_primary FROM contacts WHERE customer_id = $1 ORDER BY is_primary DESC, lower(name)",
           [ticket.rows[0].customer_id],
@@ -7851,6 +9309,12 @@ const server = createServer(async (req, res) => {
                    WHERE t.customer_id = $1 AND t.org_id = $2 AND t.status <> 'resolved') AS open_tickets`,
           [ticket.rows[0].customer_id, actor.org_id],
         ),
+        pool.query(
+          `SELECT
+             (SELECT array_agg(DISTINCT category ORDER BY category) FROM tickets WHERE org_id = $1 AND category IS NOT NULL) AS categories,
+             (SELECT array_agg(DISTINCT tag ORDER BY tag) FROM tickets, unnest(tags) AS tag WHERE org_id = $1) AS tags`,
+          [actor.org_id],
+        ),
       ]);
       const primaryContact = accountContacts.rows.find((row) => row.is_primary) || null;
       const latestJob = await pool.query(
@@ -7865,6 +9329,7 @@ const server = createServer(async (req, res) => {
       const sla = slaFor(await slaBook(actor.org_id), ticket.rows[0].sla_plan_id);
       const remoteDesk = hasApp(license.rows[0]?.entitlements, "remote");
       return send(res, 200, {
+        me: Number(actor.id),
         canRemote: remoteDesk && remoteAccess(license.rows[0]).canRemote,
         canRunCommands: remoteDesk && canOperate(actor),
         canPatch: patchAllowed(license.rows[0]),
@@ -7877,6 +9342,9 @@ const server = createServer(async (req, res) => {
         time,
         ticket: {
           ...view,
+          category: ticket.rows[0].category || null,
+          tags: ticket.rows[0].tags || [],
+          mergedIntoId: ticket.rows[0].merged_into_id == null ? null : Number(ticket.rows[0].merged_into_id),
           device: view.device
             ? {
               ...view.device,
@@ -7907,6 +9375,8 @@ const server = createServer(async (req, res) => {
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
         contacts: accountContacts.rows.map((row) => ({ id: Number(row.id), name: row.name, primary: row.is_primary })),
         devices: deviceChoices.rows.map(deviceChoice),
+        categories: labels.rows[0].categories || [],
+        tagChoices: labels.rows[0].tags || [],
         customerSummary: {
           id: Number(ticket.rows[0].customer_id),
           name: view.customer?.name || null,
@@ -7980,4 +9450,9 @@ server.listen(port, "127.0.0.1", () => {
   setInterval(isolateTenantMesh, 600000);
   setInterval(sweepTicketSessions, 60000);
   setInterval(sweepPendingAttachments, 3600000);
+  setTimeout(writeDailySnapshots, 60000);
+  setInterval(writeDailySnapshots, 600000);
+  setInterval(sampleUptime, 5 * 60000);
+  setTimeout(runDueSubscriptions, 120000);
+  setInterval(runDueSubscriptions, 600000);
 });

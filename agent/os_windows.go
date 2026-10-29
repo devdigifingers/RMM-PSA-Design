@@ -147,39 +147,64 @@ func start() error {
 
 func installInteractive() error {
 	if !elevated() {
+		if quiet() {
+			return fmt.Errorf("run PowerShell as administrator and try again")
+		}
 		return relaunchElevated()
 	}
 	if err := lockAgentDir(); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	dest := filepath.Join(agentDir, "df-agent.exe")
+	_, stateBefore := os.Stat(defaultStatePath())
 	if err := removeService(); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	if err := copySelf(dest); err != nil {
-		return tell("The old agent is still running. Close it and run this file again.")
+		return failed("The old agent is still running. Close it and run this file again.")
 	}
 	if err := placeEnrollFile(); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	if err := lockAgentDir(); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	if err := installService(dest); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	if err := installMesh(); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	if err := registerProgram(dest); err != nil {
-		return tell(err.Error())
+		return failed(err.Error())
 	}
 	_, envErr := os.Stat(filepath.Join(agentDir, "df-agent.env"))
 	_, stateErr := os.Stat(defaultStatePath())
 	if envErr != nil && stateErr != nil {
-		return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
+		return failed("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
+	}
+	if quiet() && stateBefore != nil {
+		for i := 0; i < 45; i++ {
+			if _, err := os.Stat(defaultStatePath()); err == nil {
+				return tell("Digital Fingers Agent is installed. This computer now appears under Devices.")
+			}
+			time.Sleep(time.Second)
+		}
+		return fmt.Errorf("the agent is installed but has not checked in yet; see C:\\ProgramData\\DigitalFingers\\df-agent.log")
 	}
 	return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC stays enrolled.")
+}
+
+// quiet is set by the command-line installer: results go to the console and failures set the exit code.
+func quiet() bool {
+	return hasArg("quiet")
+}
+
+func failed(text string) error {
+	if quiet() {
+		return fmt.Errorf("%s", text)
+	}
+	return tell(text)
 }
 
 func uninstalling() bool {
@@ -588,6 +613,10 @@ func copyFile(src, dest string) error {
 }
 
 func tell(text string) error {
+	if quiet() {
+		fmt.Println(text)
+		return nil
+	}
 	title, _ := windows.UTF16PtrFromString("Digital Fingers Agent")
 	body, _ := windows.UTF16PtrFromString(text)
 	_, _ = windows.MessageBox(0, body, title, windows.MB_OK|windows.MB_ICONINFORMATION)
@@ -637,6 +666,23 @@ func prettyOS() string {
 		return "Windows"
 	}
 	return name
+}
+
+func osRelease() (string, string) {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
+	if err != nil {
+		return "", ""
+	}
+	defer key.Close()
+	version, _, _ := key.GetStringValue("DisplayVersion")
+	if version == "" {
+		version, _, _ = key.GetStringValue("ReleaseId")
+	}
+	build, _, _ := key.GetStringValue("CurrentBuild")
+	if ubr, _, err := key.GetIntegerValue("UBR"); err == nil && build != "" {
+		build = fmt.Sprintf("%s.%d", build, ubr)
+	}
+	return version, build
 }
 
 func runCommand(command string) (int, string) {

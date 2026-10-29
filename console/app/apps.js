@@ -16,7 +16,7 @@ export const APPS = [
   { id: "service-desk", key: "service", entitlementKey: "servicedesk", name: "Service Desk", description: "Tickets and customer support", route: "/tickets", paths: ["/tickets", "/desk"], status: "live", ...assets("service-desk", 432) },
   { id: "monitoring", key: "monitoring", entitlementKey: "remote", name: "Monitoring", description: "Alerts and health checks", route: null, paths: [], status: "soon", ...assets("monitoring", 392) },
   { id: "billing", key: "billing", entitlementKey: null, name: "Billing", description: "Quotes and invoicing", route: null, paths: [], status: "soon", ...assets("billing", 323) },
-  { id: "reports", key: "reports", entitlementKey: "reporting", name: "Reports", description: "Reports and backups", route: null, paths: [], status: "soon", ...assets("reports", 323) },
+  { id: "reports", key: "reports", entitlementKey: "reporting", name: "Reports", description: "Fleet, session and Service Desk reports", route: "/reports", paths: ["/reports"], status: "live", ...assets("reports", 323) },
 ];
 
 export const SHOW_SOON = false;

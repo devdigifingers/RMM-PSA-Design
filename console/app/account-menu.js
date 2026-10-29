@@ -88,10 +88,10 @@ export function AccountMenu({ user }) {
             </button>
             {updates ? (
               <div className="account-platforms">
-                <p>Windows downloads one package for a new computer and for a computer that already has the agent. Extract it and run Install. Approve the administrator prompt. A new computer joins this organisation. An existing computer keeps its enrollment. A Mac agent is not available yet.</p>
-                <a href="/agent/windows"><Window /> Windows</a>
-                <span><Apple /> Mac</span>
-                <span><Penguin /> Linux</span>
+                <p>Updates the agent on a computer that already has it. The computer keeps its enrollment. Windows: extract the zip and run Install. Linux: extract it and run <code>sudo ./install.sh</code>. For a new computer, use <Link href="/downloads" onClick={close}>Downloads</Link>.</p>
+                <a href="/agent/windows?update=1"><Window /> Windows</a>
+                <span title="Coming soon"><Apple /> Mac</span>
+                <a href="/agent/linux?update=1"><Penguin /> Linux</a>
               </div>
             ) : null}
           </div>

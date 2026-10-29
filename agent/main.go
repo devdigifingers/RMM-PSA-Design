@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const agentVersion = "1.5.1"
+const agentVersion = "1.5.2"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -144,9 +144,12 @@ func enroll(api, statePath string) (savedState, error) {
 
 func heartbeat(api string, state savedState) error {
 	hostname, _ := os.Hostname()
+	osVersion, osBuild := osRelease()
 	payload := map[string]any{
 		"hostname":     hostname,
 		"osName":       currentOS(),
+		"osVersion":    osVersion,
+		"osBuild":      osBuild,
 		"users":        collectUsers(),
 		"agentVersion": agentVersion,
 	}

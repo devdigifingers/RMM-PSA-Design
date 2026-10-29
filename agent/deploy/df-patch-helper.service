@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/sbin/df-patch-helper.py
+ExecStart=/usr/local/bin/df-agent patch-helper
 Restart=on-failure
 RestartSec=3
 

@@ -693,6 +693,150 @@ BEGIN
   END IF;
 END $$;
 
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS merged_into_id bigint REFERENCES tickets (id);
+CREATE INDEX IF NOT EXISTS tickets_org_category_idx ON tickets (org_id, lower(category));
+CREATE INDEX IF NOT EXISTS tickets_tags_idx ON tickets USING gin (tags);
+
+CREATE TABLE IF NOT EXISTS ticket_saved_views (
+  id bigserial PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  user_id bigint NOT NULL REFERENCES users (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 60),
+  query text NOT NULL DEFAULT '',
+  columns text[],
+  shared boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_saved_views_org_idx ON ticket_saved_views (org_id, shared, user_id);
+
+CREATE TABLE IF NOT EXISTS ticket_list_prefs (
+  user_id bigint PRIMARY KEY REFERENCES users (id),
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  columns text[] NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE enroll_tokens ADD COLUMN IF NOT EXISTS max_uses integer NOT NULL DEFAULT 1;
+ALTER TABLE enroll_tokens ADD COLUMN IF NOT EXISTS use_count integer NOT NULL DEFAULT 0;
+ALTER TABLE enroll_tokens ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'package';
+ALTER TABLE enroll_tokens ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+UPDATE enroll_tokens SET use_count = 1 WHERE used_at IS NOT NULL AND use_count = 0;
+
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS os_version text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS os_build text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_boot_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS public_ip text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_country text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_country_name text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_region text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_city text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_lat numeric(5, 2);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_lon numeric(5, 2);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_updated_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS site_override text
+  CHECK (site_override IS NULL OR length(site_override) BETWEEN 1 AND 80);
+
+CREATE TABLE IF NOT EXISTS device_daily_stats (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint REFERENCES customers (id),
+  day date NOT NULL,
+  device_count integer NOT NULL,
+  online_count integer NOT NULL,
+  seen_day_count integer NOT NULL,
+  agent_versions jsonb NOT NULL,
+  os_counts jsonb NOT NULL,
+  country_counts jsonb NOT NULL,
+  region_counts jsonb NOT NULL,
+  patched_count integer NOT NULL,
+  missing_count integer NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE NULLS NOT DISTINCT (org_id, customer_id, day)
+);
+CREATE INDEX IF NOT EXISTS device_daily_stats_org_day_idx ON device_daily_stats (org_id, day);
+-- NULL on snapshots written before these were collected; reports show those days as gaps.
+ALTER TABLE device_daily_stats ADD COLUMN IF NOT EXISTS build_counts jsonb;
+ALTER TABLE device_daily_stats ADD COLUMN IF NOT EXISTS scanned_count integer;
+ALTER TABLE device_daily_stats ADD COLUMN IF NOT EXISTS compliant_count integer;
+
+-- Sampled every 5 minutes; online share for a day is online_checks / checks.
+CREATE TABLE IF NOT EXISTS device_uptime_daily (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  device_id bigint NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
+  day date NOT NULL,
+  checks integer NOT NULL DEFAULT 0,
+  online_checks integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (device_id, day)
+);
+CREATE INDEX IF NOT EXISTS device_uptime_daily_org_day_idx ON device_uptime_daily (org_id, day);
+
+-- One row per Connect. Mesh does not report when a viewer closes, so ended_at is the last time
+-- the device still showed a session. 'untracked' rows were backfilled from launches before tracking.
+CREATE TABLE IF NOT EXISTS remote_sessions (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  device_id bigint REFERENCES devices (id) ON DELETE SET NULL,
+  customer_id bigint REFERENCES customers (id) ON DELETE SET NULL,
+  user_id bigint REFERENCES users (id),
+  ticket_id bigint REFERENCES tickets (id),
+  device_name text NOT NULL,
+  status text NOT NULL DEFAULT 'launched'
+    CHECK (status IN ('launched', 'live', 'ended', 'untracked')),
+  started_at timestamptz NOT NULL DEFAULT now(),
+  connected_at timestamptz,
+  last_seen_at timestamptz,
+  ended_at timestamptz,
+  audit_event_id bigint UNIQUE
+);
+CREATE INDEX IF NOT EXISTS remote_sessions_org_started_idx ON remote_sessions (org_id, started_at);
+CREATE INDEX IF NOT EXISTS remote_sessions_open_idx ON remote_sessions (status) WHERE status IN ('launched', 'live');
+
+INSERT INTO remote_sessions (org_id, device_id, customer_id, user_id, ticket_id, device_name, status, started_at, audit_event_id)
+SELECT e.org_id, d.id, s.customer_id, e.actor_user_id,
+       CASE WHEN (e.detail->>'ticketId') ~ '^[0-9]+$'
+            THEN (SELECT t.id FROM tickets t WHERE t.id = (e.detail->>'ticketId')::bigint AND t.org_id = e.org_id) END,
+       COALESCE(d.display_name, d.hostname, 'Removed device'), 'untracked', e.created_at, e.id
+FROM audit_events e
+LEFT JOIN devices d ON e.target_id ~ '^[0-9]+$' AND d.id = e.target_id::bigint AND d.org_id = e.org_id
+LEFT JOIN sites s ON s.id = d.site_id
+WHERE e.action = 'remote.launch' AND e.target_type = 'device'
+  AND NOT EXISTS (SELECT 1 FROM remote_sessions WHERE status <> 'untracked')
+ON CONFLICT (audit_event_id) DO NOTHING;
+
+-- Monthly PDF of one report for one customer (or the whole org), emailed to a contact.
+CREATE TABLE IF NOT EXISTS report_subscriptions (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  report_key text NOT NULL CHECK (report_key IN ('agents', 'os', 'locations', 'patches', 'uptime', 'sessions', 'service-desk')),
+  customer_id bigint REFERENCES customers (id) ON DELETE CASCADE,
+  contact_id bigint REFERENCES contacts (id) ON DELETE SET NULL,
+  email text NOT NULL CHECK (length(email) BETWEEN 3 AND 254),
+  next_run_at timestamptz NOT NULL,
+  paused_at timestamptz,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS report_subscriptions_org_idx ON report_subscriptions (org_id, id);
+CREATE INDEX IF NOT EXISTS report_subscriptions_due_idx ON report_subscriptions (next_run_at) WHERE paused_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS report_deliveries (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  subscription_id bigint REFERENCES report_subscriptions (id) ON DELETE SET NULL,
+  report_key text NOT NULL,
+  customer_id bigint REFERENCES customers (id) ON DELETE SET NULL,
+  email text NOT NULL,
+  period_from date NOT NULL,
+  period_to date NOT NULL,
+  status text NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+  detail text,
+  pdf_bytes integer,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS report_deliveries_org_idx ON report_deliveries (org_id, id DESC);
+
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'audit_events is append-only';

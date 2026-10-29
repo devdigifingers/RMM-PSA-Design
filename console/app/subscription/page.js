@@ -20,7 +20,7 @@ export default async function SubscriptionPage() {
         {license ? (
           <>
             <div className="sub-head">
-              <p className="org-name">{orgName} · {titlePlan(license.plan)} · License {license.number}</p>
+              <p className="org-name">{orgName} · {license.package?.name || titlePlan(license.plan)} · License {license.number}</p>
               <a className="sub-change" href={`mailto:${CHANGE_EMAIL}?subject=${encodeURIComponent(subject)}`}>Request a change</a>
             </div>
             {status.warnings.map((item) => (

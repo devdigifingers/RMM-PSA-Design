@@ -426,6 +426,7 @@
         <button type="button" id="s-invite"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M19 8v6M22 11h-6"/></svg>Invite Technician</button>
         <button type="button" id="s-alttab"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/></svg>Send Alt+Tab</button>
         <button type="button" id="s-paste"><svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M9 12v-1h6v1M12 11v6M11 17h2"/></svg>Send Clipboard Keystrokes</button>
+        <button type="button" id="s-copy"><svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 10v7M9 14l3 3 3-3"/></svg>Copy Remote Clipboard</button>
         <button type="button" id="cad"><svg viewBox="0 0 24 24"><rect x="1.5" y="8.5" width="6" height="7" rx="1.5"/><rect x="9" y="8.5" width="6" height="7" rx="1.5"/><rect x="16.5" y="8.5" width="6" height="7" rx="1.5"/></svg>Send Ctrl+Alt+Del</button>
         <button type="button" id="s-shot"><svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3"/></svg>Screenshot</button>
         <div class="has-sub" id="s-keys">
@@ -833,6 +834,7 @@
         win.dfPaste = true;
         win.addEventListener("keydown", pasteGuard, true);
         win.addEventListener("keyup", pasteGuard, true);
+        win.addEventListener("keydown", copyWatch, true);
       }
       page.body.style.background = "#000";
       fitDesk(true);
@@ -1049,8 +1051,78 @@
       });
     }
 
+    // Remote to local only. Mesh's Clipboard Sync also pushes the technician's clipboard to the
+    // remote machine every second, so it stays off by default and copying is pulled on demand.
+    var REMOTE_CLIP_TAG = 77;
+    var clipReader = null;
+    var copyTimer = null;
+
+    function readRemoteClipboard(win) {
+      return new Promise(function (resolve, reject) {
+        var desk = win && win.desktop;
+        if (!desk || !desk.m || desk.contype === 2) { reject(new Error("Copying isn't available on this connection.")); return; }
+        if (desk.contype === 4) { reject(new Error("For RDP connections, turn on Session › Clipboard Sync to copy from the remote machine.")); return; }
+        if (!win.meshserver || !win.currentNode) { reject(new Error("The remote connection is not ready yet.")); return; }
+        hookMesh(win);
+        var timer = setTimeout(function () {
+          clipReader = null;
+          reject(new Error("The remote machine didn't send its clipboard."));
+        }, 8000);
+        clipReader = function (text) {
+          clearTimeout(timer);
+          clipReader = null;
+          resolve(text);
+        };
+        win.meshserver.send({ action: "msg", type: "getclip", nodeid: win.currentNode._id, tag: REMOTE_CLIP_TAG });
+      });
+    }
+
+    var lastRemoteCopy = null;
+
+    // After a key press the remote app may not have updated its clipboard yet, so an unchanged
+    // value is read once more a little later.
+    function copyRemoteClipboard(clipboard, fromKeys, retried) {
+      var win = live();
+      if (!win) return;
+      readRemoteClipboard(win).then(function (text) {
+        if (fromKeys && !retried && text === lastRemoteCopy) {
+          setTimeout(function () { copyRemoteClipboard(clipboard, true, true); }, 1200);
+          return;
+        }
+        if (!text) {
+          toast("The remote clipboard is empty.");
+          return;
+        }
+        lastRemoteCopy = text;
+        if (!clipboard || typeof clipboard.writeText !== "function") {
+          toast("This browser can't write to your clipboard.");
+          return;
+        }
+        return clipboard.writeText(text).then(function () {
+          toast(text.length > 60 ? "Copied " + text.length.toLocaleString() + " characters from the remote machine." : "Copied from the remote machine.");
+        }, function () {
+          toast("Your browser blocked the copy. Click into the remote screen and try Session › Copy Remote Clipboard.");
+        });
+      }, function (error) {
+        toast(error.message);
+      });
+    }
+
+    function copyWatch(event) {
+      if (event.type !== "keydown" || event.repeat || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+      var key = String(event.key || "").toLowerCase();
+      if (key !== "c" && key !== "x" && event.keyCode !== 67 && event.keyCode !== 88) return;
+      var tag = event.target && event.target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (event.target && event.target.isContentEditable)) return;
+      if (mode !== "view" || !live()) return;
+      var clipboard = (event.view && event.view.navigator && event.view.navigator.clipboard) || navigator.clipboard;
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function () { copyRemoteClipboard(clipboard, true, false); }, 700);
+    }
+
     window.addEventListener("keydown", pasteGuard, true);
     window.addEventListener("keyup", pasteGuard, true);
+    window.addEventListener("keydown", copyWatch, true);
     window.addEventListener("blur", function () { modHeld = false; });
     window.addEventListener("keydown", function (event) { sendKey("down", event); });
     window.addEventListener("keyup", function (event) { sendKey("up", event); });
@@ -1290,6 +1362,14 @@
       var win = meshWindow();
       closeFly();
       if (win && typeof win.showShareDevice === "function") win.showShareDevice();
+    };
+    document.getElementById("s-copy").onclick = function () {
+      closeFly();
+      if (!live()) {
+        toast("The remote connection is not ready yet.");
+        return;
+      }
+      copyRemoteClipboard(navigator.clipboard, false, false);
     };
     document.getElementById("s-paste").onclick = function () {
       var win = live();
@@ -1533,7 +1613,9 @@
       }).then(null, function (error) {
         display.error = /signed in|No answer/i.test(error.message)
           ? "Nobody is signed in at the computer's screen, so its resolution can't be read."
-          : error.message;
+          : /access denied/i.test(error.message)
+            ? "Only an owner or admin can change this computer's screen resolution."
+            : error.message;
       }).then(function () {
         display.loading = false;
         paintDisplay();
@@ -1676,6 +1758,10 @@
       win.meshserver.dfHooked = true;
       var original = win.meshserver.onMessage;
       win.meshserver.onMessage = function (server, message) {
+        if (message && message.action === "msg" && message.type === "getclip" && message.tag === REMOTE_CLIP_TAG) {
+          if (clipReader) clipReader(typeof message.data === "string" ? message.data : "");
+          return;
+        }
         var done = message && message.responseid && waiting[message.responseid];
         if (done && message.action === "msg" && message.type === "runcommands") {
           done(null, typeof message.result === "string" ? message.result : "");

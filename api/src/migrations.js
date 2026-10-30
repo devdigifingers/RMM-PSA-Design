@@ -146,7 +146,7 @@ export async function tenantApprovers(db, orgId) {
 }
 
 async function platformAdmins(db) {
-  const rows = await db.query("SELECT id, name, email FROM users WHERE is_platform_admin = true AND disabled_at IS NULL ORDER BY id");
+  const rows = await db.query("SELECT id, name, email FROM users WHERE is_platform_admin = true AND platform_role IN ('super', 'admin') AND disabled_at IS NULL ORDER BY id");
   return rows.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email }));
 }
 

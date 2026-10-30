@@ -3,6 +3,7 @@ import { pool } from "./db.js";
 import { insertAudit } from "./audit.js";
 import { mailConfigured, sendMail } from "./mail.js";
 import { parseInvite } from "./invite-input.js";
+import { PLATFORM_TEAM_NAME, acceptPlatformInvite, platformInviteByToken } from "./platform-team.js";
 
 export { parseInvite };
 
@@ -165,10 +166,10 @@ export async function handleInvites(req, res, url, actor, h) {
   const tokenMatch = url.pathname.match(/^\/v1\/invites\/([A-Za-z0-9_-]+)(\/accept)?$/);
   if (tokenMatch) {
     if (req.method === "GET" && !tokenMatch[2]) {
-      const row = await inviteByToken(pool, tokenMatch[1]);
+      const row = (await inviteByToken(pool, tokenMatch[1])) || (await platformInviteByToken(pool, tokenMatch[1]));
       const state = inviteState(row);
       if (state === "invalid") return h.send(res, 404, { error: "This invite link is not valid." }), true;
-      h.send(res, 200, { state, orgName: row.org_name, name: row.name, email: row.email });
+      h.send(res, 200, { state, orgName: row.org_name || PLATFORM_TEAM_NAME, name: row.name, email: row.email });
       return true;
     }
     if (req.method === "POST" && tokenMatch[2]) {
@@ -180,12 +181,19 @@ export async function handleInvites(req, res, url, actor, h) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const row = await inviteByToken(client, tokenMatch[1], { lock: true });
+        const tenantRow = await inviteByToken(client, tokenMatch[1], { lock: true });
+        const row = tenantRow || (await platformInviteByToken(client, tokenMatch[1], { lock: true }));
         const state = inviteState(row);
         if (state !== "open") {
           await client.query("ROLLBACK");
           const message = state === "expired" ? "This invite has expired. Ask for a new one." : state === "used" ? "This invite was already used. Sign in instead." : "This invite link is not valid.";
           return h.send(res, state === "invalid" ? 404 : 410, { error: message }), true;
+        }
+        if (!tenantRow) {
+          await acceptPlatformInvite(client, row, { name, passwordHash });
+          await client.query("COMMIT");
+          h.send(res, 201, { ok: true, email: row.email });
+          return true;
         }
         await client.query("SELECT id FROM licenses WHERE org_id = $1 FOR UPDATE", [row.org_id]);
         if ((await h.seatsLeft(client, row.org_id)) < 1) {

@@ -13,7 +13,7 @@ export default async function MfaPage({ searchParams }) {
   const account = await accountFromSession({ allowMfaSetup: true });
   if (!account) redirect("/");
   const required = account.user.mfaSetupRequired === true;
-  const card = <MfaCard enabled={account.user.mfaEnabled} orgRequires={account.org?.requireMfa === true} required={required} />;
+  const card = <MfaCard enabled={account.user.mfaEnabled} orgRequires={account.org?.requireMfa === true} platform={account.user.isPlatformAdmin === true} required={required} />;
 
   if (required) {
     return (
@@ -23,7 +23,11 @@ export default async function MfaPage({ searchParams }) {
             <div className="brand-plate"><Wordmark tagline /></div>
           </div>
           <h1>Set up MFA to continue</h1>
-          <p className="org-name">{account.org?.name || "Your organisation"} requires a code from an authenticator app for every sign-in.</p>
+          <p className="org-name">
+            {account.user.isPlatformAdmin
+              ? "Platform accounts need a code from an authenticator app for every sign-in."
+              : `${account.org?.name || "Your organisation"} requires a code from an authenticator app for every sign-in.`}
+          </p>
           {card}
           <form action={logout}>
             <button type="submit" className="mfa-login-back">Sign out</button>

@@ -80,6 +80,13 @@ Tenant migration spec:
 - A **second platform admin** must approve every migration and every rollback. With one platform admin account,
   nothing can be approved end to end.
 
+Platform team (2026-10-30):
+- Three levels: Super admin, Platform admin, Support (read-only). Only super admins manage the team.
+- Platform accounts are **deactivated, never deleted**, so the audit trail keeps its names.
+- MFA is compulsory for platform accounts. Existing accounts got a **7-day grace period**; new ones set it up at
+  first sign-in.
+- A platform email can't also be a tenant login (one email, one account).
+
 ## Phased delivery
 
 See [PHASED_PLAN.md](./PHASED_PLAN.md): 0 planning → 1 foundation → 2 PSA → 3 monitoring → 4 patch → 5 reporting.  

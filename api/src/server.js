@@ -19,6 +19,8 @@ import { dateOnly, isOverdue, listFields, resolveCustomerView, slaFor, ticketDue
 import { calendarFrom, parsePercent, percentFrom, ticketClock } from "./sla-engine.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
 import { handleInvites } from "./invites.js";
+import { handlePlatformTeam } from "./platform-team.js";
+import { mfaSetupNeeded, supportBlocked } from "./platform-team-rules.js";
 import { deskNotify, deskSetup, handleDeskSettings, notifyWatchers } from "./desk-settings.js";
 import { autoCloseSweep, deskOptions, handleDeskFlow, runAutomations } from "./desk-flow.js";
 import { emailAgentReply, emailResolved, handleDeskMail, pollMailboxes } from "./desk-mail.js";
@@ -347,7 +349,7 @@ async function issueSession(res, user) {
       email: user.email,
       name: user.name,
       isPlatformAdmin: user.is_platform_admin,
-      mfaSetupRequired: Boolean(user.require_mfa && !user.mfa_enabled_at && !user.is_platform_admin),
+      mfaSetupRequired: mfaSetupNeeded(user),
     },
   });
 }
@@ -383,7 +385,7 @@ async function actorFrom(req) {
   const session = JSON.parse(raw);
   const result = await pool.query(
     `SELECT u.id, u.email, u.name, u.org_id, u.is_platform_admin, u.account_number, u.mfa_enabled_at,
-            COALESCE(o.require_mfa, false) AS require_mfa
+            u.platform_role, u.platform_mfa_due_at, COALESCE(o.require_mfa, false) AS require_mfa
      FROM users u LEFT JOIN orgs o ON o.id = u.org_id
      WHERE u.id = $1 AND u.disabled_at IS NULL`,
     [session.userId],
@@ -402,7 +404,7 @@ async function actorFrom(req) {
     actor.roles = ["admin"];
     return actor;
   }
-  actor.mfa_setup_required = actor.require_mfa && !actor.mfa_enabled_at && !actor.is_platform_admin;
+  actor.mfa_setup_required = mfaSetupNeeded(actor);
   const roles = await pool.query(
     `SELECT r.name
      FROM user_roles ur
@@ -4954,7 +4956,7 @@ const server = createServer(async (req, res) => {
         return send(res, 429, { error: "Too many sign-in attempts. Wait 15 minutes and try again." });
       }
       const found = await pool.query(
-        `SELECT u.id, u.email, u.name, u.password_hash, u.is_platform_admin, u.disabled_at, u.org_id, u.mfa_enabled_at,
+        `SELECT u.id, u.email, u.name, u.password_hash, u.is_platform_admin, u.disabled_at, u.org_id, u.mfa_enabled_at, u.platform_mfa_due_at,
                 COALESCE(o.require_mfa, false) AS require_mfa, COALESCE(o.ip_allowlist, '{}') AS ip_allowlist
          FROM users u LEFT JOIN orgs o ON o.id = u.org_id
          WHERE u.email = $1`,
@@ -4994,7 +4996,7 @@ const server = createServer(async (req, res) => {
         return send(res, 401, { error: "expired" });
       }
       const found = await pool.query(
-        `SELECT u.id, u.email, u.name, u.is_platform_admin, u.org_id, u.mfa_secret, u.mfa_recovery, u.mfa_enabled_at,
+        `SELECT u.id, u.email, u.name, u.is_platform_admin, u.org_id, u.mfa_secret, u.mfa_recovery, u.mfa_enabled_at, u.platform_mfa_due_at,
                 COALESCE(o.require_mfa, false) AS require_mfa
          FROM users u LEFT JOIN orgs o ON o.id = u.org_id
          WHERE u.id = $1 AND u.disabled_at IS NULL`,
@@ -5055,6 +5057,9 @@ const server = createServer(async (req, res) => {
     setRequestRole(actor);
     if (actor?.mfa_setup_required && !MFA_SETUP_PATHS.has(url.pathname)) {
       return send(res, 403, { error: "mfa_setup" });
+    }
+    if (supportBlocked(actor, req.method, url.pathname)) {
+      return send(res, 403, { error: "Support accounts can look but not change anything. Ask a platform admin." });
     }
 
     if (req.method === "POST" && url.pathname === "/v1/logout") {
@@ -5275,8 +5280,10 @@ const server = createServer(async (req, res) => {
           email: actor.email,
           roles: actor.roles,
           isPlatformAdmin: actor.is_platform_admin === true,
+          platformRole: actor.is_platform_admin ? actor.platform_role : null,
           mfaEnabled: Boolean(actor.mfa_enabled_at),
           mfaSetupRequired: actor.mfa_setup_required === true,
+          mfaDueAt: actor.is_platform_admin && !actor.mfa_enabled_at ? actor.platform_mfa_due_at : null,
         },
         impersonating: actor.impersonating || null,
         org,
@@ -5508,6 +5515,7 @@ const server = createServer(async (req, res) => {
       if (action === "disable" || action === "recovery") {
         if (!actor.mfa_enabled_at) return send(res, 400, { error: "MFA is not on for this login." });
         if (action === "disable" && actor.require_mfa) return send(res, 400, { error: "Your organisation requires MFA, so it cannot be turned off." });
+        if (action === "disable" && actor.is_platform_admin) return send(res, 400, { error: "Platform accounts must keep MFA on. Another super admin can reset it if you lose your phone." });
         const body = await readJson(req);
         const found = await pool.query("SELECT id, mfa_secret, mfa_recovery FROM users WHERE id = $1", [actor.id]);
         const check = await mfaCheck(found.rows[0], body.code);
@@ -5664,6 +5672,7 @@ const server = createServer(async (req, res) => {
     }
 
     if (await handleInvites(req, res, url, actor, platformHelpers())) return;
+    if (await handlePlatformTeam(req, res, url, actor, platformHelpers())) return;
     if (await handleMigrations(req, res, url, actor, migrationHelpers())) return;
     if (await handleCsat(req, res, url, deskHelpers())) return;
     if (await handleDeskSettings(req, res, url, actor, deskHelpers())) return;

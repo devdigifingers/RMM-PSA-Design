@@ -6394,6 +6394,12 @@ html[data-theme="dark"] .time-billable { background: rgba(30, 157, 88, 0.16); co
 .admin-inline { display: flex; align-items: center; gap: 8px; }
 .admin-inline select { height: 36px; padding-top: 0; padding-bottom: 0; }
 .admin-inline button { height: 36px; padding: 0 14px; font-size: 13px; }
+.team-person strong { display: block; font-weight: 600; }
+.team-person small { color: var(--muted); font-size: 12px; }
+.team-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.team-actions form { margin: 0; }
+.control-banner { margin: 0 0 16px; padding: 10px 14px; border-radius: 12px; background: #fff7ec; font-size: 14px; }
+.control-banner a { font-weight: 600; margin-left: 6px; }
 .admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
 button.admin-secondary { background: transparent; color: var(--blue); box-shadow: inset 0 0 0 1px var(--blue); }
 button.admin-secondary:hover { background: var(--hover); }

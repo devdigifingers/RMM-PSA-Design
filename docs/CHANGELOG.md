@@ -5,6 +5,19 @@ Add an entry with every deploy or agent release.
 
 ## 2026-10-30
 
+**Platform team**
+- Control → Team lists everyone who can sign in to Control, with their level, MFA state and status.
+- Three levels: **Super admin** (everything, plus managing the team), **Platform admin** (runs Control, can't change
+  the team) and **Support** (read-only: the API refuses every change and View as tenant). Support accounts don't
+  count as migration approvers.
+- Super admins invite people by email (7-day link), change levels, deactivate or reactivate accounts, and reset a
+  lost authenticator. Nobody can change their own account there, and the last active super admin can't be demoted
+  or deactivated. Every change is in the audit log (platform entries).
+- MFA is compulsory for platform accounts and can't be turned off. Invited accounts set it up at first sign-in; the
+  two existing accounts have until 6 Nov 2026, with a banner in Control until then.
+- The server bootstrap script is now break-glass only: it creates a super admin, requires MFA at first sign-in and
+  writes an audit entry.
+
 **Tenant migrations (Tenant Migration spec)**
 - Control → Migrations, with a badge for requests waiting on you. A wizard picks the source and target tenants, what
   moves (customers and contacts, tickets with their history, devices, desk settings), all or chosen customers, Copy or

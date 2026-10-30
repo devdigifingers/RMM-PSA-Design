@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { disableMfa, enableMfa, newRecoveryCodes, startMfaSetup } from "../../../actions";
 
-export function MfaCard({ enabled, orgRequires, required }) {
+export function MfaCard({ enabled, orgRequires, platform, required }) {
   const [state, setState] = useState(enabled ? "on" : "off");
   const [setup, setSetup] = useState(null);
   const [codes, setCodes] = useState(null);
@@ -127,7 +127,9 @@ export function MfaCard({ enabled, orgRequires, required }) {
               <input name="code" inputMode="numeric" autoComplete="one-time-code" maxLength={11} placeholder="Current code" aria-label="Current code for new recovery codes" required />
               <button type="submit" className="secondary" disabled={busy}>New recovery codes</button>
             </form>
-            {orgRequires ? (
+            {platform ? (
+              <p className="org-name">Platform accounts must keep MFA on. If you lose your phone and recovery codes, another super admin can reset it on Control → Team.</p>
+            ) : orgRequires ? (
               <p className="org-name">Your organisation requires MFA, so it cannot be turned off.</p>
             ) : (
               <form onSubmit={turnOff} className="mfa-inline">

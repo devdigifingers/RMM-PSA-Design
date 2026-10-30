@@ -222,6 +222,33 @@ export async function migrationAction(formData) {
   redirect(`/control/migrations/${id}?${query}`);
 }
 
+export async function invitePlatformMember(_prev, formData) {
+  const result = await call("/v1/platform/team/invites", {
+    body: { name: field(formData, "name"), email: field(formData, "email"), role: field(formData, "role") },
+  });
+  if (!result.ok) return failed(result, "The invite was not sent.");
+  redirect("/control/team?saved=invited");
+}
+
+export async function revokePlatformInvite(formData) {
+  const inviteId = Number(formData.get("inviteId"));
+  const result = await call(`/v1/platform/team/invites/${inviteId}`, { method: "DELETE" });
+  redirect(`/control/team?${result.ok ? "saved=invite-revoked" : `error=${encodeURIComponent(result.data?.error || "The invite was not cancelled.")}`}`);
+}
+
+const TEAM_ACTIONS = ["role", "disable", "enable", "reset-mfa"];
+
+export async function platformMemberAction(formData) {
+  const userId = Number(formData.get("userId"));
+  const action = String(formData.get("action") || "");
+  if (!TEAM_ACTIONS.includes(action)) redirect("/control/team");
+  const result = action === "role"
+    ? await call(`/v1/platform/team/${userId}`, { method: "PUT", body: { role: field(formData, "role") } })
+    : await call(`/v1/platform/team/${userId}/${action}`);
+  const saved = result.data?.changed === false ? "unchanged" : action;
+  redirect(`/control/team?${result.ok ? `saved=${saved}` : `error=${encodeURIComponent(result.data?.error || "That did not work.")}`}`);
+}
+
 export async function unpublishNotice(formData) {
   const id = Number(formData.get("noticeId"));
   const result = await call(`/v1/platform/notices/${id}`, { method: "DELETE" });

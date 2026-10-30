@@ -61,6 +61,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
             ["/control/tenants", "Tenants"],
             ["/control/packages", "Packages"],
             ["/control/migrations", "Migrations", null, false, account?.migrationsWaiting || 0],
+            ["/control/team", "Team"],
             ["/control/audit", "Audit"],
             ["/control/notices", "Notices"],
             ["/control/system", "System"],

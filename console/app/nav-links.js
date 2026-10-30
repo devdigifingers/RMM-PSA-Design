@@ -136,6 +136,13 @@ const ICONS = {
       <path d="M10.5 10h3.5l-1.5-1.5M13.5 14H10l1.5 1.5" />
     </svg>
   ),
+  "/control/team": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5Z" />
+      <circle cx="12" cy="10" r="2.5" />
+      <path d="M8 16.5a4.5 4.5 0 0 1 8 0" />
+    </svg>
+  ),
   "/control/notices": (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path className="solid" d="M3 11v2a1 1 0 0 0 1 1h3l5 4V6L7 10H4a1 1 0 0 0-1 1Z" />

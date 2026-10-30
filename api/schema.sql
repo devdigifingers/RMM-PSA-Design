@@ -1220,6 +1220,38 @@ BEGIN
       name || '_migration_parent_guard', name);
   END LOOP;
 END $$;
+-- Platform team: super admins manage the team, admins run Control, support can only look.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_role text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_mfa_due_at timestamptz;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_platform_role_check') THEN
+    ALTER TABLE users ADD CONSTRAINT users_platform_role_check CHECK (
+      (is_platform_admin = false AND platform_role IS NULL)
+      OR (is_platform_admin = true AND platform_role IN ('super', 'admin', 'support'))
+    ) NOT VALID;
+  END IF;
+END $$;
+UPDATE users SET platform_role = 'super', platform_mfa_due_at = COALESCE(platform_mfa_due_at, now() + interval '7 days')
+WHERE is_platform_admin = true AND platform_role IS NULL;
+ALTER TABLE users VALIDATE CONSTRAINT users_platform_role_check;
+
+CREATE TABLE IF NOT EXISTS platform_invites (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email text NOT NULL CHECK (length(email) BETWEEN 3 AND 254),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  platform_role text NOT NULL CHECK (platform_role IN ('super', 'admin', 'support')),
+  token_hash text NOT NULL UNIQUE,
+  invited_by bigint REFERENCES users (id),
+  expires_at timestamptz NOT NULL,
+  accepted_at timestamptz,
+  accepted_user_id bigint REFERENCES users (id),
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS platform_invites_open_email_idx ON platform_invites (lower(email))
+  WHERE accepted_at IS NULL AND revoked_at IS NULL;
+
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'audit_events is append-only';

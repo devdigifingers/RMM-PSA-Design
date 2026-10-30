@@ -196,7 +196,27 @@ devices and desk settings from one tenant to another. Code: `api/src/migration-p
 
 ---
 
-## 7. Testing safely
+## 7. Platform team and break-glass
+
+Platform accounts are managed in Control → Team (`api/src/platform-team.js`, rules in
+`api/src/platform-team-rules.js`). Levels are stored in `users.platform_role` (`super`, `admin`, `support`).
+Support is enforced in the API: any non-GET request outside the person's own login is refused. Platform accounts
+must use MFA; `users.platform_mfa_due_at` is when it becomes required (now for new accounts and after an MFA reset).
+
+If every super admin is locked out, create a new one from the server shell. It is recorded as `platform.bootstrap`
+in the audit log and must set up MFA at first sign-in. Put the password in a root-only env file, not on the command
+line, and delete the file afterwards:
+
+```bash
+sudo bash -c 'set -a; . /root/df-api.env; . /root/df-platform-db.env; . /root/df-break-glass.env; set +a; cd /opt/df-api && node scripts/bootstrap.js'
+```
+
+`/root/df-break-glass.env` holds `OPERATOR_EMAIL`, `OPERATOR_PASSWORD` and `OPERATOR_NAME`. Then sign in, set up MFA
+and fix the team in Control.
+
+---
+
+## 8. Testing safely
 
 - All online machines except the test devices are client or office PCs. Never reboot, shut down, or stop processes
   on them as a test.

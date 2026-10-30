@@ -111,8 +111,8 @@ const status = async (requestId) => (await one("SELECT status, result FROM migra
 const A = await tenant("Alpha Source");
 const B = await tenant("Beta Target");
 const C = await tenant("Gamma Bystander");
-const requester = await id("INSERT INTO users (email, name, password_hash, is_platform_admin) VALUES ('admin1@df.test', 'Admin One', 'x', true) RETURNING id");
-const second = await id("INSERT INTO users (email, name, password_hash, is_platform_admin) VALUES ('admin2@df.test', 'Admin Two', 'x', true) RETURNING id");
+const requester = await id("INSERT INTO users (email, name, password_hash, is_platform_admin, platform_role) VALUES ('admin1@df.test', 'Admin One', 'x', true, 'super') RETURNING id");
+const second = await id("INSERT INTO users (email, name, password_hash, is_platform_admin, platform_role) VALUES ('admin2@df.test', 'Admin Two', 'x', true, 'super') RETURNING id");
 const a = await seed(A.org, "alpha");
 await seed(B.org, "beta", { withDevice: false });
 await seed(C.org, "gamma");

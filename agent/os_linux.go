@@ -21,6 +21,9 @@ func loadPlatformEnv() {}
 
 func updateFilePath() string { return "" }
 
+// The Linux remote agent is installed by install-linux.sh and runs under systemd.
+func remoteAgentLoop(context.Context, string, savedState) {}
+
 func launchUpdate(string) error { return fmt.Errorf("self update is not supported on Linux") }
 
 func apiURL() string {

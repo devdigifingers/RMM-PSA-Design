@@ -27,6 +27,7 @@ import { emailAgentReply, emailResolved, handleDeskMail, pollMailboxes } from ".
 import { handleCsat } from "./desk-csat.js";
 import { handleMigrations, migrationTick, platformWaiting, recoverMigrations, tenantWaiting } from "./migrations.js";
 import { customerInsights } from "./customer-insights.js";
+import { remoteAgentChange, remoteAgentFrom, remoteAgentOffer, remoteAgentView } from "./remote-agent.js";
 import { fleetVersions } from "./system-view.js";
 import { geoLocator, ipApiLocator, parseIp } from "./geoip.js";
 import { dailyStats, fillDays, osFamily } from "./daily-stats.js";
@@ -2026,6 +2027,22 @@ async function agentRelease() {
   return value;
 }
 
+let remoteReleaseCache = { at: 0, value: null };
+
+// The remote support (Mesh) agent that Windows device agents install, published by build-windows.sh.
+async function remoteRelease() {
+  if (Date.now() - remoteReleaseCache.at < 60000) return remoteReleaseCache.value;
+  let value = null;
+  try {
+    const raw = JSON.parse(await readFile(join(AGENT_BIN_DIR, "windows-remote.json"), "utf8"));
+    if (/^[a-f0-9]{64}$/.test(String(raw.sha256))) value = { sha256: raw.sha256 };
+  } catch {
+    value = null;
+  }
+  remoteReleaseCache = { at: Date.now(), value };
+  return value;
+}
+
 function versionParts(version) {
   return /^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(String(version || "")) ? version.split(".").map(Number) : null;
 }
@@ -3628,7 +3645,7 @@ async function fleetItems(orgId, { patch = false, customer = null } = {}) {
     pool.query(
       `SELECT d.id, d.hostname, d.display_name, d.os_name, d.os_version, d.os_build, d.last_seen_at,
               d.agent_version, d.metrics, d.ipv4, d.public_ip, d.users, d.geo_country, d.geo_country_name,
-              d.geo_region, d.geo_city, d.geo_updated_at, d.site_override,
+              d.geo_region, d.geo_city, d.geo_updated_at, d.site_override, d.remote_agent,
               ${patch ? "d.updates, d.software," : ""}
               c.id AS customer_id, c.name AS customer_name
        FROM devices d
@@ -5826,6 +5843,21 @@ const server = createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/agent/remote/windows") {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const file = join(AGENT_BIN_DIR, "DigitalFingersRemoteSupport.exe");
+      const info = await stat(file).catch(() => null);
+      if (!info?.isFile()) return send(res, 404, { error: "No remote support build is published." });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(info.size),
+        "cache-control": "no-store",
+      });
+      createReadStream(file).pipe(res);
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/v1/agent/update/linux") {
       const arch = String(url.searchParams.get("arch") || "");
       if (!LINUX_ARCHES.includes(arch)) return send(res, 400, { error: "Unknown processor type." });
@@ -5947,6 +5979,7 @@ const server = createServer(async (req, res) => {
       const asset = assetFrom(body);
       const users = usersFrom(body);
       const agentVersion = versionParts(body.agentVersion) ? body.agentVersion : "";
+      const remoteAgent = remoteAgentFrom(body);
       const uptime = Number(metrics?.uptimeSeconds);
       const publicIp = publicIpFrom(req);
       const saved = await pool.query(
@@ -5970,12 +6003,13 @@ const server = createServer(async (req, res) => {
              users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END,
              updates_checked_at = CASE WHEN $5::boolean THEN now() ELSE updates_checked_at END,
              reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END,
-             agent_version = COALESCE(NULLIF($16, ''), agent_version)
-         FROM (SELECT public_ip AS previous_ip FROM devices WHERE id = $1) prior
+             agent_version = COALESCE(NULLIF($16, ''), agent_version),
+             remote_agent = COALESCE($21::jsonb, remote_agent)
+         FROM (SELECT public_ip AS previous_ip, remote_agent AS previous_remote FROM devices WHERE id = $1) prior
          WHERE devices.id = $1
          RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
                    agent_update_requested_at, agent_update_offered_at,
-                   public_ip, geo_updated_at, prior.previous_ip`,
+                   public_ip, geo_updated_at, prior.previous_ip, prior.previous_remote`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -5997,8 +6031,17 @@ const server = createServer(async (req, res) => {
           osField(body.osBuild),
           Number.isFinite(uptime) && uptime >= 0 && uptime < 10 * 365 * 86400 ? Math.floor(uptime) : null,
           publicIp,
+          remoteAgent ? JSON.stringify(remoteAgent) : null,
         ],
       );
+      const remoteChange = remoteAgentChange(saved.rows[0]?.previous_remote, remoteAgent);
+      if (remoteChange) {
+        await writeAudit(device.org_id, null, remoteChange, "device", String(device.id), {
+          hostname: hostname || null,
+          ...(remoteAgent.detail ? { detail: remoteAgent.detail } : {}),
+        });
+        if (remoteChange === "device.remote_agent_ok") setTimeout(isolateTenantMesh, 15000);
+      }
       if (saved.rows[0]) {
         locateDevice(device.id, saved.rows[0].previous_ip, saved.rows[0])
           .catch((error) => console.error(`geoip update: ${error.message}`));
@@ -6044,11 +6087,13 @@ const server = createServer(async (req, res) => {
            RETURNING id, package_name`,
           [device.id],
         );
+      const remoteOffer = remoteAgentOffer(remoteAgent, remoteAgent ? await remoteRelease() : null);
       return send(res, 200, {
         jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command })),
         deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
         scanUpdates,
         ...(agentUpdate ? { agentUpdate } : {}),
+        ...(remoteOffer ? { remoteAgent: remoteOffer } : {}),
       });
     }
 
@@ -6153,6 +6198,7 @@ const server = createServer(async (req, res) => {
           agentVersion: row.agent_version || null,
           agentLatest: latestFor(row.os_name),
           agentOutdated: Boolean(latestFor(row.os_name)) && olderAgent(row.agent_version, latestFor(row.os_name)),
+          remoteAgent: remoteAgentView(row.remote_agent),
           siteOverride: row.site_override || null,
           location: factsById.get(String(row.id))?.group || "Unknown",
         })),

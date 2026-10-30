@@ -3,12 +3,15 @@
 package main
 
 import (
-	_ "embed"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,9 +26,6 @@ import (
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
-
-//go:embed meshagent.exe
-var meshAgent []byte
 
 const agentDir = `C:\ProgramData\DigitalFingers`
 
@@ -172,16 +172,13 @@ func installInteractive() error {
 	if err := installService(dest); err != nil {
 		return failed(err.Error())
 	}
-	if err := installMesh(); err != nil {
-		return failed(err.Error())
-	}
 	if err := registerProgram(dest); err != nil {
 		return failed(err.Error())
 	}
 	_, envErr := os.Stat(filepath.Join(agentDir, "df-agent.env"))
 	_, stateErr := os.Stat(defaultStatePath())
 	if envErr != nil && stateErr != nil {
-		return failed("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
+		return failed("Digital Fingers Agent is installed and listed in Apps. This PC has no enrollment file yet, so the device list cannot check in.")
 	}
 	if quiet() && stateBefore != nil {
 		for i := 0; i < 45; i++ {
@@ -192,7 +189,7 @@ func installInteractive() error {
 		}
 		return fmt.Errorf("the agent is installed but has not checked in yet; see C:\\ProgramData\\DigitalFingers\\df-agent.log")
 	}
-	return tell("Digital Fingers Agent and the remote desktop agent are installed and listed in Apps. This PC stays enrolled.")
+	return tell("Digital Fingers Agent is installed and listed in Apps. This PC stays enrolled. Remote support sets itself up within a few minutes.")
 }
 
 // quiet is set by the command-line installer: results go to the console and failures set the exit code.
@@ -238,7 +235,7 @@ func launchUpdate(path string) error {
 }
 
 // updateInPlace runs from the downloaded agent. It swaps it in for the installed agent and keeps
-// the remote desktop agent and enrollment as they are. A new agent that will not start is rolled back.
+// the remote support agent and enrollment as they are. A new agent that will not start is rolled back.
 func updateInPlace() error {
 	if !elevated() {
 		return fmt.Errorf("the agent update must run as an administrator")
@@ -431,44 +428,288 @@ func registerProgram(dest string) error {
 	return key.SetStringValue("InstallDate", time.Now().Format("20060102"))
 }
 
-func installMesh() error {
-	if len(meshAgent) < 100000 {
-		return fmt.Errorf("the remote desktop agent is missing from this installer")
-	}
-	path := filepath.Join(agentDir, "DigitalFingersMesh.exe")
-	if err := os.WriteFile(path, meshAgent, 0o755); err != nil {
-		return err
-	}
-	defer os.Remove(path)
-	cmd := exec.Command(path, "-fullinstall")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
-	if err == nil || meshPresent() {
-		return nil
-	}
-	detail := strings.TrimSpace(string(out))
-	if len(detail) > 240 {
-		detail = detail[:240]
-	}
-	if detail == "" {
-		detail = err.Error()
-	}
-	return fmt.Errorf("remote desktop agent: %s", detail)
+// The remote support agent is the branded MeshCentral agent. The device agent downloads it from the
+// API with its device login and installs it, instead of carrying it inside its own installer.
+const remoteServiceName = "Mesh Agent"
+
+var remoteInstallerPath = filepath.Join(agentDir, "DigitalFingersRemoteSupport.exe")
+
+var remoteExePaths = []string{
+	`C:\Program Files\Digital Fingers\Mesh Agent\MeshAgent.exe`,
+	`C:\Program Files\Mesh Agent\MeshAgent.exe`,
 }
 
-func meshPresent() bool {
-	_, err := os.Stat(`C:\Program Files\Mesh Agent\MeshAgent.exe`)
-	return err == nil
+func remoteAgentLoop(ctx context.Context, api string, state savedState) {
+	var lastStart, lastRepair time.Time
+	wait := 30 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = 2 * time.Minute
+		current, disabled, err := remoteServiceState()
+		if err != nil {
+			continue
+		}
+		switch current {
+		case "running":
+			setRemoteStatus("running", "", time.Time{})
+		case "stopped":
+			detail := "The remote support service is stopped."
+			if disabled {
+				detail = "The remote support service is disabled on this device."
+			} else if time.Since(lastStart) >= 10*time.Minute {
+				lastStart = time.Now()
+				if err := startRemoteService(); err != nil {
+					detail = "The remote support service would not start: " + err.Error()
+				} else if waitRemoteRunning(ctx, 30*time.Second) {
+					setRemoteStatus("running", "", time.Time{})
+					continue
+				}
+			}
+			setRemoteStatus("stopped", detail, time.Time{})
+		case "missing":
+			sum, _ := remoteSHA.Load().(string)
+			if sum == "" {
+				if prev := remoteReport.Load(); prev == nil || (prev.State != "missing" && prev.State != "blocked") {
+					setRemoteStatus("missing", "The remote support agent is not installed.", time.Time{})
+				}
+				wait = 20 * time.Second
+				continue
+			}
+			if time.Since(lastRepair) < time.Hour {
+				if prev := remoteReport.Load(); prev == nil || prev.State == "running" || prev.State == "repairing" {
+					setRemoteStatus("missing", "The remote support agent is not installed.", time.Time{})
+				}
+				continue
+			}
+			lastRepair = time.Now()
+			setRemoteStatus("repairing", "", time.Time{})
+			blocked, err := repairRemoteAgent(ctx, api, state, sum)
+			switch {
+			case err == nil:
+				setRemoteStatus("running", "", time.Now())
+			case blocked:
+				setRemoteStatus("blocked", err.Error(), time.Time{})
+			default:
+				setRemoteStatus("missing", err.Error(), time.Time{})
+			}
+			fmt.Printf("remote support repair: %v\n", err)
+		}
+	}
+}
+
+// remoteServiceState reports running, stopped or missing (no service, or its program file is gone).
+func remoteServiceState() (string, bool, error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return "", false, err
+	}
+	defer m.Disconnect()
+	service, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		return "missing", false, nil
+	}
+	defer service.Close()
+	status, err := service.Query()
+	if err != nil {
+		return "", false, err
+	}
+	if remoteAgentPath() == "" {
+		return "missing", false, nil
+	}
+	if status.State == svc.Running || status.State == svc.StartPending {
+		return "running", false, nil
+	}
+	config, err := service.Config()
+	return "stopped", err == nil && config.StartType == mgr.StartDisabled, nil
+}
+
+// remoteAgentPath finds the installed remote agent from its service, then the known install folders.
+func remoteAgentPath() string {
+	if m, err := mgr.Connect(); err == nil {
+		defer m.Disconnect()
+		if service, err := m.OpenService(remoteServiceName); err == nil {
+			config, err := service.Config()
+			service.Close()
+			if err == nil {
+				if path := serviceProgram(config.BinaryPathName); path != "" {
+					if _, err := os.Stat(path); err == nil {
+						return path
+					}
+				}
+			}
+		}
+	}
+	for _, path := range remoteExePaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func serviceProgram(commandLine string) string {
+	commandLine = strings.TrimSpace(commandLine)
+	if strings.HasPrefix(commandLine, `"`) {
+		if end := strings.Index(commandLine[1:], `"`); end > 0 {
+			return commandLine[1 : end+1]
+		}
+		return ""
+	}
+	if i := strings.Index(strings.ToLower(commandLine), ".exe"); i >= 0 {
+		return commandLine[:i+4]
+	}
+	return commandLine
+}
+
+func startRemoteService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
+	service, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		return err
+	}
+	defer service.Close()
+	return service.Start()
+}
+
+func waitRemoteRunning(ctx context.Context, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if current, _, err := remoteServiceState(); err == nil && current == "running" {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return false
+}
+
+// repairRemoteAgent downloads (or reuses) the published installer and runs it. blocked means the
+// file was removed or refused by the system, which is what antivirus quarantine looks like.
+func repairRemoteAgent(ctx context.Context, api string, state savedState, want string) (bool, error) {
+	if !fileMatches(remoteInstallerPath, want) {
+		if err := downloadRemoteAgent(ctx, api, state, want); err != nil {
+			return false, err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(5 * time.Second):
+	}
+	if !fileMatches(remoteInstallerPath, want) {
+		return true, fmt.Errorf("the remote support installer was removed right after download, most likely by antivirus")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, remoteInstallerPath, "-fullinstall")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, runErr := cmd.CombinedOutput()
+	if errors.Is(runErr, syscall.Errno(225)) {
+		return true, fmt.Errorf("Windows refused to run the remote support installer because antivirus flagged it")
+	}
+	if waitRemoteRunning(ctx, 45*time.Second) {
+		return false, nil
+	}
+	if _, err := os.Stat(remoteInstallerPath); err != nil {
+		return true, fmt.Errorf("the remote support installer was removed during install, most likely by antivirus")
+	}
+	if current, _, err := remoteServiceState(); err == nil && current == "missing" && remoteServiceExists() {
+		return true, fmt.Errorf("the remote support service is installed but its program file was removed, most likely by antivirus")
+	}
+	detail := clip(strings.TrimSpace(string(out)), 200)
+	if detail == "" && runErr != nil {
+		detail = runErr.Error()
+	}
+	if detail == "" {
+		detail = "no output"
+	}
+	return false, fmt.Errorf("remote support did not start after install: %s", detail)
+}
+
+func remoteServiceExists() bool {
+	m, err := mgr.Connect()
+	if err != nil {
+		return false
+	}
+	defer m.Disconnect()
+	service, err := m.OpenService(remoteServiceName)
+	if err != nil {
+		return false
+	}
+	service.Close()
+	return true
+}
+
+func downloadRemoteAgent(ctx context.Context, api string, state savedState, want string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api+"/v1/agent/remote/windows", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("authorization", "Device "+state.DeviceToken)
+	res, err := (&http.Client{Timeout: 10 * time.Minute}).Do(req)
+	if err != nil {
+		return fmt.Errorf("remote support download: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("remote support download: HTTP %d", res.StatusCode)
+	}
+	part := remoteInstallerPath + ".part"
+	out, err := os.OpenFile(part, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
+	if err != nil {
+		return err
+	}
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(out, hash), io.LimitReader(res.Body, 64<<20+1))
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil && size > 64<<20 {
+		err = fmt.Errorf("the remote support download is too large")
+	}
+	if err == nil && hex.EncodeToString(hash.Sum(nil)) != want {
+		err = fmt.Errorf("the remote support download does not match the published hash")
+	}
+	if err == nil {
+		err = os.Rename(part, remoteInstallerPath)
+	}
+	if err != nil {
+		_ = os.Remove(part)
+	}
+	return err
+}
+
+func fileMatches(path, want string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(file, 64<<20+1)); err != nil {
+		return false
+	}
+	return hex.EncodeToString(hash.Sum(nil)) == want
 }
 
 func removeMesh() {
-	path := `C:\Program Files\Mesh Agent\MeshAgent.exe`
-	if _, err := os.Stat(path); err != nil {
-		return
+	if path := remoteAgentPath(); path != "" {
+		cmd := exec.Command(path, "-fulluninstall")
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		_ = cmd.Run()
 	}
-	cmd := exec.Command(path, "-fulluninstall")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Run()
+	_ = os.Remove(remoteInstallerPath)
 }
 
 func removeProgramFile() {

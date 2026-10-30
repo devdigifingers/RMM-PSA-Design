@@ -71,6 +71,12 @@
     .rail .end { margin-top: auto; color: #ff8f8f; }
     .rail .end:hover { background: rgba(217,58,58,0.9); color: #fff; box-shadow: 0 6px 16px rgba(217,58,58,0.35); }
     .stage { position: relative; min-width: 0; min-height: 0; background: #000; }
+    .reconnect { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; color: #e8e6f5; background: radial-gradient(600px 300px at 50% 40%, rgba(124, 58, 237, 0.25), transparent 70%), rgba(11, 16, 32, 0.92); }
+    .reconnect[hidden] { display: none; }
+    .reconnect strong { font-family: "Sora", "Inter", sans-serif; font-size: 20px; font-weight: 600; color: #fff; }
+    .reconnect p { margin: 0; max-width: 420px; font-size: 14px; line-height: 1.5; color: #b9b6d3; }
+    .reconnect .bar-run { position: relative; width: 180px; height: 4px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.12); }
+    .reconnect .bar-run::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 999px; background: var(--grad); animation: run 1.3s ease-in-out infinite; }
     #desk { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
     footer {
       display: flex; align-items: center; justify-content: flex-end; gap: 8px;
@@ -394,6 +400,12 @@
     </nav>
     <div class="stage">
       <iframe id="desk" title="Remote desktop" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+      <div class="reconnect" id="reconnect" role="status" hidden>
+        <strong>Reconnecting…</strong>
+        <p>The remote desktop closed, usually because the user signed out or switched user. The session stays open and reconnects to the sign-in screen.</p>
+        <div class="bar-run" aria-hidden="true"></div>
+        <button type="button" class="btn ghost" id="reconnect-stop">Close session</button>
+      </div>
       <div class="fly dark" id="fly-view">
         <button type="button" id="view-actual"><svg viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>Actual Size<span class="tick">✓</span></button>
         <button type="button" id="view-full"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>Full Screen<span class="tick">✓</span></button>
@@ -662,6 +674,9 @@
     var prepared = false;
     var wasConnected = false;
     var dropped = false;
+    // Set while the desktop stream is being re-opened after it closed with the device still online.
+    var reconnect = null;
+    var RECONNECT_LIMIT = 120000;
     var viewState = { actual: false, cursor: true, quality: 40, scale: 1024 };
 
     function meshWindow() {
@@ -854,15 +869,53 @@
     function tidy() {
       var connected = /^connected\b/i.test(statusText());
       if (connected) {
+        if (reconnect) reconnected();
         wasConnected = true;
         document.getElementById("soon").hidden = true;
         document.getElementById("app").classList.add("on");
         armDesk();
         if (mode === "view") fitDesk(true);
-      } else if (wasConnected && !dropped && (/disconnected/i.test(statusText()) || deviceGone())) {
+      } else if (wasConnected && !dropped && !reconnect && mode === "view" && !supportId && /disconnected/i.test(statusText()) && !deviceGone()) {
+        startReconnect();
+      } else if (wasConnected && !dropped && !reconnect && (/disconnected/i.test(statusText()) || deviceGone())) {
         sessionDropped();
       }
       paintFoot();
+    }
+
+    function startReconnect() {
+      reconnect = { since: Date.now(), next: Date.now() + 1500 };
+      closeFly();
+      document.getElementById("reconnect").hidden = false;
+    }
+
+    function stopReconnect() {
+      reconnect = null;
+      document.getElementById("reconnect").hidden = true;
+    }
+
+    function reconnected() {
+      stopReconnect();
+      prepared = false;
+      toast("Reconnected to " + title + ".");
+    }
+
+    // Mesh clears its desktop object when the stream closes; its Connect button then opens a new
+    // stream to whatever is on the console, which after a sign-out is the Windows sign-in screen.
+    function retryDesk() {
+      if (!reconnect) return;
+      if (deviceGone() || Date.now() - reconnect.since > RECONNECT_LIMIT) {
+        stopReconnect();
+        sessionDropped();
+        return;
+      }
+      if (Date.now() < reconnect.next) return;
+      var win = meshWindow();
+      var page = doc();
+      var button = page && page.getElementById("connectbutton1");
+      if (!win || win.desktop || !button || button.disabled) return;
+      reconnect.next = Date.now() + 8000;
+      button.click();
     }
 
     function deviceGone() {
@@ -1163,6 +1216,7 @@
         }
       }
       pickPerson();
+      retryDesk();
       tidy();
       if (!shown && page.getElementById("connectbutton1")) {
         shown = true;
@@ -2442,6 +2496,10 @@
       win.meshserver.send({ action: "toast", nodeids: [nodeid], title: heading, msg: text, responseid: id });
     };
     document.getElementById("tool-terminal").onclick = function () { show("terminal"); };
+    document.getElementById("reconnect-stop").onclick = function () {
+      stopReconnect();
+      sessionDropped();
+    };
     document.getElementById("cad").onclick = function () {
       var page = doc();
       var win = page && page.defaultView;

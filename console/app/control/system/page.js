@@ -151,11 +151,14 @@ function Health({ ok, label }) {
   return <span className={`usage-state${ok ? "" : " is-full"}`}>{label || (ok ? "Working" : "Not answering")}</span>;
 }
 
-// The change log ships with the console as CHANGELOG.md; only the two newest dated sections are shown.
+// The change log ships with the console as CHANGELOG.md; the two newest dated sections are shown, then the agent releases.
 async function changelog() {
   for (const file of [path.join(process.cwd(), "CHANGELOG.md"), path.join(process.cwd(), "..", "docs", "CHANGELOG.md")]) {
     const text = await readFile(file, "utf8").catch(() => null);
-    if (text) return parseChangelog(text).slice(0, 2);
+    if (!text) continue;
+    const sections = parseChangelog(text);
+    const releases = sections.find((section) => section.title === "Agent releases");
+    return [...sections.filter((section) => /^\d{4}-\d{2}-\d{2}/.test(section.title)).slice(0, 2), ...(releases ? [releases] : [])];
   }
   return [];
 }

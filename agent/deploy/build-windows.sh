@@ -4,6 +4,8 @@
 #   tar czf /tmp/dfagent-src.tgz -C agent go.mod go.sum main.go os_linux.go os_windows.go patch_helper_linux.go
 #   scp /tmp/dfagent-src.tgz agent/deploy/build-windows.sh df-a:/tmp/
 #   ssh df-a 'sudo bash /tmp/build-windows.sh'
+# Every build also publishes the remote support (Mesh) agent for the staging group as
+# DigitalFingersRemoteSupport.exe with windows-remote.json; device agents 1.6+ download and install it.
 # With CHANNEL=next the build is only staged for test install commands and nothing is published.
 # After the staged build passes its test, publish that same file without rebuilding:
 #   scp agent/deploy/build-windows.sh df-a:/tmp/ && ssh df-a 'sudo bash /tmp/build-windows.sh promote 1.5.2'
@@ -39,8 +41,12 @@ mid=$(printf '%s' "$groups" | node -e 'let d="";process.stdin.on("data",c=>d+=c)
 ctl AgentDownload --id "$mid" --type 4 --url wss://mesh.digitalfingers.co.za >/dev/null 2>&1 || true
 files=("$build"/mesh/*)
 [ "${#files[@]}" -eq 1 ] && [ -f "${files[0]}" ] || { echo "mesh agent download failed"; exit 1; }
-mv "${files[0]}" "$build/meshagent.exe"
-echo "mesh-agent-bytes $(stat -c %s "$build/meshagent.exe")"
+remote=$bin/DigitalFingersRemoteSupport.exe
+install -o dfconsole -g dfconsole -m 644 "${files[0]}" "$remote.new"
+mv -f "$remote.new" "$remote"
+printf '{"sha256":"%s"}\n' "$(sha256sum "$remote" | cut -d' ' -f1)" > "$build/windows-remote.json"
+install -o dfconsole -g dfconsole -m 644 "$build/windows-remote.json" "$bin/windows-remote.json"
+echo "remote-support-bytes $(stat -c %s "$remote")"
 version=$(sed -n 's/^const agentVersion = "\([0-9]*\.[0-9]*\.[0-9]*\)"$/\1/p' "$build/main.go")
 [ -n "$version" ] || { echo "agent version not found"; exit 1; }
 (cd "$build" && { GOOS=windows go vet ./... 2>&1 | grep -v 'possible misuse of unsafe.Pointer' || true; } \

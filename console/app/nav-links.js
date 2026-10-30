@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { appForPath as suiteAppForPath } from "./apps";
+import { PLATFORM_VERSION, versionLabel } from "./version";
 
 export function appForPath(path) {
   return suiteAppForPath(path)?.key || null;
@@ -46,6 +47,7 @@ export function NavLinks({ links, serviceLinks, reportLinks, customers = null, l
       {shown.map(item)}
       {shown.length && shared.length ? <span className="app-rail-sep" aria-hidden="true" /> : null}
       {shared.map(item)}
+      <span className="app-rail-version" title={`Digital Fingers platform ${versionLabel()}`}>v{PLATFORM_VERSION}</span>
     </nav>
   );
 }

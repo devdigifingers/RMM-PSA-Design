@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const agentVersion = "1.5.2"
+const agentVersion = "1.6.0"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -61,6 +61,7 @@ func run(ctx context.Context) error {
 	go collectAssetLoop(ctx)
 	go installLoop(ctx, api, state)
 	go jobLoop(ctx, api, state)
+	go remoteAgentLoop(ctx, api, state)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -164,6 +165,9 @@ func heartbeat(api string, state savedState) error {
 		payload["rebootPending"] = rebootPending
 	}
 	payload["acceptDeploys"] = !installing.Load() && len(deployQueue) == 0
+	if report := remoteReport.Load(); report != nil {
+		payload["remoteAgent"] = report
+	}
 	assetItem, assetCollected, includeAsset := pendingAsset()
 	if includeAsset {
 		payload["asset"] = assetItem
@@ -183,9 +187,17 @@ func heartbeat(api string, state savedState) error {
 		Deploys     []deploy `json:"deploys"`
 		ScanUpdates string   `json:"scanUpdates"`
 		AgentUpdate *release `json:"agentUpdate"`
+		RemoteAgent *struct {
+			SHA256 string `json:"sha256"`
+		} `json:"remoteAgent"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return err
+	}
+	if parsed.RemoteAgent != nil {
+		if sum := strings.ToLower(strings.TrimSpace(parsed.RemoteAgent.SHA256)); len(sum) == 64 {
+			remoteSHA.Store(sum)
+		}
 	}
 	if parsed.AgentUpdate != nil && updating.CompareAndSwap(false, true) {
 		go func(next release) {
@@ -214,6 +226,29 @@ func heartbeat(api string, state savedState) error {
 		}
 	}
 	return nil
+}
+
+// remoteStatus is the state of the remote support (Mesh) agent, sent with every heartbeat.
+type remoteStatus struct {
+	State      string `json:"state"`
+	Detail     string `json:"detail,omitempty"`
+	RepairedAt string `json:"repairedAt,omitempty"`
+}
+
+var remoteReport atomic.Pointer[remoteStatus]
+
+// remoteSHA is the published hash of the remote support installer; the server sends it only
+// while this device reports the remote agent as missing or blocked.
+var remoteSHA atomic.Value
+
+func setRemoteStatus(state, detail string, repairedAt time.Time) {
+	next := &remoteStatus{State: state, Detail: clip(detail, 240)}
+	if !repairedAt.IsZero() {
+		next.RepairedAt = repairedAt.UTC().Format(time.RFC3339)
+	} else if prev := remoteReport.Load(); prev != nil {
+		next.RepairedAt = prev.RepairedAt
+	}
+	remoteReport.Store(next)
 }
 
 type release struct {

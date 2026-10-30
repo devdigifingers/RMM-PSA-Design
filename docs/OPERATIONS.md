@@ -77,6 +77,15 @@ tar czf /tmp/df-changelog.tgz -C docs CHANGELOG.md && scp -q /tmp/df-changelog.t
   && ssh df-a 'cd /opt/df-console && sudo -u dfconsole tar xzf /tmp/df-changelog.tgz --no-same-owner'
 ```
 
+### Platform version
+
+Every deploy of the console, API or session window is a platform version (`MAJOR.MINOR.PATCH`; MINOR for features,
+PATCH for fixes only). Before deploying, raise `PLATFORM_VERSION` and `PLATFORM_RELEASED` in `console/app/version.js`
+and add `## <date> · Platform <version>` at the top of `docs/CHANGELOG.md`, then deploy the console with
+`CHANGELOG.md` so the sign-in page, the side rail and Control → System all show the new version. Several deploys on
+one day may share a version only if nothing has been deployed in between. `npm test` in `console` fails when the
+version and the newest changelog heading differ.
+
 ### Checks before every deploy
 
 - API: `cd api && npm test` (all pass) and `node --check src/server.js`.
@@ -96,10 +105,25 @@ platform (a Linux 1.5.1 device is outdated when Linux is on 1.5.2, even if Windo
 | Platform | Files on df-a (`/opt/df-console/agent-bin`) | Release record |
 |----------|---------------------------------------------|----------------|
 | Windows | `DigitalFingersAgent.exe`, test build in `next/` | `windows.json` (version + sha256) |
+| Windows remote support | `DigitalFingersRemoteSupport.exe` (the branded Mesh agent for the "Digital Fingers" staging group) | `windows-remote.json` (sha256) |
 | Linux | `linux/df-agent-amd64`, `linux/df-agent-arm64`, `install.sh`, two service units | `linux/linux.json` |
 
 The version number comes from `const agentVersion` in `agent/main.go`. Agents older than 1.5 send no version and
 show as "Unknown (1.4 or older)".
+
+**Remote support on Windows (agent 1.6+).** The agent installer no longer carries the Mesh agent inside it (that
+pattern, an exe that writes and runs a hidden second exe, is what antivirus flags). Instead the device agent checks the
+"Mesh Agent" service 30 seconds after start and every 2 minutes:
+- stopped: it starts the service (at most every 10 minutes; a disabled service is left alone and reported);
+- missing (no service, or its program file is gone): it reports that, gets the published sha256 back in the heartbeat,
+  downloads `/v1/agent/remote/windows` with its device login into `C:\ProgramData\DigitalFingers`, checks the hash and
+  runs `-fullinstall` (at most once an hour). The new Mesh agent joins the staging group and is moved to the tenant's
+  group as usual;
+- blocked: the file vanished after download or during install, or Windows refused to run it. Usually antivirus.
+
+The state is stored on the device (`devices.remote_agent`), shown as a chip under the agent version on Devices, and
+changes are audited (`device.remote_agent_missing`, `_blocked`, `_stopped`, `_ok`). Every Windows build refreshes the
+remote support file, including `CHANNEL=next` builds; agents 1.5 and older ignore it.
 
 ### Windows: stage, test, publish
 

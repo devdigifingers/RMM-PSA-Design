@@ -3,7 +3,32 @@
 What changed on the live platform, newest first. How things work: [OPERATIONS.md](./OPERATIONS.md).
 Add an entry with every deploy or agent release.
 
-## 2026-10-30
+**Versions.** The platform (console, API and session window) has one version, `MAJOR.MINOR.PATCH`, shown under the
+sign-in card and at the bottom of the side rail. Raise MINOR for new features, PATCH for fixes only, MAJOR for changes
+that need customers to act. Each deploy raises it in `console/app/version.js` and starts a section headed
+`## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
+earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
+
+## 2026-10-30 · Platform 1.0.0
+
+**Platform version**
+- The platform version is shown under the sign-in card and at the bottom of the side rail (hover for the release
+  date). Every deploy raises it and adds a section here.
+
+**Remote session stays open when the user signs out**
+- Signing the user out (Ctrl-Alt-Del → Sign out, or Log Off) used to end the session window. The window now shows
+  "Reconnecting…" and reopens the desktop on the Windows sign-in screen, so the technician can sign in as another
+  profile. It gives up after 2 minutes or if the device goes offline. Quick support sessions are unchanged.
+
+**Remote support self-repair (Windows agent 1.6.0, published)**
+- The Windows agent installer no longer embeds the remote support (Mesh) agent; the device agent downloads it with
+  its device login, checks the published hash and installs it within a few minutes of check-in.
+- The agent watches the remote support service: it restarts a stopped service and reinstalls a missing one (for
+  example after antivirus quarantined it, as on HNA-PORTVLLE-01). If the file is removed again it reports "blocked".
+- Devices shows "Remote support stopped / missing / blocked" under the agent version, with the reason on hover.
+  State changes are in the audit log.
+- Fixed: uninstall and detection looked for the Mesh agent in the old `C:\Program Files\Mesh Agent` folder instead of
+  `C:\Program Files\Digital Fingers\Mesh Agent`.
 
 **Platform team**
 - Control → Team lists everyone who can sign in to Control, with their level, MFA state and status.
@@ -122,3 +147,39 @@ Add an entry with every deploy or agent release.
 - **Locations** switched from ip-api to MaxMind GeoLite2 with monthly database updates.
 - **Customers per app:** Remote Desk and Service Desk customer views with entitlement checks, SLA plans and contracts,
   clipboard paste and remote agent restart.
+
+## Agent releases
+
+Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
+"Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.6.0 (Windows), published 30 Oct**
+- The installer no longer carries the remote support (Mesh) agent inside it; the agent downloads it with its device
+  login, checks the published hash and installs it within a few minutes of check-in.
+- Watches the remote support service: restarts it when stopped, reinstalls it when missing (at most once an hour) and
+  reports "blocked" when antivirus removes it. Devices shows the state under the agent version.
+- Uninstall and detection use the branded `C:\Program Files\Digital Fingers\Mesh Agent` folder.
+- Tested on FED-WIN-001: installed over 1.5.2, then Mesh was uninstalled and the agent reinstalled it in 17 seconds.
+- Rolled out to all nine online Windows PCs within 3 minutes; all report remote support running. The first fresh
+  install (POS-3316E-Setup) set up remote support by itself about 2 minutes after enrolling.
+
+**1.5.2 (Windows and Linux), published 29 Oct**
+- Reports the Windows version and build for the OS report.
+- The command-line install runs silently and refuses a non-admin PowerShell.
+- Linux agents can be updated from the console through the MeshCentral agent (tested 1.5.1 → 1.5.2 and 1.4 → 1.5.2).
+
+**1.5.1 (Windows), published 25 Oct**
+- Updates itself from the server: the heartbeat offers the release, the agent downloads it with its device login,
+  checks the SHA-256, swaps the exe and rolls back if the service doesn't stay running. Remote support is untouched.
+- Jobs run with the raw command line, which fixes commands with double quotes and the patch restart warning.
+- Devices shows an Agent column; owners and admins get "Update agent" in Tools; automatic updates when idle.
+
+**1.5.0 (Windows), test step only, 25 Oct**
+- First version to report its version in the heartbeat and accept server updates. Used on FED-WIN-001 to test the
+  update from 1.4.0 (by a one-off job) and to 1.5.1 (by self-update); not published.
+
+**1.4.0 (Windows), published 25 Oct**
+- The installer locks `C:\ProgramData\DigitalFingers` to SYSTEM and Administrators, and re-locks it at each start.
+- Jobs run in their own worker, so heartbeats continue during a job; a timed-out job's whole process tree is stopped.
+- Enrolment retries with backoff instead of stopping the service.
+- Always uses `https://api.digitalfingers.co.za`; the env file only supplies the enrolment token.

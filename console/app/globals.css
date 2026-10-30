@@ -833,6 +833,10 @@ table {
 .agent-version { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .agent-version.agent-old { padding: 2px 8px; border-radius: 999px; background: #fff1e0; color: var(--df-warn-text); font-size: 13px; }
 html[data-theme="dark"] .agent-version.agent-old { background: rgba(224, 122, 31, 0.18); color: #f3b46b; }
+.remote-agent-warn { display: block; width: max-content; margin-top: 4px; padding: 2px 8px; border-radius: 999px; background: #fff1e0; color: var(--df-warn-text); font-size: 12px; white-space: nowrap; cursor: help; }
+.remote-agent-warn.remote-agent-blocked { background: #fde8e8; color: #a32020; }
+html[data-theme="dark"] .remote-agent-warn { background: rgba(224, 122, 31, 0.18); color: #f3b46b; }
+html[data-theme="dark"] .remote-agent-warn.remote-agent-blocked { background: rgba(220, 60, 60, 0.18); color: #f19a9a; }
 
 .os-mark {
   width: 16px;
@@ -6875,3 +6879,9 @@ label.check input { width: 16px; height: 16px; margin: 0; accent-color: var(--bl
 .mig-tenant-card { margin-top: 18px; padding: 20px 22px; border-radius: 16px; background: var(--card); box-shadow: var(--card-shadow); display: grid; gap: 8px; }
 .mig-tenant-card h2 { margin: 0; font-size: 17px; }
 .mig-consent { padding: 10px 12px; border-radius: 10px; background: #fff7ec; }
+
+/* Platform version */
+
+.login-shell { align-content: center; row-gap: 14px; }
+.login-version { margin: 0; color: rgba(232, 230, 245, 0.72); font-size: 12px; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+.app-rail-version { flex: none; margin-top: auto; padding-top: 10px; color: rgba(255, 255, 255, 0.5); font-size: 11px; font-variant-numeric: tabular-nums; cursor: default; }

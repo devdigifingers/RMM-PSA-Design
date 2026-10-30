@@ -28,6 +28,13 @@ function filterLabel(key, value, customers) {
   return value;
 }
 
+const REMOTE_AGENT_LABEL = {
+  stopped: "Remote support stopped",
+  missing: "Remote support missing",
+  repairing: "Reinstalling remote support",
+  blocked: "Remote support blocked",
+};
+
 export default async function DevicesPage({ searchParams }) {
   const params = await searchParams;
   const q = typeof params?.q === "string" ? params.q : "";
@@ -175,6 +182,11 @@ export default async function DevicesPage({ searchParams }) {
                     <span className={device.agentOutdated ? "agent-version agent-old" : "agent-version"} title={device.agentOutdated ? `Version ${device.agentLatest} is available` : undefined}>
                       {device.agentVersion || (device.agentOutdated ? "1.4.0 or older" : "—")}
                     </span>
+                    {device.remoteAgent && !device.remoteAgent.ok ? (
+                      <span className={`remote-agent-warn remote-agent-${device.remoteAgent.state}`} title={[device.remoteAgent.message, device.remoteAgent.detail].filter(Boolean).join(" ")}>
+                        {REMOTE_AGENT_LABEL[device.remoteAgent.state] || "Remote support issue"}
+                      </span>
+                    ) : null}
                   </td>
                   <td>
                     {body.canRemote ? (

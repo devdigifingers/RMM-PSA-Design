@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { homeFor } from "./account-data";
 import { cancelLoginCode, login, verifyLoginCode } from "./actions";
 import { Wordmark } from "./mark";
+import { versionLabel } from "./version";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -74,6 +75,7 @@ export default async function LoginPage({ searchParams }) {
           </>
         )}
       </section>
+      <p className="login-version">{versionLabel()}</p>
     </main>
   );
 }

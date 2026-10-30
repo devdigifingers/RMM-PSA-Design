@@ -731,6 +731,7 @@ UPDATE enroll_tokens SET use_count = 1 WHERE used_at IS NOT NULL AND use_count =
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS os_version text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS os_build text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_boot_at timestamptz;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS remote_agent jsonb;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS public_ip text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_country text;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_country_name text;

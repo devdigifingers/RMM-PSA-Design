@@ -2,6 +2,7 @@ import { OS_FAMILIES, percentages } from "./daily-stats.js";
 import { ZA_PROVINCES } from "./dashboard-overview.js";
 import { endOfSupport } from "./lifecycle.js";
 import { csvCell } from "./ticket-list.js";
+import { happiness } from "./csat.js";
 
 export const REPORTS = [
   { key: "agents", title: "Agent version adoption", description: "How many devices run each agent version over time, and which devices are behind the current release." },
@@ -686,6 +687,13 @@ function averageLabel(minutes) {
 
 // data: { tickets: [{ id, customer, created_at, first_response_at, resolved_at, status, response_target, resolve_target }],
 //         resolved: [{ day, count }], time: [{ customer, minutes, billable }] }
+function happinessLabel(rows) {
+  const counts = { good: 0, ok: 0, bad: 0 };
+  for (const row of rows) if (Object.hasOwn(counts, row.rating)) counts[row.rating] += 1;
+  const score = happiness(counts);
+  return score.total ? `${score.score}% (${score.total})` : "";
+}
+
 export function serviceDeskReport(data, ctx) {
   const report = base("service-desk", ctx);
   const now = ctx.now || Date.now();
@@ -713,6 +721,7 @@ export function serviceDeskReport(data, ctx) {
     { label: "Average resolution", value: averageLabel(average(resolveTimes(outcomes))) || "None yet" },
     { label: "Time logged", value: formatMinutes(loggedTotal) || "0m" },
     { label: "Billable time", value: formatMinutes(loggedBillable) || "0m" },
+    { label: "Customer happiness", value: happinessLabel(data.ratings || []) || "No ratings" },
   ];
   const days = daysBetween(ctx.from, ctx.to);
   const createdByDay = {};
@@ -749,6 +758,7 @@ export function serviceDeskReport(data, ctx) {
     groups.get(key).push(outcome);
   }
   for (const name of Object.keys(timeByCustomer)) if (!groups.has(name)) groups.set(name, []);
+  for (const row of data.ratings || []) if (!groups.has(row.customer || "No customer")) groups.set(row.customer || "No customer", []);
   report.tables.push({
     key: "customers",
     title: "By customer",
@@ -763,6 +773,7 @@ export function serviceDeskReport(data, ctx) {
       { key: "resolveTime", label: "Avg resolution", align: "right", width: 1.1 },
       { key: "time", label: "Time logged", align: "right", width: 1 },
       { key: "billable", label: "Billable", align: "right", width: 1 },
+      { key: "happiness", label: "Happiness", align: "right", width: 1 },
     ],
     rows: [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, list]) => ({
       customer: name,
@@ -775,6 +786,7 @@ export function serviceDeskReport(data, ctx) {
       resolveTime: averageLabel(average(resolveTimes(list))),
       time: formatMinutes(timeByCustomer[name] || 0) || "0m",
       billable: formatMinutes(billableByCustomer[name] || 0) || "0m",
+      happiness: happinessLabel((data.ratings || []).filter((row) => (row.customer || "No customer") === name)),
     })),
     empty: "No tickets or time logged in this period.",
   });

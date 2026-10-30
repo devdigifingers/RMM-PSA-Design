@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { addTenantUser, setTenantPassword } from "../../actions";
+import { addTenantUser, inviteTenantUser, setTenantPassword } from "../../actions";
 
 export function PasswordForm({ tenantId, userId }) {
   const [state, action, pending] = useActionState(setTenantPassword, null);
@@ -44,6 +44,35 @@ export function AddUserForm({ tenantId }) {
       {state?.error ? <p className="error admin-span">{state.error}</p> : null}
       <div className="form-actions">
         <button type="submit" disabled={pending}>Add user</button>
+      </div>
+    </form>
+  );
+}
+
+export function InviteUserForm({ tenantId }) {
+  const [state, action, pending] = useActionState(inviteTenantUser, null);
+  return (
+    <form action={action} className="license-grid">
+      <input type="hidden" name="tenantId" value={tenantId} />
+      <label>
+        Full name
+        <input name="name" required maxLength={120} />
+      </label>
+      <label>
+        Email
+        <input name="email" type="email" autoComplete="off" required />
+      </label>
+      <label>
+        Role
+        <select name="role" defaultValue="admin">
+          <option value="owner">Owner</option>
+          <option value="admin">Admin</option>
+          <option value="tech">Tech</option>
+        </select>
+      </label>
+      {state?.error ? <p className="error admin-span">{state.error}</p> : null}
+      <div className="form-actions">
+        <button type="submit" disabled={pending}>{pending ? "Sending…" : "Send invite"}</button>
       </div>
     </form>
   );

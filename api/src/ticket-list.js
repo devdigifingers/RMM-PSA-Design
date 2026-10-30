@@ -23,11 +23,12 @@ export const DEFAULT_COLUMNS = ["sla", "id", "subject", "contact", "account", "d
 
 const PRIORITY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
 const STATUS_RANK = { open: 0, pending: 1, resolved: 2 };
-const SLA_RANK = { breached: 0, soon: 1, ok: 2, none: 3 };
+const SLA_RANK = { breached: 0, soon: 1, ok: 2, paused: 3, none: 4 };
 const STATUSES = new Set(["open", "pending", "resolved"]);
 const PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
-const CHANNELS = new Set(["console", "alert", "automatic", "support"]);
-const SLA_STATES = new Set(["ok", "soon", "breached"]);
+export const CHANNELS = ["phone", "email", "walk_in", "portal", "remote", "console", "alert", "automatic", "support"];
+const CHANNEL_SET = new Set(CHANNELS);
+const SLA_STATES = new Set(["ok", "soon", "breached", "paused"]);
 const DAY = 24 * 60 * 60 * 1000;
 
 export const BUILTIN_VIEWS = [
@@ -99,7 +100,7 @@ export function parseListQuery(params) {
     owner: owner === "me" || owner === "none" ? owner : id(owner),
     customer: id(get("customer")),
     device: id(get("device")),
-    channel: CHANNELS.has(String(get("channel"))) ? String(get("channel")) : null,
+    channel: CHANNEL_SET.has(String(get("channel"))) ? String(get("channel")) : null,
     category: String(get("category")).trim().slice(0, 60) || null,
     tag: String(get("tag")).trim().slice(0, 30) || null,
     createdFrom: day(get("created_from"), false),
@@ -113,24 +114,7 @@ export function parseListQuery(params) {
   };
 }
 
-export function slaState(ticket, targets, now = new Date()) {
-  if (!targets || ticket.status === "resolved" || !ticket.createdAt) return { state: "none" };
-  const created = time(ticket.createdAt);
-  const checks = [];
-  if (!ticket.firstResponseAt) checks.push({ target: "response", minutes: targets.responseMinutes });
-  checks.push({ target: "resolve", minutes: targets.resolveMinutes });
-  let worst = null;
-  for (const check of checks) {
-    const total = Number(check.minutes) * 60000;
-    if (!(total > 0)) continue;
-    const due = created + total;
-    const left = due - now.getTime();
-    const state = left < 0 ? "breached" : left < total * 0.25 ? "soon" : "ok";
-    const candidate = { state, target: check.target, dueAt: new Date(due).toISOString(), minutesLeft: Math.round(left / 60000) };
-    if (!worst || SLA_RANK[state] < SLA_RANK[worst.state] || (state === worst.state && due < time(worst.dueAt))) worst = candidate;
-  }
-  return worst || { state: "none" };
-}
+export { slaState } from "./sla-engine.js";
 
 function matchesSearch(ticket, needle) {
   if (!needle) return true;

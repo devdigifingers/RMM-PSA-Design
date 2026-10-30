@@ -579,8 +579,12 @@ CREATE TABLE IF NOT EXISTS ticket_events (
 CREATE INDEX IF NOT EXISTS ticket_events_ticket_idx ON ticket_events (ticket_id, created_at, id);
 CREATE INDEX IF NOT EXISTS ticket_events_org_kind_idx ON ticket_events (org_id, kind, created_at);
 
+-- Timeline rows only disappear when a tenant migration purge or rollback deletes the whole ticket.
 CREATE OR REPLACE FUNCTION ticket_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'DELETE' AND COALESCE(current_setting('df.migration', true), '') <> '' THEN
+    RETURN OLD;
+  END IF;
   RAISE EXCEPTION 'ticket_events is append-only';
 END $$;
 DROP TRIGGER IF EXISTS ticket_events_append_only ON ticket_events;
@@ -837,6 +841,385 @@ CREATE TABLE IF NOT EXISTS report_deliveries (
 );
 CREATE INDEX IF NOT EXISTS report_deliveries_org_idx ON report_deliveries (org_id, id DESC);
 
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS actor_role text;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS ip text;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS user_agent text;
+
+-- Only the hash of the emailed token is stored; accepting creates the user and uses a seat.
+CREATE TABLE IF NOT EXISTS user_invites (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  email text NOT NULL CHECK (length(email) BETWEEN 3 AND 254),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  role text NOT NULL CHECK (role IN ('owner', 'admin', 'tech')),
+  token_hash text NOT NULL UNIQUE,
+  invited_by bigint REFERENCES users (id),
+  expires_at timestamptz NOT NULL,
+  accepted_at timestamptz,
+  accepted_user_id bigint REFERENCES users (id),
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS user_invites_org_idx ON user_invites (org_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS user_invites_open_email_idx ON user_invites (lower(email))
+  WHERE accepted_at IS NULL AND revoked_at IS NULL;
+
+-- Service Desk setup: custom statuses, labels, business hours, canned replies, notifications.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS due_at timestamptz;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS channel text;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_paused_at timestamptz;
+-- Closed pending intervals as [[start, end], ...]; the SLA engine counts them in business minutes.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_pauses jsonb NOT NULL DEFAULT '[]'::jsonb;
+-- Targets ('response', 'resolve') that already raised a pre-breach warning.
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_warned text[] NOT NULL DEFAULT '{}';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tickets_channel_check') THEN
+    ALTER TABLE tickets ADD CONSTRAINT tickets_channel_check CHECK (
+      channel IS NULL OR channel IN ('phone', 'email', 'walk_in', 'portal', 'remote', 'console', 'alert', 'automatic', 'support')
+    );
+  END IF;
+END $$;
+UPDATE tickets t SET channel = CASE
+    WHEN EXISTS (SELECT 1 FROM alerts a WHERE a.ticket_id = t.id) THEN 'alert'
+    WHEN EXISTS (SELECT 1 FROM support_sessions ss WHERE ss.ticket_id = t.id) THEN 'support'
+    WHEN t.created_by IS NULL THEN 'automatic'
+    ELSE 'console' END
+WHERE t.channel IS NULL;
+UPDATE tickets SET sla_paused_at = updated_at WHERE status = 'pending' AND sla_paused_at IS NULL;
+
+CREATE OR REPLACE FUNCTION tickets_sla_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status = 'pending' AND (TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM 'pending') THEN
+    NEW.sla_paused_at := now();
+  ELSIF TG_OP = 'UPDATE' AND OLD.status = 'pending' AND NEW.status <> 'pending' THEN
+    IF OLD.sla_paused_at IS NOT NULL THEN
+      NEW.sla_pauses := COALESCE(OLD.sla_pauses, '[]'::jsonb) || jsonb_build_array(jsonb_build_array(OLD.sla_paused_at, now()));
+    END IF;
+    NEW.sla_paused_at := NULL;
+  END IF;
+  -- A custom status only sticks while the ticket's base status still matches it (bulk edits, automations).
+  IF TG_OP = 'UPDATE' AND NEW.status IS DISTINCT FROM OLD.status AND NEW.status_id IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM desk_statuses s WHERE s.id = NEW.status_id AND s.base = NEW.status) THEN
+    NEW.status_id := NULL;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS tickets_sla_pause ON tickets;
+CREATE TRIGGER tickets_sla_pause BEFORE INSERT OR UPDATE OF status ON tickets
+  FOR EACH ROW EXECUTE FUNCTION tickets_sla_pause();
+
+CREATE TABLE IF NOT EXISTS desk_statuses (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
+  base text NOT NULL CHECK (base IN ('open', 'pending', 'resolved')),
+  position integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS desk_statuses_org_name_key ON desk_statuses (org_id, lower(name));
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status_id bigint REFERENCES desk_statuses (id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS desk_priorities (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  priority text NOT NULL CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+  label text NOT NULL CHECK (length(label) BETWEEN 1 AND 30),
+  PRIMARY KEY (org_id, priority)
+);
+
+CREATE TABLE IF NOT EXISTS desk_categories (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 60),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS desk_categories_org_name_key ON desk_categories (org_id, lower(name));
+
+CREATE TABLE IF NOT EXISTS desk_tags (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 30),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS desk_tags_org_name_key ON desk_tags (org_id, lower(name));
+
+CREATE TABLE IF NOT EXISTS desk_business_hours (
+  org_id bigint PRIMARY KEY REFERENCES orgs (id),
+  enabled boolean NOT NULL DEFAULT false,
+  hours jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS desk_holidays (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  day date NOT NULL,
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  UNIQUE (org_id, day)
+);
+
+ALTER TABLE org_slas ADD COLUMN IF NOT EXISTS priority_percent jsonb NOT NULL
+  DEFAULT '{"low": 100, "normal": 100, "high": 100, "urgent": 100}'::jsonb;
+ALTER TABLE sla_plans ADD COLUMN IF NOT EXISTS priority_percent jsonb NOT NULL
+  DEFAULT '{"low": 100, "normal": 100, "high": 100, "urgent": 100}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS desk_canned_replies (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  title text NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  body text NOT NULL CHECK (length(body) BETWEEN 1 AND 4000),
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS desk_canned_replies_org_title_key ON desk_canned_replies (org_id, lower(title));
+
+CREATE TABLE IF NOT EXISTS desk_notification_rules (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  event text NOT NULL CHECK (event IN ('new_ticket', 'assigned', 'customer_reply', 'sla_warning', 'sla_breach')),
+  email boolean NOT NULL DEFAULT false,
+  in_app boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (org_id, event)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_cc (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
+  contact_id bigint NOT NULL REFERENCES contacts (id) ON DELETE CASCADE,
+  PRIMARY KEY (ticket_id, contact_id)
+);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  user_id bigint NOT NULL REFERENCES users (id),
+  ticket_id bigint REFERENCES tickets (id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  title text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  read_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS user_notifications_user_idx ON user_notifications (user_id, created_at DESC);
+
+-- Service Desk phase 4: email channel, automations, links and watchers.
+CREATE TABLE IF NOT EXISTS desk_mailboxes (
+  org_id bigint PRIMARY KEY REFERENCES orgs (id),
+  address text NOT NULL CHECK (length(address) BETWEEN 3 AND 254),
+  host text NOT NULL CHECK (length(host) BETWEEN 1 AND 253),
+  port integer NOT NULL DEFAULT 993 CHECK (port BETWEEN 1 AND 65535),
+  secure boolean NOT NULL DEFAULT true,
+  username text NOT NULL CHECK (length(username) BETWEEN 1 AND 254),
+  password_sealed text NOT NULL,
+  folder text NOT NULL DEFAULT 'INBOX',
+  enabled boolean NOT NULL DEFAULT false,
+  send_replies boolean NOT NULL DEFAULT false,
+  acknowledge boolean NOT NULL DEFAULT false,
+  default_customer_id bigint REFERENCES customers (id) ON DELETE SET NULL,
+  uid_validity bigint,
+  last_uid bigint,
+  last_polled_at timestamptz,
+  last_error text,
+  messages_in integer NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS email_message_id text;
+ALTER TABLE ticket_comments ADD COLUMN IF NOT EXISTS email_from text;
+CREATE INDEX IF NOT EXISTS ticket_comments_message_idx ON ticket_comments (org_id, email_message_id) WHERE email_message_id IS NOT NULL;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS email_message_id text;
+CREATE INDEX IF NOT EXISTS tickets_message_idx ON tickets (org_id, email_message_id) WHERE email_message_id IS NOT NULL;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS parent_id bigint REFERENCES tickets (id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS tickets_parent_idx ON tickets (parent_id) WHERE parent_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS ticket_watchers (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  ticket_id bigint NOT NULL REFERENCES tickets (id) ON DELETE CASCADE,
+  user_id bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (ticket_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS desk_options (
+  org_id bigint PRIMARY KEY REFERENCES orgs (id),
+  -- NULL means pending tickets are never closed automatically.
+  auto_close_days integer CHECK (auto_close_days BETWEEN 1 AND 90),
+  alert_tickets boolean NOT NULL DEFAULT false,
+  brand_color text NOT NULL DEFAULT '#8B5CF6' CHECK (brand_color ~ '^#[0-9A-Fa-f]{6}$'),
+  signature text CHECK (length(signature) <= 1000),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS desk_automations (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  trigger text NOT NULL CHECK (trigger IN ('created', 'updated')),
+  conditions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  actions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  enabled boolean NOT NULL DEFAULT true,
+  position integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS desk_automations_org_idx ON desk_automations (org_id, trigger, position);
+
+-- Service Desk phase 5: customer satisfaction.
+ALTER TABLE desk_options ADD COLUMN IF NOT EXISTS csat_enabled boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS ticket_ratings (
+  ticket_id bigint PRIMARY KEY REFERENCES tickets (id) ON DELETE CASCADE,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  rating text NOT NULL CHECK (rating IN ('good', 'ok', 'bad')),
+  comment text CHECK (length(comment) <= 1000),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ticket_ratings_org_idx ON ticket_ratings (org_id, updated_at DESC);
+
+-- Tenant migrations: platform-admin requests approved by both tenants and a second platform admin.
+CREATE TABLE IF NOT EXISTS migration_requests (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  source_tenant_id bigint NOT NULL REFERENCES orgs (id),
+  target_tenant_id bigint NOT NULL REFERENCES orgs (id),
+  scope jsonb NOT NULL,
+  mode text NOT NULL CHECK (mode IN ('copy', 'move')),
+  resolutions jsonb NOT NULL DEFAULT '{}'::jsonb,
+  acknowledged text[] NOT NULL DEFAULT '{}',
+  schedule_at timestamptz,
+  status text NOT NULL CHECK (status IN ('draft', 'pending', 'approved', 'scheduled', 'running', 'completed', 'failed',
+    'rolled_back', 'declined', 'expired', 'cancelled')),
+  requested_by bigint NOT NULL REFERENCES users (id),
+  dry_run_snapshot jsonb NOT NULL,
+  progress jsonb NOT NULL DEFAULT '{}'::jsonb,
+  result jsonb,
+  submitted_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  purged_at timestamptz,
+  rollback_requested_by bigint REFERENCES users (id),
+  rollback_requested_at timestamptz,
+  rollback_keep boolean,
+  rollback_approved_by bigint REFERENCES users (id),
+  rollback_approved_at timestamptz,
+  rolled_back_at timestamptz,
+  wait_warned_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (source_tenant_id <> target_tenant_id)
+);
+CREATE INDEX IF NOT EXISTS migration_requests_status_idx ON migration_requests (status, schedule_at);
+CREATE INDEX IF NOT EXISTS migration_requests_source_idx ON migration_requests (source_tenant_id, id DESC);
+CREATE INDEX IF NOT EXISTS migration_requests_target_idx ON migration_requests (target_tenant_id, id DESC);
+
+-- Rows with cleared_at set were wiped by an edit to the request and no longer count.
+CREATE TABLE IF NOT EXISTS migration_approvals (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  request_id bigint NOT NULL REFERENCES migration_requests (id) ON DELETE CASCADE,
+  role text NOT NULL CHECK (role IN ('source_owner', 'target_owner', 'platform_admin')),
+  user_id bigint NOT NULL REFERENCES users (id),
+  decision text NOT NULL CHECK (decision IN ('approved', 'declined')),
+  reason text CHECK (length(reason) <= 1000),
+  decided_at timestamptz NOT NULL DEFAULT now(),
+  cleared_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS migration_approvals_live_idx ON migration_approvals (request_id, role) WHERE cleared_at IS NULL;
+
+-- merged rows point at records the target already had; rollback leaves those alone.
+CREATE TABLE IF NOT EXISTS migration_id_map (
+  request_id bigint NOT NULL REFERENCES migration_requests (id) ON DELETE CASCADE,
+  entity_type text NOT NULL,
+  source_id bigint NOT NULL,
+  target_id bigint NOT NULL,
+  merged boolean NOT NULL DEFAULT false,
+  detail jsonb,
+  PRIMARY KEY (request_id, entity_type, source_id)
+);
+CREATE INDEX IF NOT EXISTS migration_id_map_target_idx ON migration_id_map (request_id, entity_type, target_id);
+
+CREATE TABLE IF NOT EXISTS migration_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  request_id bigint NOT NULL REFERENCES migration_requests (id) ON DELETE CASCADE,
+  kind text NOT NULL,
+  actor_user_id bigint REFERENCES users (id),
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS migration_events_request_idx ON migration_events (request_id, id);
+
+CREATE OR REPLACE FUNCTION migration_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'migration_events is append-only';
+END $$;
+DROP TRIGGER IF EXISTS migration_events_append_only ON migration_events;
+CREATE TRIGGER migration_events_append_only BEFORE UPDATE OR DELETE ON migration_events
+  FOR EACH ROW EXECUTE FUNCTION migration_events_append_only();
+
+-- After a Move the source copy stays read-only (migration_lock = request id) until it is purged or rolled back.
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS migration_lock bigint;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS migration_lock bigint;
+ALTER TABLE tickets ADD COLUMN IF NOT EXISTS migration_lock bigint;
+CREATE INDEX IF NOT EXISTS tickets_migration_lock_idx ON tickets (migration_lock) WHERE migration_lock IS NOT NULL;
+
+-- The migration job sets df.migration for its own transaction; everyone else gets DF_MIGRATION_LOCKED.
+CREATE OR REPLACE FUNCTION df_migration_job() RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(current_setting('df.migration', true), '') <> ''
+$$;
+
+CREATE OR REPLACE FUNCTION df_migration_row_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF df_migration_job() THEN
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+  END IF;
+  IF OLD.migration_lock IS NOT NULL THEN
+    RAISE EXCEPTION 'DF_MIGRATION_LOCKED';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+CREATE OR REPLACE FUNCTION df_migration_ticket_child_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  target bigint;
+BEGIN
+  IF df_migration_job() THEN
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+  END IF;
+  target := CASE WHEN TG_OP = 'DELETE' THEN OLD.ticket_id ELSE NEW.ticket_id END;
+  IF target IS NOT NULL AND EXISTS (SELECT 1 FROM tickets WHERE id = target AND migration_lock IS NOT NULL) THEN
+    RAISE EXCEPTION 'DF_MIGRATION_LOCKED';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+
+CREATE OR REPLACE FUNCTION df_migration_customer_child_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF df_migration_job() THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.customer_id IS NOT NULL AND EXISTS (SELECT 1 FROM customers WHERE id = NEW.customer_id AND migration_lock IS NOT NULL) THEN
+    RAISE EXCEPTION 'DF_MIGRATION_LOCKED';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DO $$
+DECLARE
+  name text;
+BEGIN
+  FOREACH name IN ARRAY ARRAY['customers', 'contacts', 'tickets'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', name || '_migration_guard', name);
+    EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION df_migration_row_guard()',
+      name || '_migration_guard', name);
+  END LOOP;
+  FOREACH name IN ARRAY ARRAY['ticket_comments', 'ticket_events', 'ticket_time_entries', 'ticket_attachments', 'ticket_cc',
+    'ticket_watchers', 'ticket_timers', 'ticket_ratings'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', name || '_migration_guard', name);
+    EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION df_migration_ticket_child_guard()',
+      name || '_migration_guard', name);
+  END LOOP;
+  FOREACH name IN ARRAY ARRAY['contacts', 'tickets'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', name || '_migration_parent_guard', name);
+    EXECUTE format('CREATE TRIGGER %I BEFORE INSERT OR UPDATE OF customer_id ON %I FOR EACH ROW EXECUTE FUNCTION df_migration_customer_child_guard()',
+      name || '_migration_parent_guard', name);
+  END LOOP;
+END $$;
 CREATE OR REPLACE FUNCTION audit_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'audit_events is append-only';

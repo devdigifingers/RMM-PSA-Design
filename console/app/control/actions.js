@@ -1,15 +1,20 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { apiUrl, sessionToken } from "./api";
+import { apiUrl, clientHeaders, sessionToken } from "./api";
 
 async function call(path, { method = "POST", body } = {}) {
   const token = await sessionToken();
   if (!token) redirect("/");
   const response = await fetch(`${apiUrl}${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(await clientHeaders()),
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
   });
@@ -55,8 +60,9 @@ export async function saveTenantLicense(_prev, formData) {
 }
 
 export async function createTenant(_prev, formData) {
-  const password = String(formData.get("adminPassword") || "");
-  if (password !== String(formData.get("adminConfirm") || "")) return { error: "The password and the confirmation do not match." };
+  const inviteAdmin = formData.get("adminAccess") === "invite";
+  const password = inviteAdmin ? "" : String(formData.get("adminPassword") || "");
+  if (!inviteAdmin && password !== String(formData.get("adminConfirm") || "")) return { error: "The password and the confirmation do not match." };
   const result = await call("/v1/platform/tenants", {
     body: {
       ...licenseFields(formData),
@@ -64,11 +70,46 @@ export async function createTenant(_prev, formData) {
       slug: field(formData, "slug"),
       adminName: field(formData, "adminName"),
       adminEmail: field(formData, "adminEmail"),
-      adminPassword: password,
+      ...(inviteAdmin ? { inviteAdmin: true } : { adminPassword: password }),
     },
   });
   if (!result.ok) return failed(result, "The tenant was not created.");
-  redirect(`/control/tenants/${result.data.id}?saved=created`);
+  if (result.data.inviteError) {
+    redirect(`/control/tenants/${result.data.id}?tab=users&error=${encodeURIComponent(`Tenant created, but ${result.data.inviteError}`)}`);
+  }
+  redirect(`/control/tenants/${result.data.id}?saved=${inviteAdmin ? "created-invited" : "created"}`);
+}
+
+export async function inviteTenantUser(_prev, formData) {
+  const tenantId = Number(formData.get("tenantId"));
+  const result = await call(`/v1/platform/tenants/${tenantId}/invites`, {
+    body: { name: field(formData, "name"), email: field(formData, "email"), role: field(formData, "role") },
+  });
+  if (!result.ok) return failed(result, "The invite was not sent.");
+  redirect(`/control/tenants/${tenantId}?tab=users&saved=invited`);
+}
+
+export async function revokeTenantInvite(formData) {
+  const tenantId = Number(formData.get("tenantId"));
+  const inviteId = Number(formData.get("inviteId"));
+  const result = await call(`/v1/platform/tenants/${tenantId}/invites/${inviteId}`, { method: "DELETE" });
+  const query = result.ok ? "saved=invite-revoked" : `error=${encodeURIComponent(result.data?.error || "The invite was not cancelled.")}`;
+  redirect(`/control/tenants/${tenantId}?tab=users&${query}`);
+}
+
+export async function viewAsTenant(formData) {
+  const tenantId = Number(formData.get("tenantId"));
+  const result = await call(`/v1/platform/tenants/${tenantId}/impersonate`);
+  if (!result.ok || !result.data.token) {
+    redirect(`/control/tenants/${tenantId}?error=${encodeURIComponent(result.data?.error || "Could not open the tenant view.")}`);
+  }
+  const jar = await cookies();
+  const adminToken = await sessionToken();
+  const options = { httpOnly: true, secure: true, sameSite: "lax", path: "/" };
+  jar.set("df_admin_session", adminToken, { ...options, maxAge: 60 * 60 * 12 });
+  jar.set("df_session", result.data.token, { ...options, maxAge: result.data.expiresInSeconds });
+  jar.set("df_impersonating", String(tenantId), { ...options, maxAge: result.data.expiresInSeconds });
+  redirect("/dashboard");
 }
 
 export async function checkSlug(slug) {
@@ -145,6 +186,40 @@ export async function publishNotice(_prev, formData) {
   });
   if (!result.ok) return failed(result, "The notice was not published.");
   redirect("/control/notices?saved=published");
+}
+
+export async function migrationOptions(sourceId) {
+  const result = await call(`/v1/platform/migrations/options?source=${Number(sourceId) || ""}`, { method: "GET" });
+  return result.ok ? result.data : { tenants: [], customers: [] };
+}
+
+export async function migrationDryRun(input) {
+  const result = await call("/v1/platform/migrations/dry-run", { body: input });
+  return result.ok ? result.data : { error: result.data?.error || "The dry run did not finish." };
+}
+
+export async function saveMigration(input, editId = null) {
+  const result = await call(editId ? `/v1/platform/migrations/${Number(editId)}` : "/v1/platform/migrations", {
+    method: editId ? "PUT" : "POST",
+    body: input,
+  });
+  if (!result.ok) return { error: result.data?.error || "The request was not saved.", plan: result.data?.plan || null };
+  const id = editId || result.data.id;
+  revalidatePath("/control/migrations");
+  redirect(`/control/migrations/${id}?saved=${editId ? (result.data.changed ? "edited" : "unchanged") : "submitted"}`);
+}
+
+const MIGRATION_ACTIONS = ["approve", "decline", "cancel", "rollback", "rollback-approve", "rollback-cancel"];
+
+export async function migrationAction(formData) {
+  const id = Number(formData.get("id"));
+  const action = String(formData.get("action") || "");
+  if (!MIGRATION_ACTIONS.includes(action)) redirect(`/control/migrations/${id}`);
+  const body = action === "rollback" ? { keepChanges: formData.get("keepChanges") === "keep" } : { reason: field(formData, "reason") };
+  const result = await call(`/v1/platform/migrations/${id}/${action}`, { body });
+  revalidatePath(`/control/migrations/${id}`);
+  const query = result.ok ? `saved=${action}` : `error=${encodeURIComponent(result.data?.error || "That did not work.")}`;
+  redirect(`/control/migrations/${id}?${query}`);
 }
 
 export async function unpublishNotice(formData) {

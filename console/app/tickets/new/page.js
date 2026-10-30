@@ -29,7 +29,7 @@ export default async function NewTicketPage({ searchParams }) {
       <main className="main">
         <p className="desk-back"><a href={back}>{params?.customer ? "← Back to customer" : "← All Tickets"}</a></p>
         <h1><AppTitle app="service-desk">New Ticket</AppTitle></h1>
-        {params?.error ? <p className="error">That ticket could not be saved.</p> : null}
+        {params?.error ? <p className="error">{params.error === "ticket" ? "That ticket could not be saved." : String(params.error)}</p> : null}
         {customers.length === 0 ? (
           <p className="org-name">
             Add a customer under <a href="/desk/customers">Customers</a> before logging tickets.
@@ -42,6 +42,10 @@ export default async function NewTicketPage({ searchParams }) {
               users={body.users || []}
               me={body.me}
               initialCustomer={Number(params?.customer) || null}
+              statuses={body.statuses || []}
+              priorityLabels={body.priorityLabels || {}}
+              categories={body.categories || []}
+              tags={body.tags || []}
             />
           </section>
         )}

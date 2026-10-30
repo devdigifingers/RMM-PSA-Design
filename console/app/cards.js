@@ -39,7 +39,7 @@ export function ReportLink({ report, canReport }) {
         <span className="dx-upsell" role="dialog" aria-label="Reports not included">
           <strong>Reports is not in your package</strong>
           <span>Trends over time, CSV and PDF exports and scheduled reports for your customers come with the Reports app.</span>
-          <a href="/subscription">Manage Subscription</a>
+          <a href="/settings/org/subscription">Manage Subscription</a>
         </span>
       ) : null}
     </span>

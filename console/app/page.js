@@ -16,7 +16,7 @@ export default async function LoginPage({ searchParams }) {
     });
     if (session.ok) {
       const account = await session.json();
-      if (account.user?.mfaSetupRequired) redirect("/settings/mfa");
+      if (account.user?.mfaSetupRequired) redirect("/settings/org/mfa");
       redirect(homeFor(account));
     }
   }
@@ -67,6 +67,7 @@ export default async function LoginPage({ searchParams }) {
               </label>
               <button type="submit">Log on</button>
             </form>
+            {params?.invited ? <p className="saved">Your password is set. Sign in with your email and new password.</p> : null}
             {invalid ? <p className="error">That email or password is not valid.</p> : null}
             {locked ? <p className="error">Too many sign-in attempts. Wait 15 minutes and try again.</p> : null}
             {messages[params?.error] ? <p className="error">{messages[params.error]}</p> : null}

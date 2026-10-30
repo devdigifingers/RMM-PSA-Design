@@ -2,7 +2,7 @@
 
 Durable record for Cursor Desktop / GitHub. Full narrative: [CHAT_HANDOFF.md](./CHAT_HANDOFF.md).
 
-**Last updated:** 2026-10-01  
+**Last updated:** 2026-10-30  
 **GitHub:** https://github.com/devdigifingers/RMM-PSA-Design
 
 ## Product
@@ -58,6 +58,27 @@ Durable record for Cursor Desktop / GitHub. Full narrative: [CHAT_HANDOFF.md](./
 - Build POC on servers; **push to GitHub** as backup / DR proof.
 - Not “deploy from GitHub to servers” as the primary Phase 1 workflow.
 - Crash later → rebuild from GitHub backup + DB/Mesh dumps.
+
+## Where the build differs from the specs (2026-10-30)
+
+Service Desk upgrade spec:
+- Email-to-ticket uses **IMAP** polling (every 2 minutes). It only reads mail that arrives after the first poll, so an
+  old mailbox is not imported.
+- Automations assign tickets to a **user**, not a team (teams do not exist yet).
+- Business hours and holidays sit under **Service Desk settings**, not Organisation settings.
+- Customers are split per app (Remote Desk and Service Desk customer views over one record).
+- Resolved and rating (CSAT) emails go out only when the tenant's "send replies to customers" setting is on.
+- The customer portal is deferred.
+
+Tenant migration spec:
+- **Users are listed, never moved.** One email belongs to one tenant, so people are invited to the target instead.
+- **Devices are Move-only.** An agent reports to one tenant; moved devices are re-pointed in MeshCentral.
+- Approval emails link to the request and **ask the person to sign in**; there are no signed one-click links.
+- A **Copy rollback keeps the target's own new work** (customers it has since used are not deleted). Only a Move
+  rollback can copy target changes back to the source.
+- Approvals come from tenant **owners**, or admins when a tenant has no owner.
+- A **second platform admin** must approve every migration and every rollback. With one platform admin account,
+  nothing can be approved end to end.
 
 ## Phased delivery
 

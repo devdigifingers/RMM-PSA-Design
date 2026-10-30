@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 // Remote Desk accent range, chosen to keep 3:1 contrast against the dark card background.
 export const SERIES = ["#22D3EE", "#3B82F6", "#38BDF8", "#818CF8", "#0EA5E9", "#60A5FA", "#67E8F9", "#A5B4FC"];
@@ -162,8 +162,16 @@ function dayLabel(day) {
 // type "area" stacks the series; "lines" draws each one. Null values are days without data and leave a gap.
 export function TimeChart({ type = "lines", days, series, unit, label }) {
   const [hover, setHover] = useState(null);
-  const W = 720;
+  const frame = useRef(null);
+  const [W, setW] = useState(720);
   const H = 240;
+  useEffect(() => {
+    const el = frame.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const watch = new ResizeObserver(([entry]) => setW(Math.max(320, Math.round(entry.contentRect.width))));
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, []);
   const pad = { left: 44, right: 12, top: 12, bottom: 28 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
@@ -192,8 +200,8 @@ export function TimeChart({ type = "lines", days, series, unit, label }) {
   }
   const fmt = (value) => (value == null ? "No data" : `${Math.round(value * 10) / 10}${unit === "%" ? "%" : ""}`);
   return (
-    <div className="rx-chart">
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} onMouseMove={move} onMouseLeave={() => setHover(null)}>
+    <div className="rx-chart" ref={frame}>
+      <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={label} onMouseMove={move} onMouseLeave={() => setHover(null)}>
         {ticks.map((value) => (
           <g key={value}>
             <line x1={pad.left} x2={W - pad.right} y1={yAt(value)} y2={yAt(value)} className="rx-grid" />

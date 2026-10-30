@@ -40,7 +40,7 @@ async function startSession(body) {
     path: "/",
     maxAge: 60 * 60 * 12,
   });
-  if (body.user?.mfaSetupRequired) redirect("/settings/mfa");
+  if (body.user?.mfaSetupRequired) redirect("/settings/org/mfa");
   redirect(body.user?.isPlatformAdmin ? "/control/tenants" : "/");
 }
 
@@ -74,15 +74,15 @@ export async function changePassword(formData) {
   const currentPassword = String(formData.get("currentPassword") || "");
   const password = String(formData.get("password") || "");
   const confirmPassword = String(formData.get("confirmPassword") || "");
-  if (password !== confirmPassword) redirect("/account?error=match");
-  if (password.length < 8 || password.length > 200) redirect("/account?error=short");
+  if (password !== confirmPassword) redirect("/settings/org/account?error=match");
+  if (password.length < 8 || password.length > 200) redirect("/settings/org/account?error=short");
   const response = await authed("/v1/account/password", { currentPassword, password });
   if (response.status === 401) redirect("/");
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    redirect(body.error === "current" ? "/account?error=current" : "/account?error=save");
+    redirect(body.error === "current" ? "/settings/org/account?error=current" : "/settings/org/account?error=save");
   }
-  redirect("/account?saved=1");
+  redirect("/settings/org/account?saved=1");
 }
 
 export async function markDeviceNoticeRead(id) {
@@ -117,6 +117,8 @@ export async function logout() {
     }).catch(() => {});
   }
   jar.delete("df_session");
+  jar.delete("df_admin_session");
+  jar.delete("df_impersonating");
   redirect("/");
 }
 
@@ -135,10 +137,20 @@ async function callApi(path, { method = "POST", body } = {}) {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
       "x-forwarded-for": incoming.get("x-forwarded-for") || "",
+      "x-df-user-agent": (incoming.get("user-agent") || "").slice(0, 300),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     cache: "no-store",
   });
+}
+
+export async function decideMigration(formData) {
+  const id = Number(formData.get("id"));
+  const decision = formData.get("decision") === "decline" ? "decline" : "approve";
+  const response = await authed(`/v1/migrations/${id}/${decision}`, { reason: String(formData.get("reason") || "").trim() });
+  const body = await response.json().catch(() => ({}));
+  const query = response.ok ? `saved=${decision}` : `message=${encodeURIComponent(body.error || "That did not work.")}`;
+  redirect(`/settings/org/migrations/${id}?${query}`);
 }
 
 export async function scheduleExport(formData) {
@@ -226,24 +238,22 @@ export async function createAlertRule(formData) {
   redirect("/alerts");
 }
 
+function priorityPercent(formData) {
+  return Object.fromEntries(["low", "normal", "high", "urgent"].map((key) => [key, Number(formData.get(`pct_${key}`)) || 100]));
+}
+
 export async function saveSla(formData) {
-  const jar = await cookies();
-  const token = jar.get("df_session")?.value;
-  if (!token) redirect("/");
-  const response = await fetch(`${apiUrl}/v1/sla`, {
+  const response = await callApi("/v1/sla", {
     method: "PUT",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
+    body: {
       responseMinutes: Number(formData.get("responseMinutes")),
       resolveMinutes: Number(formData.get("resolveMinutes")),
-    }),
-    cache: "no-store",
+      priorityPercent: priorityPercent(formData),
+    },
   });
-  if (!response.ok) redirect("/tickets/setup?error=sla");
-  redirect("/tickets/setup?saved=sla");
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`/desk/settings/service-levels?planError=${await errorText(response, "Those SLA targets could not be saved.")}`);
+  redirect("/desk/settings/service-levels?saved=sla");
 }
 
 const ACCOUNT_FIELDS = ["name", "kind", "website", "email", "phone", "altPhone", "address", "registrationNumber", "vatNumber"];
@@ -315,21 +325,128 @@ export async function saveSlaPlan(formData) {
     name: String(formData.get("name") || ""),
     responseMinutes: Number(formData.get("responseMinutes")),
     resolveMinutes: Number(formData.get("resolveMinutes")),
+    priorityPercent: priorityPercent(formData),
   };
   const response = id
     ? await callApi(`/v1/sla-plans/${id}`, { method: "PUT", body })
     : await authed("/v1/sla-plans", body);
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/tickets/setup?planError=${await errorText(response, "That plan could not be saved.")}`);
-  redirect("/tickets/setup?saved=plan");
+  if (!response.ok) redirect(`/desk/settings/service-levels?planError=${await errorText(response, "That plan could not be saved.")}`);
+  redirect("/desk/settings/service-levels?saved=plan");
+}
+
+const WEEK = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const NOTIFY_EVENTS = ["new_ticket", "assigned", "customer_reply", "sla_warning", "sla_breach"];
+
+function deskHours(formData) {
+  const hours = {};
+  for (const day of WEEK) {
+    const on = formData.get(`${day}_on`) === "on";
+    const open = String(formData.get(`${day}_open`) || "");
+    const close = String(formData.get(`${day}_close`) || "");
+    hours[day] = on ? [[open, close]] : [];
+  }
+  return hours;
+}
+
+// [method, path, body, page] for each Service Desk settings form.
+const DESK_FORMS = {
+  statusCreate: (f) => ["POST", "/v1/desk/statuses", { name: f.get("name"), base: f.get("base"), position: Number(f.get("position")) || 0 }, "ticket-setup"],
+  statusUpdate: (f) => ["PUT", `/v1/desk/statuses/${Number(f.get("id"))}`, { name: f.get("name"), base: f.get("base"), position: Number(f.get("position")) || 0 }, "ticket-setup"],
+  statusDelete: (f) => ["DELETE", `/v1/desk/statuses/${Number(f.get("id"))}`, undefined, "ticket-setup"],
+  priorities: (f) => ["PUT", "/v1/desk/priorities", { labels: Object.fromEntries(["low", "normal", "high", "urgent"].map((key) => [key, f.get(`label_${key}`)])) }, "ticket-setup"],
+  categoryCreate: (f) => ["POST", "/v1/desk/categories", { name: f.get("name") }, "ticket-setup"],
+  categoryDelete: (f) => ["DELETE", `/v1/desk/categories/${Number(f.get("id"))}`, undefined, "ticket-setup"],
+  tagCreate: (f) => ["POST", "/v1/desk/tags", { name: f.get("name") }, "ticket-setup"],
+  tagDelete: (f) => ["DELETE", `/v1/desk/tags/${Number(f.get("id"))}`, undefined, "ticket-setup"],
+  hours: (f) => ["PUT", "/v1/desk/business-hours", { enabled: f.get("enabled") === "on", hours: deskHours(f) }, "business-hours"],
+  holidayCreate: (f) => ["POST", "/v1/desk/holidays", { day: f.get("day"), name: f.get("name") }, "business-hours"],
+  holidayDelete: (f) => ["DELETE", `/v1/desk/holidays/${Number(f.get("id"))}`, undefined, "business-hours"],
+  holidaysLoad: (f) => ["POST", "/v1/desk/holidays/load", { year: Number(f.get("year")) }, "business-hours"],
+  cannedCreate: (f) => ["POST", "/v1/desk/canned", { title: f.get("title"), body: f.get("body") }, "canned-replies"],
+  cannedUpdate: (f) => ["PUT", `/v1/desk/canned/${Number(f.get("id"))}`, { title: f.get("title"), body: f.get("body") }, "canned-replies"],
+  cannedDelete: (f) => ["DELETE", `/v1/desk/canned/${Number(f.get("id"))}`, undefined, "canned-replies"],
+  rules: (f) => ["PUT", "/v1/desk/notification-rules", {
+    rules: Object.fromEntries(NOTIFY_EVENTS.map((event) => [event, { email: f.get(`${event}_email`) === "on", inApp: f.get(`${event}_inApp`) === "on" }])),
+  }, "notifications"],
+  mailbox: (f) => ["PUT", "/v1/desk/mailbox", {
+    address: f.get("address"),
+    host: f.get("host"),
+    port: Number(f.get("port")) || 993,
+    secure: f.get("secure") === "on",
+    username: f.get("username"),
+    password: String(f.get("password") || ""),
+    folder: f.get("folder") || "INBOX",
+    defaultCustomerId: f.get("defaultCustomerId") || null,
+    enabled: f.get("enabled") === "on",
+    sendReplies: f.get("sendReplies") === "on",
+    acknowledge: f.get("acknowledge") === "on",
+  }, "email"],
+  mailboxTest: () => ["POST", "/v1/desk/mailbox/test", {}, "email"],
+  mailboxDelete: () => ["DELETE", "/v1/desk/mailbox", undefined, "email"],
+  options: (f) => ["PUT", "/v1/desk/options", {
+    autoCloseDays: f.get("autoCloseOn") === "on" ? Number(f.get("autoCloseDays")) : null,
+    alertTickets: f.get("alertTickets") === "on",
+    csatEnabled: f.get("csatEnabled") === "on",
+    brandColor: f.get("brandColor"),
+    signature: f.get("signature"),
+  }, "automations"],
+  automationCreate: (f) => ["POST", "/v1/desk/automations", automationBody(f), "automations"],
+  automationUpdate: (f) => ["PUT", `/v1/desk/automations/${Number(f.get("id"))}`, automationBody(f), "automations"],
+  automationDelete: (f) => ["DELETE", `/v1/desk/automations/${Number(f.get("id"))}`, undefined, "automations"],
+};
+
+function jsonList(value) {
+  try {
+    const list = JSON.parse(String(value || "[]"));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function automationBody(f) {
+  return {
+    name: f.get("name"),
+    trigger: f.get("trigger"),
+    enabled: f.get("enabled") === "on",
+    position: Number(f.get("position")) || 0,
+    conditions: jsonList(f.get("conditions")),
+    actions: jsonList(f.get("actions")),
+  };
+}
+
+export async function saveDeskSetting(formData) {
+  const form = String(formData.get("form") || "");
+  const build = DESK_FORMS[form];
+  if (!build) redirect("/desk/settings");
+  const [method, path, body, page] = build(formData);
+  const response = await callApi(path, { method, body });
+  if (response.status === 401) redirect("/");
+  const anchor = String(formData.get("anchor") || "").replace(/[^a-z-]/g, "");
+  if (!response.ok) {
+    redirect(`/desk/settings/${page}?error=${await errorText(response, "That change could not be saved.")}${anchor ? `#${anchor}` : ""}`);
+  }
+  const result = await response.json().catch(() => ({}));
+  const extra = form === "holidaysLoad"
+    ? `&added=${Number(result.added) || 0}`
+    : form === "mailboxTest" && Number.isInteger(result.messages) ? `&messages=${result.messages}` : "";
+  redirect(`/desk/settings/${page}?saved=${form}${extra}${anchor ? `#${anchor}` : ""}`);
+}
+
+// ids: a list of notification ids, or null for all of them.
+export async function markNotificationsRead(ids) {
+  const list = Array.isArray(ids) ? ids.map(Number).filter(Number.isInteger) : null;
+  const response = await callApi("/v1/notifications/read", { method: "POST", body: list ? { ids: list } : {} });
+  return { ok: response.ok };
 }
 
 export async function deleteSlaPlan(formData) {
   const id = String(formData.get("planId") || "");
   const response = await callApi(`/v1/sla-plans/${id}`, { method: "DELETE" });
   if (response.status === 401) redirect("/");
-  if (!response.ok) redirect(`/tickets/setup?planError=${await errorText(response, "That plan could not be deleted.")}`);
-  redirect("/tickets/setup?saved=planRemoved");
+  if (!response.ok) redirect(`/desk/settings/service-levels?planError=${await errorText(response, "That plan could not be deleted.")}`);
+  redirect("/desk/settings/service-levels?saved=planRemoved");
 }
 
 export async function deleteCustomer(formData) {
@@ -405,21 +522,55 @@ export async function unlinkAsset(formData) {
   redirect(`/remote/customers/${id}?tab=devices&saved=unlinked`);
 }
 
+// Status selects send "open" or "status:<id>" for a tenant's own status.
+function statusFields(value) {
+  const text = String(value || "open");
+  const custom = /^status:(\d+)$/.exec(text);
+  return custom ? { status: "open", statusId: Number(custom[1]) } : { status: text, statusId: null };
+}
+
 export async function createTicket(formData) {
+  const customerId = Number(formData.get("customerId"));
   const response = await authed("/v1/tickets", {
-    customerId: Number(formData.get("customerId")),
+    customerId,
     contactId: formData.get("contactId") || null,
     deviceId: formData.get("deviceId") || null,
     assigneeUserId: formData.get("assigneeUserId") || null,
     subject: String(formData.get("subject") || ""),
-    status: String(formData.get("status") || "open"),
+    ...statusFields(formData.get("status")),
     priority: String(formData.get("priority") || "normal"),
     comment: String(formData.get("comment") || ""),
     attachmentIds: String(formData.get("attachmentIds") || ""),
+    category: String(formData.get("category") || ""),
+    tags: String(formData.get("tags") || ""),
+    dueAt: formData.get("dueOverride") === "on" ? String(formData.get("dueAt") || "") : null,
+    channel: String(formData.get("channel") || "") || null,
+    cc: formData.getAll("cc").map(Number).filter(Number.isInteger),
   });
-  if (!response.ok) redirect("/tickets/new?error=ticket");
+  if (response.status === 401) redirect("/");
+  if (!response.ok) {
+    redirect(`/tickets/new?customer=${customerId || ""}&error=${await errorText(response, "That ticket could not be saved.")}`);
+  }
   const body = await response.json();
   redirect(`/tickets/${body.id}`);
+}
+
+export async function previewTicket(customerId, priority, subject) {
+  const query = new URLSearchParams({ customer: String(Number(customerId) || ""), priority: String(priority || "normal") });
+  const [due, similar] = await Promise.all([
+    callApi(`/v1/tickets/due-preview?${query}`, { method: "GET" }),
+    String(subject || "").trim().length >= 4
+      ? callApi(`/v1/tickets/similar?${new URLSearchParams({ customer: String(Number(customerId) || ""), subject: String(subject).slice(0, 200) })}`, { method: "GET" })
+      : null,
+  ]);
+  const dueBody = due.ok ? await due.json().catch(() => ({})) : {};
+  const similarBody = similar?.ok ? await similar.json().catch(() => ({})) : {};
+  return {
+    dueAt: dueBody.dueAt || null,
+    businessHours: Boolean(dueBody.businessHours),
+    resolveMinutes: dueBody.resolveMinutes || null,
+    similar: similarBody.tickets || [],
+  };
 }
 
 export async function bulkUpdateTickets(ids, changes) {
@@ -479,6 +630,37 @@ export async function assignTicketToMe(ticketId, me) {
   return bulkUpdateTickets([ticketId], { assigneeUserId: me });
 }
 
+function ticketPage(id, query) {
+  return `/tickets/${Number(id) || 0}?${query}`;
+}
+
+export async function toggleTicketWatch(formData) {
+  const id = Number(formData.get("ticketId")) || 0;
+  const watching = formData.get("watching") === "true";
+  const response = await callApi(`/v1/tickets/${id}/watch`, { method: watching ? "DELETE" : "POST", body: watching ? undefined : {} });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(ticketPage(id, `error=${await errorText(response, "Watching could not be changed.")}`));
+  redirect(ticketPage(id, `saved=${watching ? "unwatch" : "watch"}`));
+}
+
+export async function saveTicketWatchers(formData) {
+  const id = Number(formData.get("ticketId")) || 0;
+  const userIds = formData.getAll("watcher").map(Number).filter(Number.isInteger);
+  const response = await callApi(`/v1/tickets/${id}/watchers`, { method: "PUT", body: { userIds } });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(ticketPage(id, `error=${await errorText(response, "Watchers could not be saved.")}`));
+  redirect(ticketPage(id, "saved=watchers"));
+}
+
+export async function saveTicketParent(formData) {
+  const id = Number(formData.get("ticketId")) || 0;
+  const parentId = String(formData.get("parentId") || "").trim();
+  const response = await callApi(`/v1/tickets/${id}/parent`, { method: "PUT", body: { parentId: parentId || null } });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(ticketPage(id, `error=${await errorText(response, "The parent ticket could not be saved.")}`));
+  redirect(ticketPage(id, `saved=${parentId ? "parent" : "parentRemoved"}`));
+}
+
 export async function createInstallCommand(customerId, maxUses) {
   const response = await authed("/v1/enroll-tokens", {
     kind: "command",
@@ -511,17 +693,20 @@ export async function updateTicket(formData) {
       authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({
-      status: String(formData.get("status") || ""),
+      ...statusFields(formData.get("status")),
       priority: String(formData.get("priority") || ""),
       assigneeUserId: formData.get("assigneeUserId") || null,
       ...(formData.has("contactId") ? { contactId: formData.get("contactId") || null } : {}),
       ...(deviceChanged ? { deviceId: formData.get("deviceId") || null } : {}),
       ...(formData.has("category") ? { category: String(formData.get("category") || "") } : {}),
       ...(formData.has("tags") ? { tags: String(formData.get("tags") || "") } : {}),
+      ...(formData.has("dueAt") ? { dueAt: String(formData.get("dueAt") || "") || null } : {}),
+      ...(formData.get("channel") ? { channel: String(formData.get("channel")) } : {}),
+      ...(formData.has("ccField") ? { cc: formData.getAll("cc").map(Number).filter(Number.isInteger) } : {}),
     }),
     cache: "no-store",
   });
-  if (!response.ok) redirect(`/tickets/${id}?error=update`);
+  if (!response.ok) redirect(`/tickets/${id}?error=update&message=${await errorText(response, "That change could not be saved.")}`);
   redirect(`/tickets/${id}`);
 }
 
@@ -994,7 +1179,7 @@ export async function startSupportRemote(id) {
   return supportCall(`/v1/support-sessions/${encodeURIComponent(id)}/remote`, "POST");
 }
 
-const TECH_PATH = "/settings/technicians";
+const TECH_PATH = "/settings/org/technicians";
 
 async function technicianError(response) {
   const body = await response.json().catch(() => ({}));
@@ -1021,6 +1206,44 @@ export async function addTechnician(formData) {
   });
   if (!response.ok) redirect(`${TECH_PATH}?error=${await technicianError(response)}`);
   redirect(`${TECH_PATH}?saved=added`);
+}
+
+export async function inviteTechnician(formData) {
+  const response = await callApi("/v1/users/invites", {
+    body: {
+      name: String(formData.get("name") || ""),
+      email: String(formData.get("email") || ""),
+      role: String(formData.get("role") || "tech"),
+    },
+  });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    redirect(`${TECH_PATH}?invite_error=${encodeURIComponent(body.error || "The invite was not sent.")}`);
+  }
+  redirect(`${TECH_PATH}?saved=invited`);
+}
+
+export async function revokeTechnicianInvite(formData) {
+  const id = String(formData.get("id") || "").replace(/\D/g, "");
+  const response = await callApi(`/v1/users/invites/${id}`, { method: "DELETE" });
+  redirect(response.ok ? `${TECH_PATH}?saved=invite-revoked` : `${TECH_PATH}?error=save`);
+}
+
+export async function endImpersonation() {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  const tenantId = (jar.get("df_impersonating")?.value || "").replace(/\D/g, "");
+  if (token) await callApi("/v1/impersonation/end").catch(() => {});
+  const adminToken = jar.get("df_admin_session")?.value;
+  jar.delete("df_impersonating");
+  jar.delete("df_admin_session");
+  if (!adminToken) {
+    jar.delete("df_session");
+    redirect("/");
+  }
+  jar.set("df_session", adminToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 12 });
+  redirect(tenantId ? `/control/tenants/${tenantId}` : "/control/tenants");
 }
 
 export async function updateTechnician(formData) {
@@ -1071,12 +1294,12 @@ async function securityError(path, response) {
 
 export async function saveRequireMfa(formData) {
   const response = await callApi("/v1/org/security", { method: "PUT", body: { requireMfa: formData.get("requireMfa") === "1" } });
-  if (!response.ok) await securityError("/settings/mfa", response);
-  redirect("/settings/mfa?saved=org");
+  if (!response.ok) await securityError("/settings/org/mfa", response);
+  redirect("/settings/org/mfa?saved=org");
 }
 
 export async function saveIpAllowlist(formData) {
   const response = await callApi("/v1/org/security", { method: "PUT", body: { ipAllowlist: String(formData.get("ipAllowlist") || "") } });
-  if (!response.ok) await securityError("/settings/ip-restriction", response);
-  redirect("/settings/ip-restriction?saved=1");
+  if (!response.ok) await securityError("/settings/org/ip-restriction", response);
+  redirect("/settings/org/ip-restriction?saved=1");
 }

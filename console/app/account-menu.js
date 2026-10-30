@@ -8,7 +8,7 @@ const LINKS = [
   ["faq", "/faq", "FAQ"],
   ["help", "/help", "Help"],
   ["pricing", "/pricing", "Pricing"],
-  ["offers", "/offers", "Offers"],
+  ["offers", "/settings/org/offers", "Offers"],
   ["blogs", "/blogs", "Blogs"],
   ["contact", "/contact", "Contact Us"],
 ];
@@ -68,14 +68,16 @@ export function AccountMenu({ user }) {
             <p className="account-email">{user.email}</p>
             <p className="account-id">User ID: {user.accountNumber}</p>
             <div className="account-shortcuts">
-              <Link href="/account" onClick={close}>My Account</Link>
-              {user.isPlatformAdmin ? <Link href="/control/tenants" onClick={close}>Control panel</Link> : <Link href="/organization" onClick={close}>My Organization</Link>}
+              <Link href="/settings/org/account" onClick={close}>My Account</Link>
+              {user.isPlatformAdmin ? <Link href="/control/tenants" onClick={close}>Control panel</Link> : <Link href="/settings/org/details" onClick={close}>My Organization</Link>}
             </div>
           </div>
-          <Link className="account-sub" href="/subscription" onClick={close}>
-            <Doc />
-            Manage Subscription
-          </Link>
+          {user.isPlatformAdmin || (user.roles || []).some((role) => role === "owner" || role === "admin") ? (
+            <Link className="account-sub" href="/settings/org/subscription" onClick={close}>
+              <Doc />
+              Manage Subscription
+            </Link>
+          ) : null}
           <div className="account-grid">
             {LINKS.filter(([icon]) => !(user.isPlatformAdmin && TENANT_ONLY.has(icon))).map(([icon, href, label]) => (
               <Link key={href} href={href} onClick={close}>{iconFor(icon)}{label}</Link>

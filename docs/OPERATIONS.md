@@ -30,10 +30,11 @@ Health checks on df-a: `curl localhost:4000/health` should return `{"ok":true,"p
 | Every | Job |
 |-------|-----|
 | 15 s | Scheduled fleet exports, offline sweep, SLA breach sweep, support-session sweep |
-| 1 min | Ticket remote-session sweep |
+| 1 min | Ticket remote-session sweep; tenant migrations (expiry, due runs, rollbacks, 30-day purge) |
+| 2 min | Service Desk mailboxes (IMAP email-to-ticket) |
 | 5 min | Uptime sampling (feeds the Uptime report) |
 | 10 min | Mesh tenant isolation, daily dashboard snapshots, monthly emailed reports |
-| 1 hour | Unused ticket attachment cleanup |
+| 1 hour | Unused ticket attachment cleanup, auto-close of resolved tickets |
 
 ---
 
@@ -79,7 +80,10 @@ tar czf /tmp/df-changelog.tgz -C docs CHANGELOG.md && scp -q /tmp/df-changelog.t
 ### Checks before every deploy
 
 - API: `cd api && npm test` (all pass) and `node --check src/server.js`.
-- Console: `npx --yes esbuild@0.24.0 --loader=jsx --log-level=error < <file>` for each changed file.
+- Console: `cd console && npm test` (settings menu and redirects), and
+  `npx --yes esbuild@0.24.0 --loader=jsx --log-level=error < <file>` for each changed file.
+- Settings pages live under `/settings/org`, `/remote/settings` and `/desk/settings`; the menu is defined once in
+  `console/app/settings-map.js`. When a page moves, add the old address to `redirects()` in `console/next.config.mjs`.
 - After deploying, check the change in the browser on rmm.digitalfingers.co.za.
 
 ---
@@ -166,13 +170,40 @@ within 15 seconds.
 
 ---
 
-## 6. Testing safely
+## 6. Tenant migrations
+
+Control → Migrations moves or copies customers, contacts, tickets (with their timeline, attachments and time),
+devices and desk settings from one tenant to another. Code: `api/src/migration-plan.js` (pure planning rules) and
+`api/src/migrations.js` (dry run, approvals, run, rollback, purge).
+
+- **Approvals:** the source tenant, the target tenant (owners, or admins when a tenant has no owner) and a second
+  platform admin who is not the requester. A request expires after 7 days without all three. Changing a request
+  clears the approvals. Approval links in emails ask the person to sign in; there are no signed links.
+- **Run:** one database transaction with the `df.migration` setting, so a failure or restart changes nothing. It waits
+  while a remote session is live on a device in scope, re-runs the dry run, and sends the request back for approval if
+  the data changed a lot since (more than 10% or 2 records, or new conflicts). Devices are then re-pointed to the
+  target's Mesh group.
+- **Move:** the source keeps a read-only copy (`migration_lock`; database triggers refuse changes) for 30 days, then it
+  is purged. **Copy** leaves the source alone and never includes devices.
+- **Rollback:** within 30 days of a Move (any time for a Copy), requested by one platform admin and approved by
+  another. Changes the target made since can be copied back to the source or discarded. A Copy rollback keeps
+  customers the target has since used.
+- **Users** are listed, never moved: one email belongs to one tenant.
+- **End-to-end check:** `api/scripts/migration-selftest.js` runs a Move, rollback, Copy and Copy rollback against a
+  scratch database and checks that the source is restored exactly and a third tenant is never touched. It refuses to
+  run unless the database name ends in `_selftest`. Run it locally against a throwaway Postgres container, never
+  against the platform database.
+
+---
+
+## 7. Testing safely
 
 - All online machines except the test devices are client or office PCs. Never reboot, shut down, or stop processes
   on them as a test.
 - Test devices: **FED-WIN-001** (Windows VM) and **KANLDZAVFS01**. Do not click Connect on live office machines.
 - Restart MeshCentral only when no remote sessions are open.
-- Do not send report emails to real customer contacts while testing.
+- Do not send report emails to real customer contacts while testing. The same goes for invites, ticket replies,
+  resolved and rating (CSAT) emails, and migration requests, which email both tenants' owners.
 - Install commands, invite links, support codes and one-time download links are credentials: do not paste them in
   chat or tickets. If one is exposed, revoke it under Downloads → Active install commands.
 - Do not publish a Windows agent until it has passed on FED-WIN-001.

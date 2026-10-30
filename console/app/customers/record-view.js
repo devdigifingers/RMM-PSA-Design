@@ -61,9 +61,10 @@ export async function CustomerRecord({ app, params, searchParams }) {
   const body = await response.json();
   const { account, contacts = [], tickets = [], devices = [], linkable = [], sessions = [], report, sla, crossLink } = body;
   const time = body.time || { totalMinutes: 0, billableMinutes: 0, entries: [] };
-  const readOnly = body.readOnly === true;
+  const readOnly = body.readOnly === true || account.movedAway === true;
   const manage = body.canOperate && !readOnly;
   const remote = app === "remote";
+  const insights = body.insights || null;
   const tabs = remote
     ? [
       ["overview", "Overview", null],
@@ -74,10 +75,13 @@ export async function CustomerRecord({ app, params, searchParams }) {
     ]
     : [
       ["overview", "Overview", null],
+      ["history", "History", null],
       ["tickets", "Tickets", tickets.length],
       ["time", "Time Entry", time.entries.length],
       ["contacts", "Contacts", contacts.length],
+      ...(insights?.deskDevices ? [["devices", "Devices", insights.deskDevices.length]] : []),
       ["sla", "SLA / contract", null],
+      ["attachments", "Attachments", insights ? insights.attachments.length : null],
       ["notes", "Notes", null],
     ];
   const tab = tabs.some(([key]) => key === query?.tab) ? query.tab : "overview";
@@ -142,7 +146,9 @@ export async function CustomerRecord({ app, params, searchParams }) {
               )}
             </div>
           </header>
-          <ReadOnlyNote show={readOnly} />
+          {account.movedAway ? (
+            <p className="cust-readonly" role="status">This customer was moved to another organisation and is read-only here. It is removed 30 days after the move.</p>
+          ) : <ReadOnlyNote show={readOnly} />}
           <nav className="cust-tabs" aria-label="Customer sections">
             {tabs.map(([key, label, count]) => (
               <a key={key} href={href(key)} className={tab === key ? "is-active" : undefined} aria-current={tab === key ? "page" : undefined}>
@@ -167,13 +173,22 @@ export async function CustomerRecord({ app, params, searchParams }) {
                   </>
                 ) : (
                   <>
-                    <div><dt>Open tickets</dt><dd>{report?.ticketsOpen ?? 0}</dd></div>
+                    <div><dt>All tickets</dt><dd>{insights?.overview.total ?? tickets.length}</dd></div>
+                    <div><dt>Open</dt><dd>{insights?.overview.open ?? report?.ticketsOpen ?? 0}</dd></div>
                     <div><dt>Overdue</dt><dd className={report?.ticketsOverdue ? "desk-overdue" : undefined}>{report?.ticketsOverdue ?? 0}</dd></div>
-                    <div><dt>Resolved, last 30 days</dt><dd>{report?.ticketsResolved30 ?? 0}</dd></div>
+                    <div>
+                      <dt>Happiness</dt>
+                      <dd className={insights?.overview.happiness.total ? undefined : "cust-stat-text"}>
+                        {insights?.overview.happiness.total ? `${insights.overview.happiness.score}%` : "No ratings"}
+                      </dd>
+                    </div>
                     <div><dt>SLA plan</dt><dd className="cust-stat-text">{sla?.planName || "None set"}</dd></div>
                   </>
                 )}
               </dl>
+              {!remote && insights ? (
+                <DeskOverview insights={insights} tickets={tickets} panel={query?.panel} href={href("overview")} />
+              ) : null}
               {readOnly ? (
                 <dl className="cust-overview">
                   {OVERVIEW_FIELDS.map(([key, label]) => (
@@ -408,6 +423,14 @@ export async function CustomerRecord({ app, params, searchParams }) {
 
           {tab === "time" && !remote ? <TimeTab time={time} /> : null}
 
+          {tab === "history" && !remote ? <HistoryTab items={insights?.history || []} /> : null}
+
+          {tab === "attachments" && !remote ? <AttachmentsTab files={insights?.attachments || []} /> : null}
+
+          {tab === "devices" && !remote && insights?.deskDevices ? (
+            <DeskDevicesTab account={account} devices={insights.deskDevices} />
+          ) : null}
+
           {tab === "sla" && !remote && sla ? (
             <SlaTab account={account} sla={sla} report={report} readOnly={readOnly} />
           ) : null}
@@ -567,7 +590,7 @@ function SlaTab({ account, sla, report, readOnly }) {
           <section className="job">
             <h2>SLA plan</h2>
             <p className="org-name">
-              Due dates and overdue flags on {account.name}&apos;s tickets use this plan. Plans are managed under <a href="/tickets/setup">SLA Targets</a>.
+              Due dates and overdue flags on {account.name}&apos;s tickets use this plan. Plans are managed under <a href="/desk/settings/service-levels">SLA Targets</a>.
             </p>
             <div className="cust-fields">
               <label className="cust-wide">
@@ -609,6 +632,199 @@ function SlaTab({ account, sla, report, readOnly }) {
           </div>
         </form>
       )}
+    </>
+  );
+}
+
+const RATING_LABELS = { good: "Good", ok: "OK", bad: "Bad" };
+const PANELS = [["all", "All"], ["open", "Open"], ["hold", "On hold"]];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function spanLabel(minutes) {
+  if (minutes == null) return "—";
+  if (minutes < 1) return "Under 1 min";
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 48 * 60) return workTime(minutes);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.round((minutes % 1440) / 60);
+  return hours ? `${days} d ${hours} h` : `${days} d`;
+}
+
+function DeskOverview({ insights, tickets, panel, href }) {
+  const { overview, ratings } = insights;
+  const peak = Math.max(1, ...overview.volume.flatMap((row) => [row.created, row.resolved]));
+  const active = PANELS.some(([key]) => key === panel) ? panel : "all";
+  const shown = tickets.filter((ticket) => (active === "open" ? ticket.status === "open" : active === "hold" ? ticket.status === "pending" : true));
+  return (
+    <div className="cust-insights">
+      <section className="job cust-volume">
+        <h2>Tickets, last 6 months</h2>
+        <div className="cust-chart" role="img" aria-label={overview.volume.map((row) => `${row.month}: ${row.created} created, ${row.resolved} resolved`).join("; ")}>
+          {overview.volume.map((row) => (
+            <div key={row.month} className="cust-chart-month">
+              <div className="cust-chart-bars">
+                <span className="is-created" style={{ height: `${(row.created / peak) * 100}%` }} title={`${row.created} created`} />
+                <span className="is-resolved" style={{ height: `${(row.resolved / peak) * 100}%` }} title={`${row.resolved} resolved`} />
+              </div>
+              <span className="cust-chart-label">{MONTHS[Number(row.month.slice(5, 7)) - 1]}</span>
+            </div>
+          ))}
+        </div>
+        <p className="cust-chart-key"><span className="is-created" /> Created <span className="is-resolved" /> Resolved</p>
+      </section>
+      <section className="job cust-averages">
+        <h2>Averages, last 6 months</h2>
+        <dl>
+          <div><dt>First response</dt><dd>{spanLabel(overview.averages.firstResponseMinutes)}</dd></div>
+          <div><dt>Response</dt><dd>{spanLabel(overview.averages.responseMinutes)}</dd></div>
+          <div><dt>Resolution</dt><dd>{spanLabel(overview.averages.resolutionMinutes)}</dd></div>
+        </dl>
+        {overview.happiness.total ? (
+          <p className="org-name">
+            Ratings: {overview.happiness.good} good, {overview.happiness.ok} OK, {overview.happiness.bad} bad.
+          </p>
+        ) : null}
+        {ratings.length ? (
+          <ul className="cust-ratings">
+            {ratings.slice(0, 5).map((row) => (
+              <li key={row.ticketId}>
+                <span className={`chip rating-${row.rating}`}>{RATING_LABELS[row.rating]}</span>{" "}
+                <a href={`/tickets/${row.ticketId}`}>#{row.ticketId}</a> {row.comment ? <q>{row.comment}</q> : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
+      <section className="job cust-panel">
+        <nav className="cust-subtabs" aria-label="Ticket filter">
+          {PANELS.map(([key, label]) => (
+            <a key={key} href={`${href}&panel=${key}`} className={active === key ? "is-active" : undefined} aria-current={active === key ? "page" : undefined}>
+              {label}
+              <span className="desk-count">{key === "all" ? overview.total : key === "open" ? overview.open : overview.onHold}</span>
+            </a>
+          ))}
+        </nav>
+        {shown.length === 0 ? (
+          <p className="org-name">No tickets here.</p>
+        ) : (
+          <ul className="cust-ticket-list">
+            {shown.slice(0, 10).map((ticket) => (
+              <li key={ticket.id}>
+                <a href={`/tickets/${ticket.id}`}>#{ticket.id} {ticket.subject}</a>
+                <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function historyLine(item) {
+  if (item.source === "ticket") {
+    switch (item.action) {
+      case "created": return "logged the ticket";
+      case "status": return `changed the status from ${item.from || "—"} to ${item.to || "—"}`;
+      case "merged": return "merged the ticket";
+      case "parent": return item.to ? "linked the ticket to a parent" : "removed the parent link";
+      case "csat": return `rated the support ${RATING_LABELS[item.rating] || item.rating}`;
+      default: return item.action;
+    }
+  }
+  const [target, verb] = String(item.action).split(".");
+  const what = target === "device" ? "a device" : target === "contact" ? `contact ${item.name || ""}`.trim() : "the customer";
+  const verbs = { create: "added", update: "updated", delete: "removed", link: "linked", unlink: "unlinked", assign: "assigned", notes: "updated the notes on", sla: "updated the SLA for" };
+  return `${verbs[verb] || verb || "changed"} ${what}`;
+}
+
+function HistoryTab({ items }) {
+  if (!items.length) return <p className="org-name">Nothing recorded for this customer yet.</p>;
+  return (
+    <ol className="cust-history">
+      {items.map((item, index) => (
+        <li key={`${item.at}-${index}`}>
+          <time dateTime={item.at}>{formatWhen(item.at)}</time>
+          <span>
+            <strong>{item.actor}</strong> {historyLine(item)}
+            {item.ticketId ? <> on <a href={`/tickets/${item.ticketId}`}>#{item.ticketId} {item.subject}</a></> : null}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function sizeLabel(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function AttachmentsTab({ files }) {
+  return (
+    <div className="systems desk-table cust-tickets">
+      <table>
+        <thead>
+          <tr>
+            <th>File</th>
+            <th>Ticket</th>
+            <th>Added by</th>
+            <th>Size</th>
+            <th>Added</th>
+          </tr>
+        </thead>
+        <tbody>
+          {files.length === 0 ? (
+            <tr><td className="empty" colSpan={5}>No attachments on this customer&apos;s tickets yet.</td></tr>
+          ) : files.map((file) => (
+            <tr key={file.id}>
+              <td className="desk-subject"><a href={`/tickets/attachments/${file.id}`} target="_blank" rel="noopener noreferrer">{file.name}</a></td>
+              <td className="desk-subject"><a href={`/tickets/${file.ticketId}`} title={file.ticketSubject}>#{file.ticketId} {file.ticketSubject}</a></td>
+              <td>{file.uploader}</td>
+              <td>{sizeLabel(file.size)}</td>
+              <td>{formatWhen(file.createdAt)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DeskDevicesTab({ account, devices }) {
+  return (
+    <>
+      <p className="org-name">
+        Devices linked to this customer in Remote Desk. <a href={`/remote/customers/${account.id}?tab=devices`}>Manage them in Remote Desk</a>.
+      </p>
+      <div className="systems desk-table cust-tickets">
+        <table>
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>Assigned to</th>
+              <th>Operating system</th>
+              <th>Last seen</th>
+              <th>Open tickets</th>
+            </tr>
+          </thead>
+          <tbody>
+            {devices.length === 0 ? (
+              <tr><td className="empty" colSpan={5}>No devices linked to this customer.</td></tr>
+            ) : devices.map((device) => (
+              <tr key={device.id}>
+                <td>{device.displayName}</td>
+                <td>{device.contactName || "Shared"}</td>
+                <td>{device.osName || "—"}</td>
+                <td>{device.lastSeenAt ? formatWhen(device.lastSeenAt) : "—"}</td>
+                <td>{device.openTickets}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

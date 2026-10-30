@@ -31,12 +31,13 @@ export function NavLinks({ links, serviceLinks, reportLinks, customers = null, l
   const shown = inReports ? reportLinks : app === "service" && serviceLinks ? serviceLinks : links;
   const customersLink = inReports ? null : customersHref(app, customers);
   const shared = customersLink ? [[customersLink, "Customers", "/customers"]] : [];
-  const item = ([href, text, icon, exact]) => {
+  const item = ([href, text, icon, exact, badge]) => {
     const on = path === href || (!exact && path.startsWith(`${href}/`));
     return (
       <Link key={href} href={href} className={on ? "is-active" : undefined} aria-current={on ? "page" : undefined}>
         {ICONS[icon || href] || ICONS["/devices"]}
         <span>{text}</span>
+        {badge ? <b className="app-rail-badge" aria-label={`${badge} waiting`}>{badge > 99 ? "99+" : badge}</b> : null}
       </Link>
     );
   };
@@ -126,6 +127,13 @@ const ICONS = {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path className="solid" d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z" />
       <path d="M12 22V12M3.3 7 12 12l8.7-5M7.5 4.27l9 5.15" />
+    </svg>
+  ),
+  "/control/migrations": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect className="solid" x="2" y="7" width="6" height="10" rx="1.5" />
+      <rect x="16" y="7" width="6" height="10" rx="1.5" />
+      <path d="M10.5 10h3.5l-1.5-1.5M13.5 14H10l1.5 1.5" />
     </svg>
   ),
   "/control/notices": (

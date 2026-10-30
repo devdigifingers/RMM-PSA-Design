@@ -1,4 +1,6 @@
 import { pool } from "./db.js";
+import { insertAudit } from "./audit.js";
+import { createInvite, listInvites, parseInvite } from "./invites.js";
 import { FEATURE_KEYS, appsFor } from "./licensing.js";
 import {
   licenseSnapshot,
@@ -36,11 +38,7 @@ async function tx(work) {
 }
 
 function audit(client, orgId, actorId, action, targetType, targetId, detail) {
-  return client.query(
-    `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-    [orgId, actorId, action, targetType, targetId == null ? null : String(targetId), JSON.stringify(detail || {})],
-  );
+  return insertAudit(client, orgId, actorId, action, targetType, targetId, detail);
 }
 
 function text(value, max) {
@@ -347,7 +345,7 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
     const row = found.rows[0];
     if (!row) return h.send(res, 404, { error: "Tenant not found." });
     const license = await loadLicense(pool, id, { force: true });
-    const [users, packages, sessions] = await Promise.all([
+    const [users, packages, sessions, invites, history] = await Promise.all([
       h.orgUsers(id),
       pool.query(
         `SELECT p.*, (SELECT count(*)::int FROM licenses l WHERE l.package_id = p.id) AS tenant_count
@@ -355,6 +353,16 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
         [license?.package_id ?? 0],
       ),
       pool.query("SELECT count(*)::int AS n FROM support_sessions WHERE org_id = $1 AND status = ANY($2::text[])", [id, SUPPORT_LIVE]),
+      listInvites(id),
+      pool.query(
+        `SELECT d::date AS day,
+                (SELECT s.device_count FROM device_daily_stats s WHERE s.org_id = $1 AND s.customer_id IS NULL AND s.day = d::date) AS devices,
+                (SELECT count(*)::int FROM remote_sessions r WHERE r.org_id = $1 AND r.started_at >= d AND r.started_at < d + interval '1 day') AS remote,
+                (SELECT count(*)::int FROM support_sessions q WHERE q.org_id = $1 AND q.created_at >= d AND q.created_at < d + interval '1 day') AS support
+         FROM generate_series((now() AT TIME ZONE 'Africa/Johannesburg')::date - 29, (now() AT TIME ZONE 'Africa/Johannesburg')::date, interval '1 day') AS d
+         ORDER BY d`,
+        [id],
+      ),
     ]);
     h.send(res, 200, {
       tenant: tenantSummary(row, license),
@@ -366,7 +374,14 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
           }
         : null,
       usage: { seatsUsed: row.seats_used, deviceCount: row.device_count, sessionsRunning: sessions.rows[0].n },
+      usageHistory: history.rows.map((item) => ({
+        day: item.day instanceof Date ? item.day.toISOString().slice(0, 10) : String(item.day),
+        devices: item.devices == null ? null : Number(item.devices),
+        remoteSessions: item.remote,
+        supportSessions: item.support,
+      })),
       users,
+      invites,
       packages: packages.rows.map(packageView),
     });
   }
@@ -414,9 +429,12 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
     if (!name) throw new InputError("Enter the company name.");
     if (!SLUG.test(slug)) throw new InputError("Use lowercase letters, numbers, and hyphens for the company code.");
     const license = parseLicenseEdit({ ...body, status: "active" }, h.expiryFrom);
-    const admin = h.parseTenantAdmin(body);
+    const inviteAdmin = body.inviteAdmin === true;
+    const admin = inviteAdmin
+      ? parseInvite({ name: body.adminName, email: body.adminEmail, role: "admin" })
+      : h.parseTenantAdmin(body);
     if (admin.error) throw new InputError(admin.error);
-    const passwordHash = await h.hashPassword(admin.value.password);
+    const passwordHash = inviteAdmin ? null : await h.hashPassword(admin.value.password);
     try {
       const orgId = await tx(async (client) => {
         const pkgRow = await packageForAssignment(client, license.packageId, null);
@@ -432,19 +450,30 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
             license.featuresRemoved, license.noExpiry, actor.id],
         );
         await client.query("INSERT INTO roles (org_id, name) VALUES ($1, 'owner'), ($1, 'admin'), ($1, 'tech')", [id]);
-        const user = await client.query(
-          `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin) VALUES ($1, $2, $3, $4, false) RETURNING id`,
-          [id, admin.value.email, admin.value.name, passwordHash],
-        );
-        await h.setUserRole(client, id, user.rows[0].id, "admin");
+        if (inviteAdmin) {
+          const taken = await client.query("SELECT 1 FROM users WHERE lower(email) = $1", [admin.value.email]);
+          if (taken.rows[0]) throw new InputError("That email is already a user.", 409);
+        }
         await audit(client, id, actor.id, "tenant.create", "org", id, {
           name,
           slug,
           license: licenseSnapshot({ ...created.rows[0], package_code: pkgRow.code }),
         });
-        await audit(client, id, actor.id, "user.create", "user", user.rows[0].id, { role: "admin", email: admin.value.email });
+        if (!inviteAdmin) {
+          const user = await client.query(
+            `INSERT INTO users (org_id, email, name, password_hash, is_platform_admin) VALUES ($1, $2, $3, $4, false) RETURNING id`,
+            [id, admin.value.email, admin.value.name, passwordHash],
+          );
+          await h.setUserRole(client, id, user.rows[0].id, "admin");
+          await audit(client, id, actor.id, "user.create", "user", user.rows[0].id, { role: "admin", email: admin.value.email });
+        }
         return id;
       });
+      if (inviteAdmin) {
+        const invited = await createInvite(h, { orgId, actor, input: admin.value });
+        h.send(res, 201, { id: orgId, inviteError: invited.error || null });
+        return;
+      }
       h.send(res, 201, { id: orgId });
     } catch (error) {
       if (error.code === "23505" && String(error.constraint || "").includes("email")) throw new InputError("That email is already a user.", 409);
@@ -640,17 +669,20 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
                   LEFT JOIN users u ON u.id = e.actor_user_id
                   ${filter}`;
     const columns = `e.id, e.created_at, e.org_id, o.name AS org_name, u.email AS actor_email,
-                     e.action, e.target_type, e.target_id, e.detail`;
+                     e.action, e.target_type, e.target_id, e.detail, e.actor_role, e.ip, e.user_agent`;
 
     if (params.get("format") === "csv") {
       const rows = await pool.query(`SELECT ${columns} ${base} ORDER BY e.id DESC LIMIT ${AUDIT_EXPORT_LIMIT}`, values);
-      const lines = [["id", "time", "tenant", "actor", "action", "target_type", "target_id", "detail"].join(",")];
+      const lines = [["id", "time", "tenant", "actor", "actor_role", "ip", "user_agent", "action", "target_type", "target_id", "detail"].join(",")];
       for (const row of rows.rows) {
         lines.push([
           row.id,
           new Date(row.created_at).toISOString(),
           row.org_name || "Platform",
           row.actor_email || "System",
+          row.actor_role || "",
+          row.ip || "",
+          row.user_agent || "",
           row.action,
           row.target_type,
           row.target_id,
@@ -684,6 +716,8 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
         orgId: row.org_id == null ? null : Number(row.org_id),
         tenant: row.org_name || "Platform",
         actor: row.actor_email || "System",
+        actorRole: row.actor_role || null,
+        ip: row.ip || null,
         action: row.action,
         targetType: row.target_type,
         targetId: row.target_id,

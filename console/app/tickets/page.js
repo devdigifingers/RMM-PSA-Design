@@ -119,7 +119,7 @@ export default async function TicketsPage({ searchParams }) {
           <SavedList title="Shared Views" views={shared} saved={saved} />
           <p className="desk-views-title">Desk</p>
           <nav>
-            <a href="/tickets/setup"><span>SLA Targets</span></a>
+            <a href="/desk/settings/service-levels"><span>SLA Targets</span></a>
           </nav>
         </aside>
         <section className="desk-list">
@@ -257,7 +257,7 @@ export default async function TicketsPage({ searchParams }) {
           ) : null}
 
           {!body.sla ? (
-            <p className="org-name">Due dates and SLA states appear once targets are set in <a href="/tickets/setup">SLA Targets</a>.</p>
+            <p className="org-name">Due dates and SLA states appear once targets are set in <a href="/desk/settings/service-levels">SLA Targets</a>.</p>
           ) : null}
 
           <TicketTable

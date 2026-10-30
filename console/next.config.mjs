@@ -13,7 +13,7 @@ const nextConfig = {
   poweredByHeader: false,
   experimental: { authInterrupts: true },
   async redirects() {
-    return [
+    const customerTabs = [
       ["assets", "/remote/customers/:id?tab=devices"],
       ["details", "/customers/:id?tab=overview"],
     ].map(([from, destination]) => ({
@@ -22,6 +22,20 @@ const nextConfig = {
       destination,
       statusCode: 308,
     }));
+    const settingsMoves = [
+      ["/settings", "/settings/org"],
+      ["/organization", "/settings/org/details"],
+      ["/account", "/settings/org/account"],
+      ["/subscription", "/settings/org/subscription"],
+      ["/offers", "/settings/org/offers"],
+      ["/settings/technicians", "/settings/org/technicians"],
+      ["/settings/mfa", "/settings/org/mfa"],
+      ["/settings/ip-restriction", "/settings/org/ip-restriction"],
+      ["/settings/privacy", "/settings/org/privacy"],
+      ["/settings/deployment", "/remote/settings/deployment"],
+      ["/tickets/setup", "/desk/settings/service-levels"],
+    ].map(([source, destination]) => ({ source, destination, permanent: false }));
+    return [...customerTabs, ...settingsMoves];
   },
   async headers() {
     return [

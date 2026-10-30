@@ -1,11 +1,12 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { addTime, removeTime, runJob, updateTicket } from "../../actions";
+import { addTime, removeTime, runJob, saveTicketParent, saveTicketWatchers, toggleTicketWatch, updateTicket } from "../../actions";
 import { ConsoleBar } from "../../bar";
 import { RemoteActions } from "../../devices/remote-actions";
 import { AppTitle } from "../../mark";
 import { DeviceOptions, deviceGroups } from "../device-options";
 import { fileExtension, fileSize, formatWhen, workTime } from "../format";
+import { CHANNEL_CHOICES, dueInputValue, dueLabel, PRIORITY_KEYS, StatusOptions, statusValue } from "../ticket-fields";
 import { Composer } from "./composer";
 import { TicketShortcuts } from "./shortcuts";
 import { TicketTimer } from "./timer";
@@ -26,6 +27,11 @@ const FILTERS = [
 const SAVED = {
   time: "Time logged.",
   timeRemoved: "Time entry removed.",
+  watch: "You are watching this ticket.",
+  unwatch: "You stopped watching this ticket.",
+  watchers: "Watchers saved.",
+  parent: "Parent ticket linked.",
+  parentRemoved: "Parent ticket removed.",
 };
 
 const ERRORS = {
@@ -56,7 +62,9 @@ export default async function TicketPage({ params, searchParams }) {
   const show = FILTERS.some(([key]) => key === query?.show) ? query.show : "all";
   const counts = Object.fromEntries(FILTERS.map(([key]) => [key, key === "all" ? timeline.length : timeline.filter((item) => item.group === key).length]));
   const shown = (show === "all" ? timeline : timeline.filter((item) => item.group === show)).slice().reverse();
-  const error = query?.error ? ERRORS[query.error] || String(query.error) : "";
+  const error = query?.message ? String(query.message) : query?.error ? ERRORS[query.error] || String(query.error) : "";
+  const priorityLabels = body.priorityLabels || {};
+  const contactNames = new Map((body.contacts || []).map((item) => [item.id, item.name]));
   const latestEvent = timeline.length ? timeline[timeline.length - 1].id : 0;
 
   return (
@@ -66,15 +74,27 @@ export default async function TicketPage({ params, searchParams }) {
         <p className="desk-back"><a href="/tickets">← All Tickets</a></p>
         <h1><AppTitle app="service-desk"><span className="desk-id">#{ticket.id}</span> {ticket.subject}</AppTitle></h1>
         <p className="ticket-tags">
-          <span className={`chip status-${ticket.status}`}>{ticket.status}</span>
-          <span className={`chip priority-${ticket.priority}`}>{ticket.priority}</span>
+          <span className={`chip status-${ticket.status}`}>{ticket.statusLabel || ticket.status}</span>
+          <span className={`chip priority-${ticket.priority}`}>{priorityLabels[ticket.priority] || ticket.priority}</span>
+          {ticket.channel && ticket.channel !== "console" ? <span className="dash-chip">{CHANNEL_LABELS[ticket.channel] || ticket.channel}</span> : null}
           {time.totalMinutes ? <span className="dash-chip">{`Time ${workTime(time.totalMinutes)}`}</span> : null}
           {ticket.category ? <span className="dash-chip">{ticket.category}</span> : null}
           {(ticket.tags || []).map((tag) => <span key={tag} className="desk-tag">{tag}</span>)}
+          {ticket.rating ? (
+            <span className={`chip rating-${ticket.rating.rating}`} title={ticket.rating.comment || undefined}>
+              Customer rated {RATING_LABELS[ticket.rating.rating]}
+            </span>
+          ) : null}
         </p>
+        {ticket.rating?.comment ? <p className="ticket-rating-note">&ldquo;{ticket.rating.comment}&rdquo;</p> : null}
         {ticket.mergedIntoId ? (
           <p className="ticket-merged" role="note">
             This ticket was merged into <a href={`/tickets/${ticket.mergedIntoId}`}>#{ticket.mergedIntoId}</a>. Carry on the conversation there.
+          </p>
+        ) : null}
+        {ticket.movedTo ? (
+          <p className="ticket-merged" role="note">
+            This ticket was moved to {ticket.movedTo} and is read-only here. It is removed 30 days after the move.
           </p>
         ) : null}
         <TicketShortcuts ticketId={ticket.id} me={body.me} assigned={ticket.assignee?.id === body.me} />
@@ -90,7 +110,15 @@ export default async function TicketPage({ params, searchParams }) {
               <p className="ticket-tags">
                 <Clock label="Response" used={body.clock.responseElapsed} target={body.clock.responseMinutes} />
                 <Clock label="Resolve" used={body.clock.resolveElapsed} target={body.clock.resolveMinutes} />
+                {ticket.status !== "resolved" && body.clock.resolveDueAt ? (
+                  <span className="dash-chip">
+                    {body.clock.paused ? "SLA paused (pending)" : `Due ${dueLabel(body.clock.resolveDueAt)}${body.clock.dueOverridden ? " (set by hand)" : ""}`}
+                  </span>
+                ) : null}
               </p>
+            ) : null}
+            {!body.clock && ticket.dueAt && ticket.status !== "resolved" ? (
+              <p className="ticket-tags"><span className="dash-chip">Due {dueLabel(ticket.dueAt)}</span></p>
             ) : null}
             {body.canRemote && ticket.device?.hasRemote ? (
               <div className="ticket-remote">
@@ -107,7 +135,20 @@ export default async function TicketPage({ params, searchParams }) {
             {error ? <p className="error">{error}</p> : null}
             {SAVED[query?.saved] ? <p className="org-name cust-saved">{SAVED[query.saved]}</p> : null}
 
-            <Composer key={`compose-${latestEvent}`} ticketId={ticket.id} initialKind={query?.compose} />
+            <Composer
+              key={`compose-${latestEvent}`}
+              ticketId={ticket.id}
+              initialKind={query?.compose}
+              canned={body.canned || []}
+              variables={{
+                "contact.name": ticket.customer.contactName || "",
+                "ticket.id": String(ticket.id),
+                "agent.name": users.find((user) => user.id === body.me)?.name || "",
+              }}
+            />
+            {(ticket.cc || []).length ? (
+              <p className="org-name">CC: {ticket.cc.map((id) => contactNames.get(id) || "a removed contact").join(", ")}</p>
+            ) : null}
 
             <section className="job ticket-timeline" aria-label="Activity">
               <header className="timeline-head">
@@ -135,19 +176,32 @@ export default async function TicketPage({ params, searchParams }) {
                 <input type="hidden" name="currentDeviceId" value={ticket.device?.id || ""} />
                 <label>
                   Status
-                  <select name="status" defaultValue={ticket.status}>
-                    <option value="open">Open</option>
-                    <option value="pending">Pending</option>
-                    <option value="resolved">Resolved</option>
+                  <select name="status" defaultValue={statusValue(ticket)}>
+                    <StatusOptions statuses={body.statuses || []} />
                   </select>
                 </label>
                 <label>
                   Priority
                   <select name="priority" defaultValue={ticket.priority}>
-                    <option value="low">Low</option>
-                    <option value="normal">Normal</option>
-                    <option value="high">High</option>
-                    <option value="urgent">Urgent</option>
+                    {PRIORITY_KEYS.map((key) => (
+                      <option key={key} value={key}>{priorityLabels[key] || PRIORITY[key]}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Due date override
+                  <input type="datetime-local" name="dueAt" defaultValue={dueInputValue(ticket.dueAt)} />
+                  <small className="field-hint">Leave empty to use the SLA due time.</small>
+                </label>
+                <label>
+                  Channel
+                  <select name="channel" defaultValue={CHANNEL_CHOICES.some(([value]) => value === ticket.channel) ? ticket.channel : ""}>
+                    {CHANNEL_CHOICES.some(([value]) => value === ticket.channel) ? null : (
+                      <option value="">{CHANNEL_LABELS[ticket.channel] || "Console"}</option>
+                    )}
+                    {CHANNEL_CHOICES.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
                   </select>
                 </label>
                 <label>
@@ -168,6 +222,18 @@ export default async function TicketPage({ params, searchParams }) {
                     ))}
                   </select>
                 </label>
+                {(body.contacts || []).length > 1 || (ticket.cc || []).length ? (
+                  <fieldset className="ticket-cc">
+                    <legend>CC contacts</legend>
+                    <input type="hidden" name="ccField" value="1" />
+                    {(body.contacts || []).map((item) => (
+                      <label key={item.id} className="check">
+                        <input type="checkbox" name="cc" value={item.id} defaultChecked={(ticket.cc || []).includes(item.id)} />
+                        {item.name}
+                      </label>
+                    ))}
+                  </fieldset>
+                ) : null}
                 <label>
                   Affected device
                   <select name="deviceId" defaultValue={ticket.device?.id || ""}>
@@ -191,6 +257,8 @@ export default async function TicketPage({ params, searchParams }) {
                 <button type="submit">Save</button>
               </form>
             </section>
+
+            <LinksCard ticket={ticket} users={users} me={body.me} />
 
             <TimeCard ticketId={ticket.id} time={time} />
 
@@ -217,6 +285,65 @@ export default async function TicketPage({ params, searchParams }) {
         </div>
       </main>
     </div>
+  );
+}
+
+function LinksCard({ ticket, users, me }) {
+  const watchers = ticket.watchers || [];
+  const children = ticket.children || [];
+  return (
+    <section className="job ticket-links">
+      <h2>Links and watchers</h2>
+      <form action={toggleTicketWatch} className="ticket-watch">
+        <input type="hidden" name="ticketId" value={ticket.id} />
+        <input type="hidden" name="watching" value={String(Boolean(ticket.watching))} />
+        <button type="submit" className={ticket.watching ? "secondary" : undefined}>{ticket.watching ? "Stop Watching" : "Watch"}</button>
+        <span className="org-name">
+          {watchers.length ? `${watchers.length} watching` : "Nobody is watching"}
+        </span>
+      </form>
+      {ticket.parent ? (
+        <p className="ticket-link-row">
+          Part of <a href={`/tickets/${ticket.parent.id}`}>#{ticket.parent.id} {ticket.parent.subject}</a>
+          <span className={`chip status-${ticket.parent.status}`}>{STATUS[ticket.parent.status] || ticket.parent.status}</span>
+        </p>
+      ) : null}
+      {children.length ? (
+        <ul className="ticket-children" aria-label="Child tickets">
+          {children.map((child) => (
+            <li key={child.id}>
+              <a href={`/tickets/${child.id}`}>#{child.id} {child.subject}</a>
+              <span className={`chip status-${child.status}`}>{STATUS[child.status] || child.status}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <form action={saveTicketParent} className="stack ticket-details desk-one">
+        <input type="hidden" name="ticketId" value={ticket.id} />
+        <label>
+          Parent ticket
+          <input name="parentId" inputMode="numeric" defaultValue={ticket.parent ? ticket.parent.id : ""} placeholder="Ticket number, e.g. 42" />
+          <small className="field-hint">Link this ticket under a bigger one. Leave empty to unlink.</small>
+        </label>
+        <button type="submit">Save Parent</button>
+      </form>
+      <details className="time-add">
+        <summary>Choose watchers</summary>
+        <form action={saveTicketWatchers} className="stack ticket-details desk-one">
+          <input type="hidden" name="ticketId" value={ticket.id} />
+          <fieldset className="ticket-cc">
+            <legend>Watchers get an in-app notice for replies, notes and status changes</legend>
+            {users.map((user) => (
+              <label key={user.id} className="check">
+                <input type="checkbox" name="watcher" value={user.id} defaultChecked={watchers.includes(user.id)} />
+                {user.id === me ? `${user.name} (you)` : user.name}
+              </label>
+            ))}
+          </fieldset>
+          <button type="submit">Save Watchers</button>
+        </form>
+      </details>
+    </section>
   );
 }
 
@@ -317,13 +444,45 @@ function Attachments({ files }) {
 
 const STATUS = { open: "Open", pending: "Pending", resolved: "Resolved" };
 const PRIORITY = { low: "Low", normal: "Normal", high: "High", urgent: "Urgent" };
-
+const EMAIL_TEMPLATES = {
+  breach: "sent the SLA breach email to the team",
+  sla_breach: "sent the SLA breach email to the team",
+  sla_warning: "sent the SLA warning email to the team",
+  new_ticket: "sent the new ticket email to the team",
+  assigned: "sent the assignment email",
+  customer_reply: "sent the customer reply email to the team",
+  agent_reply: "emailed the reply to the customer",
+  acknowledgement: "emailed the customer that the ticket was received",
+  resolved: "emailed the customer that the ticket was resolved",
+  resolved_csat: "emailed the customer that the ticket was resolved, with a rating link",
+};
+const RATING_LABELS = { good: "Good", ok: "OK", bad: "Bad" };
+const CHANNEL_LABELS = {
+  phone: "Phone",
+  email: "Email",
+  walk_in: "Walk-in",
+  portal: "Portal",
+  remote: "Remote session",
+  console: "Console",
+  alert: "Alert",
+  automatic: "Automatic",
+  support: "Support session",
+};
 function eventLine(item) {
   switch (item.kind) {
     case "created":
       return "created the ticket";
     case "reply":
-      return "replied";
+      return item.email ? "replied by email" : "replied";
+    case "csat":
+      return `rated the support ${RATING_LABELS[item.rating] || item.rating}`;
+    case "migrated":
+      return item.rollback ? `brought this ticket back from DF-#${item.from} (migration rollback)` : `migrated this ticket from DF-#${item.from}${item.sourceTenant ? ` in ${item.sourceTenant}` : ""}`;
+    case "automation":
+      return `ran the "${item.rule}" automation`;
+    case "parent":
+      if (!item.to) return `unlinked the parent ticket #${item.from}`;
+      return `linked this ticket under #${item.to}`;
     case "note":
       return "added a note";
     case "status":
@@ -339,6 +498,14 @@ function eventLine(item) {
       return item.to ? `set the affected device to ${item.to}` : "removed the affected device";
     case "sla_breach":
       return item.target === "response" ? "flagged a response SLA breach" : "flagged a resolve SLA breach";
+    case "sla_warning":
+      return item.target === "response" ? "warned that the response SLA is due soon" : "warned that the resolve SLA is due soon";
+    case "due":
+      return item.to ? `set the due date to ${dueLabel(item.to)}` : "cleared the due date override";
+    case "channel":
+      return `set the channel to ${CHANNEL_LABELS[item.to] || item.to}`;
+    case "cc":
+      return item.to?.length ? `set CC to ${item.to.join(", ")}` : "removed everyone from CC";
     case "remote_start":
       return `started a remote session${item.device ? ` on ${item.device}` : ""}${item.user ? ` as ${item.user}` : ""}`;
     case "remote_end":
@@ -352,7 +519,7 @@ function eventLine(item) {
     case "time_removed":
       return `removed ${workTime(item.minutes)} of logged time`;
     case "email":
-      return item.template === "breach" ? "sent the SLA breach email to the team" : "sent the new ticket email to the team";
+      return EMAIL_TEMPLATES[item.template] || "sent a notification email";
     case "category":
       return item.to ? `set the category to ${item.to}` : "cleared the category";
     case "tags":

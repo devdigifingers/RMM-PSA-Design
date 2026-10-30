@@ -14,7 +14,7 @@ export async function accountFromSession({ allowMfaSetup = false } = {}) {
   if (response.status === 401) redirect("/");
   if (!response.ok) return null;
   const account = await response.json();
-  if (account.user?.mfaSetupRequired && !allowMfaSetup) redirect("/settings/mfa");
+  if (account.user?.mfaSetupRequired && !allowMfaSetup) redirect("/settings/org/mfa");
   return account;
 }
 
@@ -46,6 +46,20 @@ export function hasFeature(account, feature) {
 
 export function hasApp(account, app) {
   return entitlements(account).apps.includes(app);
+}
+
+export function settingsAccess(account) {
+  const { apps, features } = entitlements(account);
+  const roles = account?.user?.roles || [];
+  return {
+    manage: roles.includes("owner") || roles.includes("admin"),
+    remote: apps.includes("remote"),
+    service: apps.includes("servicedesk"),
+    support: features.includes("remote_support"),
+    alerts: features.includes("monitoring"),
+    patches: features.includes("patching"),
+    reports: features.includes("reporting"),
+  };
 }
 
 export function homeFor(account) {

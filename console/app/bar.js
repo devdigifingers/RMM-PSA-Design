@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { AccountMenu } from "./account-menu";
-import { accountFromSession, entitlements, licenseStatus } from "./account-data";
-import { logout } from "./actions";
+import { accountFromSession, entitlements, licenseStatus, settingsAccess } from "./account-data";
+import { endImpersonation, logout } from "./actions";
 import { customerApps } from "./customers/shared";
 import { AppLauncher } from "./launcher";
 import { BrandMark, Wordmark } from "./mark";
@@ -9,6 +9,7 @@ import { BrandLink, NavLinks } from "./nav-links";
 import { Ribbon, SystemNotices } from "./notices";
 import { SearchConnect } from "./search-connect";
 import { SettingsMenu } from "./settings-menu";
+import { TicketBell } from "./ticket-bell";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -16,6 +17,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
   const account = await accountFromSession();
   const notices = await loadNotices();
   const allowed = appsAllowed(account);
+  const ticketNotes = !platform && allowed.ticketing && !account?.user?.isPlatformAdmin ? await loadTicketNotes() : null;
   const jar = await cookies();
   const saved = jar.get("df_app")?.value;
   const lastApp = saved === "service" && allowed.service ? "service" : allowed.remote || !allowed.service ? "remote" : "service";
@@ -39,16 +41,8 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
                 </svg>
               </a>
             )}
-            <SettingsMenu
-              platform={account.user.isPlatformAdmin === true}
-              manage={(account.user.roles || []).some((role) => role === "owner" || role === "admin")}
-              allowed={allowed}
-              flags={{
-                alerts: entitlements(account).features.includes("monitoring"),
-                patches: entitlements(account).features.includes("patching"),
-                dashboard: entitlements(account).features.includes("reporting"),
-              }}
-            />
+            <SettingsMenu platform={account.user.isPlatformAdmin === true} access={settingsAccess(account)} lastApp={lastApp} />
+            {ticketNotes ? <TicketBell initial={ticketNotes} /> : null}
             <SystemNotices items={notices.devices || []} showOrg={account.user.isPlatformAdmin === true} />
             <AccountMenu user={account.user} />
             <AppLauncher entitledApps={allowed.apps} lastApp={lastApp} />
@@ -66,6 +60,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
           links={[
             ["/control/tenants", "Tenants"],
             ["/control/packages", "Packages"],
+            ["/control/migrations", "Migrations", null, false, account?.migrationsWaiting || 0],
             ["/control/audit", "Audit"],
             ["/control/notices", "Notices"],
             ["/control/system", "System"],
@@ -97,6 +92,18 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
           customers={account?.user ? customerApps(account) : null}
         />
       )}
+      {account?.impersonating ? (
+        <form action={endImpersonation} className="impersonation-strip" role="status">
+          <p>You are viewing <strong>{account.impersonating.orgName}</strong> as a platform admin. Everything you do is recorded in the audit log.</p>
+          <button type="submit">Back to Control</button>
+        </form>
+      ) : null}
+      {!platform && account?.migrationsWaiting > 0 ? (
+        <div className="license-strip is-near" role="status">
+          <p>{account.migrationsWaiting === 1 ? "A data migration is waiting for your approval." : `${account.migrationsWaiting} data migrations are waiting for your approval.`}</p>
+          <a href="/settings/org/migrations">Review</a>
+        </div>
+      ) : null}
       {notices.ribbon ? <Ribbon notice={notices.ribbon} /> : null}
       <LicenseStrip account={account} />
     </>
@@ -112,7 +119,7 @@ function LicenseStrip({ account }) {
   return (
     <div className={`license-strip is-${level}`} role="status">
       <p>{warnings.map((item) => item.text).join(" ")}</p>
-      <a href="/subscription">Manage Subscription</a>
+      <a href="/settings/org/subscription">Manage Subscription</a>
     </div>
   );
 }
@@ -128,6 +135,18 @@ function appsAllowed(account) {
     ticketing: features.includes("ticketing"),
     apps,
   };
+}
+
+async function loadTicketNotes() {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return null;
+  const response = await fetch(`${apiUrl}/v1/notifications`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!response?.ok) return null;
+  return response.json();
 }
 
 async function loadNotices() {

@@ -329,6 +329,7 @@ function Cell({ column, ticket, busy, onStatus }) {
           <select
             className={`status-pick status-${ticket.status}`}
             value={ticket.status}
+            title={ticket.statusLabel || undefined}
             disabled={busy}
             aria-label={`Status of ticket ${ticket.id}`}
             onChange={(event) => onStatus(event.target.value)}

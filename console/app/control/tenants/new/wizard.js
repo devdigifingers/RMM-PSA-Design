@@ -21,6 +21,7 @@ export function TenantWizard({ packages }) {
   const [slugState, setSlugState] = useState(null);
   const [license, setLicense] = useState(() => ({ ...licenseValue(null), packageId: packages[0] ? String(packages[0].id) : "" }));
   const [admin, setAdmin] = useState({ name: "", email: "" });
+  const [access, setAccess] = useState("invite");
   const [state, action, pending] = useActionState(createTenant, null);
   const sections = useRef([]);
 
@@ -98,10 +99,25 @@ export function TenantWizard({ packages }) {
             Email
             <input name="adminEmail" type="email" value={admin.email} autoComplete="off" required onChange={(event) => setAdmin({ ...admin, email: event.target.value })} />
           </label>
-          <PasswordField label="Password" name="adminPassword" />
-          <PasswordField label="Confirm password" name="adminConfirm" />
+          <label>
+            Access
+            <select name="adminAccess" value={access} onChange={(event) => setAccess(event.target.value)}>
+              <option value="invite">Email an invite link</option>
+              <option value="password">Set a password now</option>
+            </select>
+          </label>
+          {access === "password" ? (
+            <>
+              <PasswordField label="Password" name="adminPassword" />
+              <PasswordField label="Confirm password" name="adminConfirm" />
+            </>
+          ) : null}
         </div>
-        <p className="org-name">Share the password with the admin yourself. Email invites are not available yet.</p>
+        <p className="org-name">
+          {access === "invite"
+            ? "The admin gets an email with a link to set their own password. The link works for 7 days."
+            : "Share the password with the admin yourself."}
+        </p>
       </fieldset>
 
       <fieldset hidden={step !== 3}>
@@ -113,7 +129,7 @@ export function TenantWizard({ packages }) {
           <dt>Limits</dt><dd>{effective.seats} seats · {effective.devices} devices · {effective.sessions} support sessions</dd>
           <dt>Features</dt><dd>{effective.features.map((key) => FEATURE_LABEL[key]).join(", ") || "None"}</dd>
           <dt>Expires</dt><dd>{license.noExpiry ? "No expiry" : license.expiresAt || "—"}</dd>
-          <dt>First admin</dt><dd>{admin.name || "—"} · {admin.email || "—"}</dd>
+          <dt>First admin</dt><dd>{admin.name || "—"} · {admin.email || "—"} · {access === "invite" ? "Invite by email" : "Password set now"}</dd>
         </dl>
       </fieldset>
 

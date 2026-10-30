@@ -10,12 +10,21 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import Redis from "ioredis";
 import { pool } from "./db.js";
+import { enterRequest, insertAudit, setRequestRole } from "./audit.js";
 import { sendMail } from "./mail.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
 import { loadAllLicenses, loadLicense } from "./license-store.js";
 import { hasApp, hasFeature } from "./licensing.js";
 import { dateOnly, isOverdue, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
+import { calendarFrom, parsePercent, percentFrom, ticketClock } from "./sla-engine.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
+import { handleInvites } from "./invites.js";
+import { deskNotify, deskSetup, handleDeskSettings, notifyWatchers } from "./desk-settings.js";
+import { autoCloseSweep, deskOptions, handleDeskFlow, runAutomations } from "./desk-flow.js";
+import { emailAgentReply, emailResolved, handleDeskMail, pollMailboxes } from "./desk-mail.js";
+import { handleCsat } from "./desk-csat.js";
+import { handleMigrations, migrationTick, platformWaiting, recoverMigrations, tenantWaiting } from "./migrations.js";
+import { customerInsights } from "./customer-insights.js";
 import { fleetVersions } from "./system-view.js";
 import { geoLocator, ipApiLocator, parseIp } from "./geoip.js";
 import { dailyStats, fillDays, osFamily } from "./daily-stats.js";
@@ -54,6 +63,7 @@ import {
   ticketsCsv,
   viewCounts,
 } from "./ticket-list.js";
+import { parseCc, parseChannel, parseDueAt, parseStatusId, similarTickets } from "./ticket-input.js";
 
 const TICKET_STATUSES = new Set(["open", "pending", "resolved"]);
 const TICKET_PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
@@ -321,6 +331,8 @@ function addressAllowed(address, list) {
   return block.check(ip, family === 4 ? "ipv4" : "ipv6");
 }
 
+const IMPERSONATION_TTL_SECONDS = 60 * 60;
+
 async function issueSession(res, user) {
   const token = randomBytes(32).toString("base64url");
   await redis.multi()
@@ -379,6 +391,17 @@ async function actorFrom(req) {
   const actor = result.rows[0];
   if (!actor) return null;
   actor.session_token = token;
+  if (session.impersonateOrgId) {
+    if (!actor.is_platform_admin) return null;
+    const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [session.impersonateOrgId]);
+    if (!org.rows[0]) return null;
+    actor.impersonating = { orgId: Number(org.rows[0].id), orgName: org.rows[0].name, startedAt: session.startedAt || null };
+    actor.is_platform_admin = false;
+    actor.org_id = org.rows[0].id;
+    actor.mfa_setup_required = false;
+    actor.roles = ["admin"];
+    return actor;
+  }
   actor.mfa_setup_required = actor.require_mfa && !actor.mfa_enabled_at && !actor.is_platform_admin;
   const roles = await pool.query(
     `SELECT r.name
@@ -2512,6 +2535,11 @@ function boundedCount(value, max) {
   return number;
 }
 
+async function remoteAppAllowed(orgId) {
+  const license = await licenseQuery(orgId);
+  return hasApp(license.rows[0]?.entitlements, "remote");
+}
+
 function ticketingAllowed(row) {
   return ticketingReason(row) == null && Boolean(row);
 }
@@ -2681,21 +2709,15 @@ async function openWorkTicket(orgId, customerId, deviceId, subject, detail) {
 
 const AUTOMATION_LABELS = { offline: "Offline monitor", missing: "Patch monitor", online: "Offline monitor" };
 
-async function notifyNewTicket(orgId, ticketId, subject) {
-  const to = String(process.env.MAIL_TO || "").trim();
-  if (!to) return;
-  try {
-    const sent = await sendMail({
-      to,
-      subject,
-      text: `A new ticket is open: ${subject}\nhttps://rmm.digitalfingers.co.za/tickets/${ticketId}\n`,
-    });
-    if (!sent) return;
-    await writeAudit(orgId, null, "ticket.mail", "ticket", String(ticketId), {});
-    await ticketEvent(orgId, ticketId, "email", { label: "Notifications", detail: { template: "new_ticket", subject } });
-  } catch {
-    console.error("ticket mail failed");
-  }
+async function notifyNewTicket(orgId, ticketId, subject, options = {}) {
+  await deskNotify(deskHelpers(), {
+    orgId,
+    event: "new_ticket",
+    ticketId,
+    subject,
+    userIds: options.assigneeId ? [options.assigneeId] : [],
+    actorId: options.actorId ?? null,
+  });
 }
 
 function missingSubject(name, hostname) {
@@ -2862,21 +2884,14 @@ async function breachBaseline() {
   return Number(again.rows[0].target_id);
 }
 
-async function notifyBreach(orgId, ticketId, subject) {
-  const to = String(process.env.MAIL_TO || "").trim();
-  if (!to) return;
-  try {
-    const sent = await sendMail({
-      to,
-      subject: `SLA breach: ${subject}`,
-      text: `A ticket is past its SLA: ${subject}\nhttps://rmm.digitalfingers.co.za/tickets/${ticketId}\n`,
-    });
-    if (!sent) return;
-    await writeAudit(orgId, null, "ticket.breach", "ticket", String(ticketId), {});
-    await ticketEvent(orgId, ticketId, "email", { label: "Notifications", detail: { template: "breach", subject: `SLA breach: ${subject}` } });
-  } catch {
-    console.error("ticket mail failed");
-  }
+async function notifySla(event, ticket) {
+  await deskNotify(deskHelpers(), {
+    orgId: ticket.org_id,
+    event,
+    ticketId: ticket.id,
+    subject: ticket.subject,
+    userIds: ticket.assignee_user_id ? [ticket.assignee_user_id] : [],
+  });
 }
 
 let breachSweepRunning = false;
@@ -2888,11 +2903,12 @@ async function sweepBreaches() {
     const afterId = await breachBaseline();
     const tickets = await pool.query(
       `SELECT t.id, t.org_id, t.subject, t.status, t.created_at, t.updated_at, c.sla_plan_id,
-              ${TICKET_CLOCK_SQL}
+              t.assignee_user_id, t.sla_warned, ${TICKET_CLOCK_SQL}
        FROM tickets t
        JOIN customers c ON c.id = t.customer_id
        WHERE t.id > $1
          AND t.status <> 'resolved'
+         AND t.migration_lock IS NULL
          AND t.org_id = ANY($2::bigint[])
          AND NOT EXISTS (
            SELECT 1 FROM audit_events e
@@ -2908,16 +2924,28 @@ async function sweepBreaches() {
     for (const ticket of tickets.rows) {
       const key = String(ticket.org_id);
       if (!books.has(key)) books.set(key, await slaBook(ticket.org_id));
-      const clock = slaClock(ticket, slaFor(books.get(key), ticket.sla_plan_id), now);
-      if (!clock) continue;
-      const responseLate = clock.responseElapsed > clock.responseMinutes;
-      const resolveLate = clock.resolveElapsed > clock.resolveMinutes;
-      if (!responseLate && !resolveLate) continue;
-      await ticketEvent(ticket.org_id, ticket.id, "sla_breach", {
+      const state = slaState(ticket, slaFor(books.get(key), ticket.sla_plan_id), now);
+      if (state.state === "breached") {
+        await ticketEvent(ticket.org_id, ticket.id, "sla_breach", {
+          label: "SLA monitor",
+          detail: { target: state.target },
+        });
+        await notifySla("sla_breach", ticket);
+        continue;
+      }
+      if (state.state !== "soon" || (ticket.sla_warned || []).includes(state.target)) continue;
+      const marked = await pool.query(
+        `UPDATE tickets SET sla_warned = array_append(COALESCE(sla_warned, '{}'), $2::text)
+         WHERE id = $1 AND NOT ($2::text = ANY(COALESCE(sla_warned, '{}')))
+         RETURNING id`,
+        [ticket.id, state.target],
+      );
+      if (!marked.rows[0]) continue;
+      await ticketEvent(ticket.org_id, ticket.id, "sla_warning", {
         label: "SLA monitor",
-        detail: { target: responseLate ? "response" : "resolve" },
+        detail: { target: state.target, minutesLeft: state.minutesLeft, dueAt: state.dueAt },
       });
-      await notifyBreach(ticket.org_id, ticket.id, ticket.subject);
+      await notifySla("sla_warning", ticket);
     }
   } catch (error) {
     console.error(error.message);
@@ -2952,7 +2980,62 @@ async function evaluateAlerts(deviceId) {
       value,
       threshold: rule.threshold,
     });
+    try {
+      const license = (await licenseQuery(rule.org_id)).rows[0];
+      if (ticketingAllowed(license) && hasApp(license?.entitlements, "remote") && (await deskOptions(rule.org_id)).alertTickets) {
+        await createAlertTicket(rule.org_id, created.rows[0].id, null);
+      }
+    } catch (error) {
+      console.error("alert ticket failed", error.message);
+    }
   }
+}
+
+// actorId is null when the Service Desk option raised the ticket on its own.
+async function createAlertTicket(orgId, alertId, actorId) {
+  const alert = await pool.query(
+    `SELECT a.id, a.device_id, a.metric, a.value, a.ticket_id, d.hostname, s.customer_id
+     FROM alerts a
+     JOIN devices d ON d.id = a.device_id
+     LEFT JOIN sites s ON s.id = d.site_id
+     WHERE a.id = $1 AND a.org_id = $2`,
+    [alertId, orgId],
+  );
+  const row = alert.rows[0];
+  if (!row) return { status: 404, error: "Alert not found." };
+  if (row.ticket_id != null) return { id: Number(row.ticket_id), created: false };
+  const customerId = row.customer_id == null ? null : Number(row.customer_id);
+  if (customerId == null) return { status: 409, error: "That device is not linked to a customer." };
+  const label = ALERT_LABELS[row.metric] || row.metric;
+  const subject = `${label} ${row.value}% on ${row.hostname}`.slice(0, 200);
+  const ticketId = await inTransaction(async (client) => {
+    const ticket = await client.query(
+      `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by, channel)
+       VALUES ($1, $2, $3, $4, $5, 'open', 'high', $4, 'alert')
+       RETURNING id`,
+      [orgId, customerId, row.device_id, actorId, subject],
+    );
+    const id = Number(ticket.rows[0].id);
+    await client.query("UPDATE alerts SET ticket_id = $1 WHERE id = $2", [id, row.id]);
+    await ticketEvent(orgId, id, "created", {
+      actorId,
+      label: actorId == null ? "Alert monitor" : null,
+      detail: { status: "open", priority: "high", alertId: Number(row.id) },
+      db: client,
+    });
+    return id;
+  });
+  await writeAudit(orgId, actorId, "ticket.create", "ticket", String(ticketId), {
+    alertId: Number(row.id),
+    customerId,
+    deviceId: Number(row.device_id),
+    status: "open",
+    priority: "high",
+    channel: "alert",
+  });
+  await runAutomations(deskHelpers(), orgId, ticketId, "created");
+  await notifyNewTicket(orgId, ticketId, subject, { actorId });
+  return { id: ticketId, created: true };
 }
 
 async function requireTicketing(actor, res, options = {}) {
@@ -3043,6 +3126,8 @@ function ticketView(row) {
     assignee: row.assignee_user_id
       ? { id: Number(row.assignee_user_id), name: row.assignee_name, email: row.assignee_email }
       : null,
+    statusId: row.status_id == null ? null : Number(row.status_id),
+    statusLabel: row.status_label || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -3176,6 +3261,7 @@ function accountView(row) {
     vatNumber: row.vat_number || null,
     notes: row.notes || null,
     createdAt: row.created_at,
+    movedAway: row.migration_lock != null,
   };
 }
 
@@ -3279,57 +3365,66 @@ function slaMinutes(value) {
   return minutes;
 }
 
-async function orgSla(orgId) {
+async function orgSla(orgId, calendar = null) {
   const row = await pool.query(
-    "SELECT response_minutes, resolve_minutes FROM org_slas WHERE org_id = $1",
+    "SELECT response_minutes, resolve_minutes, priority_percent FROM org_slas WHERE org_id = $1",
     [orgId],
   );
   if (!row.rows[0]) return null;
-  return {
+  return withCalendar({
     responseMinutes: row.rows[0].response_minutes,
     resolveMinutes: row.rows[0].resolve_minutes,
-  };
+    priorityPercent: percentFrom(row.rows[0].priority_percent),
+  }, calendar);
+}
+
+// Non-enumerable so SLA targets sent to the console do not carry the calendar.
+function withCalendar(targets, calendar) {
+  return Object.defineProperty(targets, "calendar", { value: calendar, enumerable: false });
+}
+
+// null when business hours are off, so SLA clocks run around the clock.
+async function deskCalendar(orgId) {
+  const [hours, holidays] = await Promise.all([
+    pool.query("SELECT enabled, hours FROM desk_business_hours WHERE org_id = $1", [orgId]),
+    pool.query("SELECT to_char(day, 'YYYY-MM-DD') AS day FROM desk_holidays WHERE org_id = $1", [orgId]),
+  ]);
+  const row = hours.rows[0];
+  if (!row?.enabled) return null;
+  return calendarFrom(row.hours, holidays.rows.map((item) => item.day));
 }
 
 async function slaBook(orgId) {
+  const calendar = await deskCalendar(orgId);
   const [base, plans] = await Promise.all([
-    orgSla(orgId),
+    orgSla(orgId, calendar),
     pool.query(
-      "SELECT id, name, response_minutes, resolve_minutes FROM sla_plans WHERE org_id = $1 ORDER BY lower(name)",
+      "SELECT id, name, response_minutes, resolve_minutes, priority_percent FROM sla_plans WHERE org_id = $1 ORDER BY lower(name)",
       [orgId],
     ),
   ]);
   return {
     base,
-    plans: new Map(plans.rows.map((row) => [String(row.id), {
+    calendar,
+    plans: new Map(plans.rows.map((row) => [String(row.id), withCalendar({
       id: Number(row.id),
       name: row.name,
       responseMinutes: row.response_minutes,
       resolveMinutes: row.resolve_minutes,
-    }])),
+      priorityPercent: percentFrom(row.priority_percent),
+    }, calendar)])),
   };
-}
-
-function elapsedMinutes(from, to) {
-  const start = new Date(from).getTime();
-  const end = new Date(to).getTime();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
-  return Math.floor((end - start) / 60000);
 }
 
 function slaClock(row, targets, now) {
-  if (!targets || !row?.created_at) return null;
-  const responseStop = row.first_response_at ? new Date(row.first_response_at) : now;
-  const resolveStop = row.status === "resolved" ? new Date(row.resolved_at || row.updated_at) : now;
-  return {
-    responseMinutes: targets.responseMinutes,
-    resolveMinutes: targets.resolveMinutes,
-    responseElapsed: elapsedMinutes(row.created_at, responseStop),
-    resolveElapsed: elapsedMinutes(row.created_at, resolveStop),
-  };
+  return ticketClock(row, targets, now);
 }
 
+// Columns the SLA engine reads from a ticket row (alias t).
+const TICKET_SLA_COLUMNS = "t.priority, t.due_at, t.sla_paused_at, t.sla_pauses";
+
 const TICKET_CLOCK_SQL = `
+  ${TICKET_SLA_COLUMNS},
   (
     SELECT MIN(tc.created_at)
     FROM ticket_comments tc
@@ -4024,7 +4119,7 @@ async function reportData(key, scope) {
   }
   if (key === "service-desk") {
     const params = [orgId, customer, from, to];
-    const [tickets, resolved, time, book] = await Promise.all([
+    const [tickets, resolved, time, book, ratings] = await Promise.all([
       pool.query(
         `SELECT t.id, t.status, t.created_at, t.updated_at, c.name AS customer, c.sla_plan_id, ${TICKET_CLOCK_SQL}
          FROM tickets t
@@ -4054,6 +4149,15 @@ async function reportData(key, scope) {
         params,
       ),
       slaBook(orgId),
+      pool.query(
+        `SELECT c.name AS customer, r.rating
+         FROM ticket_ratings r
+         JOIN tickets t ON t.id = r.ticket_id
+         JOIN customers c ON c.id = t.customer_id
+         WHERE r.org_id = $1 AND ${customerSql("c.id", 2)}
+           AND r.updated_at >= ${start} AND r.updated_at < ${end}`,
+        params,
+      ),
     ]);
     return {
       tickets: tickets.rows.map((row) => {
@@ -4062,6 +4166,7 @@ async function reportData(key, scope) {
       }),
       resolved: resolved.rows,
       time: time.rows,
+      ratings: ratings.rows,
     };
   }
   throw new Error(`unknown report ${key}`);
@@ -4183,12 +4288,8 @@ async function runDueSubscriptions() {
   }
 }
 
-async function writeAudit(orgId, actorId, action, targetType, targetId, detail) {
-  await pool.query(
-    `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-    [orgId, actorId, action, targetType, targetId, JSON.stringify(detail || {})],
-  );
+async function writeAudit(orgId, actorId, action, targetType, targetId, detail, db = pool) {
+  await insertAudit(db, orgId, actorId, action, targetType, targetId, detail);
 }
 
 async function ticketEvent(orgId, ticketId, kind, { actorId = null, label = null, detail = {}, db = pool } = {}) {
@@ -4212,23 +4313,24 @@ async function ticketListRows(orgId) {
               ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
               t.device_id, d.hostname AS device_hostname, t.assignee_user_id,
               u.name AS assignee_name, u.email AS assignee_email, t.created_at, t.updated_at,
-              t.category, t.tags, t.merged_into_id,
+              t.category, t.tags, t.merged_into_id, ${TICKET_SLA_COLUMNS}, t.status_id, st.name AS status_label,
               (SELECT count(*)::int FROM ticket_comments tc WHERE tc.ticket_id = t.id) AS comment_count,
               GREATEST(t.updated_at, (SELECT max(tc.created_at) FROM ticket_comments tc WHERE tc.ticket_id = t.id)) AS last_activity_at,
               (SELECT MIN(tc.created_at)
                FROM ticket_comments tc
                JOIN users ru ON ru.id = tc.author_user_id AND ru.org_id = t.org_id
                WHERE tc.ticket_id = t.id AND tc.kind = 'reply') AS first_response_at,
-              CASE
+              COALESCE(t.channel, CASE
                 WHEN EXISTS (SELECT 1 FROM alerts a WHERE a.ticket_id = t.id) THEN 'alert'
                 WHEN EXISTS (SELECT 1 FROM support_sessions ss WHERE ss.ticket_id = t.id) THEN 'support'
                 WHEN t.created_by IS NULL THEN 'automatic'
                 ELSE 'console'
-              END AS channel
+              END) AS channel
        FROM tickets t
        JOIN customers c ON c.id = t.customer_id
        LEFT JOIN devices d ON d.id = t.device_id
        LEFT JOIN users u ON u.id = t.assignee_user_id
+       LEFT JOIN desk_statuses st ON st.id = t.status_id
        ${TICKET_CONTACT_JOIN}
        WHERE t.org_id = $1
        ORDER BY t.id DESC
@@ -4252,7 +4354,8 @@ async function ticketListRows(orgId) {
       category: row.category || null,
       tags: row.tags || [],
       mergedIntoId: row.merged_into_id == null ? null : Number(row.merged_into_id),
-      sla: slaState({ ...view, firstResponseAt: row.first_response_at }, targets, now),
+      dueOverridden: row.due_at != null,
+      sla: slaState(row, targets, now),
     };
   });
 }
@@ -4495,8 +4598,30 @@ function platformHelpers() {
     seatsLeft,
     parseTenantAdmin,
     parseUserInput,
+    canOperate,
     USER_ROLES,
   };
+}
+
+function migrationHelpers() {
+  return { send, readJson, requirePlatform, ensureTenantMesh, meshControl, meshOk };
+}
+
+async function ticketingFor(orgId) {
+  return ticketingAllowed((await licenseQuery(orgId)).rows[0]);
+}
+
+function csatKey() {
+  return createHash("sha256").update(`csat:`).update(mfaKey()).digest();
+}
+
+function deskHelpers() {
+  const helpers = {
+    send, readJson, requireTicketing, canOperate, writeAudit, ticketEvent,
+    sealSecret, openSecret, notifyNewTicket, ticketingFor, csatKey,
+  };
+  helpers.ticketResolved = (orgId, ticketId) => emailResolved(helpers, orgId, ticketId);
+  return helpers;
 }
 
 function expiryFrom(value) {
@@ -4811,6 +4936,7 @@ async function liveSupportByCode(code) {
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
+  enterRequest(req, clientAddress(req));
   try {
     if (req.method === "GET" && url.pathname === "/health") {
       await pool.query("SELECT 1");
@@ -4926,6 +5052,7 @@ const server = createServer(async (req, res) => {
     }
 
     const actor = await actorFrom(req);
+    setRequestRole(actor);
     if (actor?.mfa_setup_required && !MFA_SETUP_PATHS.has(url.pathname)) {
       return send(res, 403, { error: "mfa_setup" });
     }
@@ -5151,8 +5278,10 @@ const server = createServer(async (req, res) => {
           mfaEnabled: Boolean(actor.mfa_enabled_at),
           mfaSetupRequired: actor.mfa_setup_required === true,
         },
+        impersonating: actor.impersonating || null,
         org,
         license,
+        migrationsWaiting: actor.is_platform_admin ? await platformWaiting(actor.id) : await tenantWaiting(actor),
       });
     }
 
@@ -5283,11 +5412,7 @@ const server = createServer(async (req, res) => {
             [actor.org_id, parsed.value.email, parsed.value.name, passwordHash],
           );
           await setUserRole(client, actor.org_id, user.rows[0].id, parsed.value.role);
-          await client.query(
-            `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-             VALUES ($1, $2, 'user.create', 'user', $3, $4::jsonb)`,
-            [actor.org_id, actor.id, String(user.rows[0].id), JSON.stringify({ role: parsed.value.role, email: parsed.value.email })],
-          );
+          await writeAudit(actor.org_id, actor.id, "user.create", "user", String(user.rows[0].id), { role: parsed.value.role, email: parsed.value.email }, client);
           await client.query("COMMIT");
           return send(res, 201, { id: Number(user.rows[0].id) });
         } catch (error) {
@@ -5332,11 +5457,12 @@ const server = createServer(async (req, res) => {
             await client.query("ROLLBACK");
             return send(res, 400, { error: "The organisation needs at least one active owner or admin." });
           }
-          await client.query(
-            `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-             VALUES ($1, $2, 'user.update', 'user', $3, $4::jsonb)`,
-            [actor.org_id, actor.id, String(userId), JSON.stringify({ role, disabled })],
-          );
+          if (role !== target.role) {
+            await writeAudit(actor.org_id, actor.id, "user.role_change", "user", String(userId), { before: target.role, after: role }, client);
+          }
+          if (disabled !== Boolean(target.disabledAt)) {
+            await writeAudit(actor.org_id, actor.id, disabled ? "user.deactivate" : "user.reactivate", "user", String(userId), {}, client);
+          }
           await client.query("COMMIT");
         } catch (error) {
           await client.query("ROLLBACK");
@@ -5512,6 +5638,37 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    const impersonateMatch = url.pathname.match(/^\/v1\/platform\/tenants\/(\d+)\/impersonate$/);
+    if (req.method === "POST" && impersonateMatch) {
+      if (!requirePlatform(actor, res)) return;
+      const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [impersonateMatch[1]]);
+      if (!org.rows[0]) return send(res, 404, { error: "Tenant not found." });
+      const token = randomBytes(32).toString("base64url");
+      const startedAt = new Date().toISOString();
+      await redis.multi()
+        .set(`session:${token}`, JSON.stringify({ userId: actor.id, impersonateOrgId: Number(org.rows[0].id), startedAt }), "EX", IMPERSONATION_TTL_SECONDS)
+        .sadd(`user-sessions:${actor.id}`, token)
+        .exec();
+      await writeAudit(org.rows[0].id, actor.id, "impersonation.start", "org", String(org.rows[0].id), { tenant: org.rows[0].name });
+      return send(res, 201, { token, expiresInSeconds: IMPERSONATION_TTL_SECONDS });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/impersonation/end") {
+      if (!actor?.impersonating) return send(res, 400, { error: "Not viewing as a tenant." });
+      await redis.multi().del(`session:${actor.session_token}`).srem(`user-sessions:${actor.id}`, actor.session_token).exec();
+      const minutes = actor.impersonating.startedAt
+        ? Math.max(0, Math.round((Date.now() - new Date(actor.impersonating.startedAt).getTime()) / 60000))
+        : null;
+      await writeAudit(actor.impersonating.orgId, actor.id, "impersonation.end", "org", String(actor.impersonating.orgId), { minutes });
+      return send(res, 200, { ok: true, orgId: actor.impersonating.orgId });
+    }
+
+    if (await handleInvites(req, res, url, actor, platformHelpers())) return;
+    if (await handleMigrations(req, res, url, actor, migrationHelpers())) return;
+    if (await handleCsat(req, res, url, deskHelpers())) return;
+    if (await handleDeskSettings(req, res, url, actor, deskHelpers())) return;
+    if (await handleDeskFlow(req, res, url, actor, deskHelpers())) return;
+    if (await handleDeskMail(req, res, url, actor, deskHelpers())) return;
     if (await handlePlatformAdmin(req, res, url, actor, platformHelpers())) return;
 
     if (req.method === "GET" && url.pathname === "/v1/platform/system") {
@@ -5530,11 +5687,13 @@ const server = createServer(async (req, res) => {
         [platformPassword[1]],
       );
       const person = found.rows[0];
-      if (!person || person.is_platform_admin || !person.org_id) return send(res, 404, { error: "Login not found." });
+      if (!person || person.is_platform_admin || !person.org_id) return send(res, 404, { error: "User not found." });
       const passwordHash = await hashPassword(password);
-      await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, person.id]);
+      await inTransaction(async (client) => {
+        await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [passwordHash, person.id]);
+        await writeAudit(person.org_id, actor.id, "user.password_set", "user", String(person.id), {}, client);
+      });
       await revokeUserSessions(person.id, null);
-      await writeAudit(person.org_id, actor.id, "user.password_set", "user", String(person.id), {});
       return send(res, 200, { ok: true });
     }
 
@@ -5544,6 +5703,10 @@ const server = createServer(async (req, res) => {
       if (!canOperate(actor)) {
         await writeAudit(actor.org_id, actor.id, "enroll.deny", "org", String(actor.org_id), { reason: "role" });
         return send(res, 403, { error: "Only an owner or admin can add computers." });
+      }
+      if (!(await remoteAppAllowed(actor.org_id))) {
+        await writeAudit(actor.org_id, actor.id, "enroll.deny", "org", String(actor.org_id), { reason: "app" });
+        return send(res, 403, { error: "Adding computers needs Remote Desk.", code: "app_not_entitled", app: "remote" });
       }
       const body = await readJson(req);
       let customerId = null;
@@ -5713,7 +5876,7 @@ const server = createServer(async (req, res) => {
           [invite.org_id],
         );
         if (count.rows[0].total >= current.device_cap) {
-          return await denyEnroll("device_cap", "Device cap reached.");
+          return await denyEnroll("device_cap", "All devices on the license are in use.");
         }
         const deviceToken = randomBytes(32).toString("base64url");
         const site = invite.customer_id
@@ -5732,15 +5895,14 @@ const server = createServer(async (req, res) => {
            WHERE id = $1`,
           [invite.id],
         );
-        await client.query(
-          `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-           VALUES ($1, $2, 'device.enroll', 'device', $3, $4::jsonb)`,
-          [
-            invite.org_id,
-            invite.created_by,
-            String(device.rows[0].id),
-            JSON.stringify({ hostname, osName, ...(invite.customer_id ? { customerId: String(invite.customer_id) } : {}) }),
-          ],
+        await writeAudit(
+          invite.org_id,
+          invite.created_by,
+          "device.enroll",
+          "device",
+          String(device.rows[0].id),
+          { hostname, osName, ...(invite.customer_id ? { customerId: String(invite.customer_id) } : {}) },
+          client,
         );
         await client.query(
           "INSERT INTO device_notices (org_id, device_id, hostname) VALUES ($1, $2, $3)",
@@ -5937,8 +6099,11 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/v1/devices") {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
-      const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [actor.org_id]);
       const license = await licenseQuery(actor.org_id);
+      if (!hasApp(license.rows[0]?.entitlements, "remote")) {
+        return send(res, 403, { error: "Devices need Remote Desk.", code: "app_not_entitled", app: "remote" });
+      }
+      const org = await pool.query("SELECT id, name FROM orgs WHERE id = $1", [actor.org_id]);
       const access = remoteAccess(license.rows[0]);
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 200).toLowerCase();
       const filter = deviceFilterFrom(url.searchParams);
@@ -6777,11 +6942,7 @@ const server = createServer(async (req, res) => {
          RETURNING id`,
         [actor.org_id, device.rows[0].id, command, actor.id],
       );
-      await pool.query(
-        `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-         VALUES ($1, $2, 'power.request', 'device', $3, $4::jsonb)`,
-        [actor.org_id, actor.id, String(device.rows[0].id), JSON.stringify({ action, jobId: Number(job.rows[0].id) })],
-      );
+      await writeAudit(actor.org_id, actor.id, "power.request", "device", String(device.rows[0].id), { action, jobId: Number(job.rows[0].id) });
       return send(res, 201, { id: Number(job.rows[0].id), status: "queued" });
     }
 
@@ -6823,11 +6984,7 @@ const server = createServer(async (req, res) => {
          RETURNING id`,
         [actor.org_id, device.rows[0].id, command, actor.id, ticketId],
       );
-      await pool.query(
-        `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-         VALUES ($1, $2, 'job.create', 'job', $3, $4::jsonb)`,
-        [actor.org_id, actor.id, String(job.rows[0].id), JSON.stringify({ deviceId: device.rows[0].id })],
-      );
+      await writeAudit(actor.org_id, actor.id, "job.create", "job", String(job.rows[0].id), { deviceId: device.rows[0].id });
       if (ticketId != null) {
         await ticketEvent(actor.org_id, ticketId, "command", {
           actorId: actor.id,
@@ -6950,20 +7107,10 @@ const server = createServer(async (req, res) => {
         `df-${device.rows[0].id}-${Date.now()}`,
         device.rows[0].os_name,
       );
-      const launched = await pool.query(
-        `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail)
-         VALUES ($1, $2, 'remote.launch', 'device', $3, $4::jsonb)
-         RETURNING id`,
-        [
-          actor.org_id,
-          actor.id,
-          String(device.rows[0].id),
-          JSON.stringify({
-            ...(ticketId == null ? {} : { ticketId }),
-            ...(sessionUser ? { user: sessionUser } : {}),
-          }),
-        ],
-      );
+      const launched = await insertAudit(pool, actor.org_id, actor.id, "remote.launch", "device", String(device.rows[0].id), {
+        ...(ticketId == null ? {} : { ticketId }),
+        ...(sessionUser ? { user: sessionUser } : {}),
+      });
       await pool.query(
         `INSERT INTO remote_sessions (org_id, device_id, customer_id, user_id, ticket_id, device_name, audit_event_id)
          SELECT d.org_id, d.id, s.customer_id, $3, $4, COALESCE(d.display_name, d.hostname), $5
@@ -7139,6 +7286,7 @@ const server = createServer(async (req, res) => {
         await client.query("DELETE FROM contacts WHERE customer_id = $1", [accountId]);
         await client.query("DELETE FROM sites WHERE customer_id = $1", [accountId]);
         await client.query("DELETE FROM customers WHERE id = $1", [accountId]);
+        await writeAudit(actor.org_id, actor.id, "customer.delete", "customer", String(accountId), { name: found.rows[0].name }, client);
         return { status: 200, id: accountId, name: found.rows[0].name };
       });
       if (result.status === 404) return send(res, 404, { error: "Customer not found." });
@@ -7148,7 +7296,6 @@ const server = createServer(async (req, res) => {
         if (result.devices) parts.push(`${result.devices} device${result.devices === 1 ? "" : "s"}`);
         return send(res, 409, { error: `This customer still has ${parts.join(" and ")}. Move or remove them first.` });
       }
-      await writeAudit(actor.org_id, actor.id, "customer.delete", "customer", String(result.id), { name: result.name });
       return send(res, 200, { ok: true });
     }
     if (accountMatch && (req.method === "GET" || req.method === "PUT")) {
@@ -7191,7 +7338,7 @@ const server = createServer(async (req, res) => {
           [accountId],
         ),
         desk ? pool.query(
-          `SELECT t.id, t.subject, t.status, t.priority, t.created_at, t.updated_at,
+          `SELECT t.id, t.subject, t.status, t.priority, t.created_at, t.updated_at, ${TICKET_SLA_COLUMNS},
                   ct.name AS contact_name, d.hostname AS device_hostname, u.name AS assignee_name
            FROM tickets t
            LEFT JOIN devices d ON d.id = t.device_id
@@ -7297,7 +7444,11 @@ const server = createServer(async (req, res) => {
           contractNotes: row.contract_notes || null,
         };
       }
-      const slaTargets = slaInfo && slaInfo.resolveMinutes ? { resolveMinutes: slaInfo.resolveMinutes } : null;
+      const slaTargets = slaRows ? slaFor(slaRows, account.rows[0].sla_plan_id) : null;
+      if (reportRow && slaTargets && tickets.rows.length < 200) {
+        const now = new Date();
+        reportRow.overdue_now = tickets.rows.filter((row) => isOverdue(row, slaTargets, now)).length;
+      }
       const timeRows = view === "desk"
         ? await pool.query(
           `SELECT te.id, te.minutes, te.billable, te.note, te.source, te.created_at, te.ticket_id, t.subject,
@@ -7375,6 +7526,7 @@ const server = createServer(async (req, res) => {
           canRemote: remoteAccess(access.row).canRemote,
         } : {}),
         ...(view === "desk" ? { crossLink: access.remote ? { devices: cross.rows[0]?.n || 0 } : null } : {}),
+        ...(view === "desk" ? { insights: await customerInsights(actor.org_id, accountId, { devices: access.remote }) } : {}),
         ...(remote ? { devices: devices.rows.map((row) => {
           const users = Array.isArray(row.users) ? row.users : [];
           const suggested = row.contact_id == null ? suggestContact(users, contacts.rows) : null;
@@ -7539,26 +7691,31 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "PUT" && url.pathname === "/v1/sla") {
       if (!(await requireTicketing(actor, res))) return;
+      if (!canOperate(actor)) return send(res, 403, { error: "Only an owner or admin can change SLA targets." });
       const body = await readJson(req);
       const responseMinutes = slaMinutes(body.responseMinutes);
       const resolveMinutes = slaMinutes(body.resolveMinutes);
       if (responseMinutes == null || resolveMinutes == null) {
         return send(res, 400, { error: "Enter response and resolve targets in minutes." });
       }
+      const percent = parsePercent(body.priorityPercent);
+      if (percent.error) return send(res, 400, { error: percent.error });
       await pool.query(
-        `INSERT INTO org_slas (org_id, response_minutes, resolve_minutes)
-         VALUES ($1, $2, $3)
+        `INSERT INTO org_slas (org_id, response_minutes, resolve_minutes, priority_percent)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (org_id) DO UPDATE
          SET response_minutes = EXCLUDED.response_minutes,
              resolve_minutes = EXCLUDED.resolve_minutes,
+             priority_percent = EXCLUDED.priority_percent,
              updated_at = now()`,
-        [actor.org_id, responseMinutes, resolveMinutes],
+        [actor.org_id, responseMinutes, resolveMinutes, JSON.stringify(percent.value)],
       );
       await writeAudit(actor.org_id, actor.id, "sla.update", "org", String(actor.org_id), {
         responseMinutes,
         resolveMinutes,
+        priorityPercent: percent.value,
       });
-      return send(res, 200, { responseMinutes, resolveMinutes });
+      return send(res, 200, { responseMinutes, resolveMinutes, priorityPercent: percent.value });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/sla-plans") {
@@ -7566,7 +7723,7 @@ const server = createServer(async (req, res) => {
       const [base, plans] = await Promise.all([
         orgSla(actor.org_id),
         pool.query(
-          `SELECT p.id, p.name, p.response_minutes, p.resolve_minutes,
+          `SELECT p.id, p.name, p.response_minutes, p.resolve_minutes, p.priority_percent,
                   (SELECT count(*)::int FROM customers c WHERE c.sla_plan_id = p.id) AS customer_count
            FROM sla_plans p
            WHERE p.org_id = $1
@@ -7581,6 +7738,7 @@ const server = createServer(async (req, res) => {
           name: row.name,
           responseMinutes: row.response_minutes,
           resolveMinutes: row.resolve_minutes,
+          priorityPercent: percentFrom(row.priority_percent),
           customerCount: row.customer_count,
         })),
       });
@@ -7620,16 +7778,19 @@ const server = createServer(async (req, res) => {
       if (responseMinutes == null || resolveMinutes == null) {
         return send(res, 400, { error: "Enter response and resolve targets in minutes." });
       }
+      const percent = parsePercent(body.priorityPercent);
+      if (percent.error) return send(res, 400, { error: percent.error });
+      const percentJson = JSON.stringify(percent.value);
       const saved = await (req.method === "POST"
         ? pool.query(
-          `INSERT INTO sla_plans (org_id, name, response_minutes, resolve_minutes)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
-          [actor.org_id, name, responseMinutes, resolveMinutes],
+          `INSERT INTO sla_plans (org_id, name, response_minutes, resolve_minutes, priority_percent)
+           VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+          [actor.org_id, name, responseMinutes, resolveMinutes, percentJson],
         )
         : pool.query(
-          `UPDATE sla_plans SET name = $1, response_minutes = $2, resolve_minutes = $3, updated_at = now()
+          `UPDATE sla_plans SET name = $1, response_minutes = $2, resolve_minutes = $3, priority_percent = $6, updated_at = now()
            WHERE id = $4 AND org_id = $5 RETURNING id`,
-          [name, responseMinutes, resolveMinutes, slaPlanMatch[1], actor.org_id],
+          [name, responseMinutes, resolveMinutes, slaPlanMatch[1], actor.org_id, percentJson],
         )).catch((error) => {
         if (error.code === "23505") return null;
         throw error;
@@ -7640,6 +7801,7 @@ const server = createServer(async (req, res) => {
         name,
         responseMinutes,
         resolveMinutes,
+        priorityPercent: percent.value,
       });
       return send(res, req.method === "POST" ? 201 : 200, { id: Number(saved.rows[0].id) });
     }
@@ -7767,57 +7929,9 @@ const server = createServer(async (req, res) => {
     const alertTicketMatch = url.pathname.match(/^\/v1\/alerts\/(\d+)\/ticket$/);
     if (req.method === "POST" && alertTicketMatch) {
       if (!(await requireTicketing(actor, res, { deny: true }))) return;
-      const alert = await pool.query(
-        `SELECT a.id, a.device_id, a.metric, a.value, a.ticket_id, d.hostname, s.customer_id
-         FROM alerts a
-         JOIN devices d ON d.id = a.device_id
-         LEFT JOIN sites s ON s.id = d.site_id
-         WHERE a.id = $1 AND a.org_id = $2`,
-        [alertTicketMatch[1], actor.org_id],
-      );
-      if (!alert.rows[0]) return send(res, 404, { error: "Alert not found." });
-      if (alert.rows[0].ticket_id != null) {
-        return send(res, 200, { id: Number(alert.rows[0].ticket_id) });
-      }
-      const customerId = alert.rows[0].customer_id == null ? null : Number(alert.rows[0].customer_id);
-      if (customerId == null) return send(res, 409, { error: "That device is not linked to a customer." });
-      const label = ALERT_LABELS[alert.rows[0].metric] || alert.rows[0].metric;
-      const subject = `${label} ${alert.rows[0].value}% on ${alert.rows[0].hostname}`.slice(0, 200);
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        const ticket = await client.query(
-          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by)
-           VALUES ($1, $2, $3, $4, $5, 'open', 'high', $4)
-           RETURNING id`,
-          [actor.org_id, customerId, alert.rows[0].device_id, actor.id, subject],
-        );
-        await client.query("UPDATE alerts SET ticket_id = $1 WHERE id = $2", [ticket.rows[0].id, alert.rows[0].id]);
-        await ticketEvent(actor.org_id, ticket.rows[0].id, "created", {
-          actorId: actor.id,
-          detail: { status: "open", priority: "high", alertId: Number(alert.rows[0].id) },
-          db: client,
-        });
-        await client.query("COMMIT");
-        await writeAudit(actor.org_id, actor.id, "ticket.create", "ticket", String(ticket.rows[0].id), {
-          alertId: Number(alert.rows[0].id),
-          customerId,
-          deviceId: Number(alert.rows[0].device_id),
-          status: "open",
-          priority: "high",
-        });
-        await notifyNewTicket(actor.org_id, ticket.rows[0].id, subject);
-        return send(res, 201, { id: Number(ticket.rows[0].id) });
-      } catch (error) {
-        try {
-          await client.query("ROLLBACK");
-        } catch {
-          // The transaction was already closed.
-        }
-        throw error;
-      } finally {
-        client.release();
-      }
+      const outcome = await createAlertTicket(actor.org_id, alertTicketMatch[1], actor.id);
+      if (outcome.error) return send(res, outcome.status, { error: outcome.error });
+      return send(res, outcome.created ? 201 : 200, { id: outcome.id });
     }
 
     if (req.method === "GET" && url.pathname === "/v1/dashboard/overview") {
@@ -7839,7 +7953,7 @@ const server = createServer(async (req, res) => {
       if (ticketing) {
         const book = await slaBook(actor.org_id);
         const unresolved = await pool.query(
-          `SELECT t.id, t.status, t.created_at, c.sla_plan_id
+          `SELECT t.id, t.status, t.created_at, c.sla_plan_id, ${TICKET_SLA_COLUMNS}
            FROM tickets t
            JOIN customers c ON c.id = t.customer_id
            WHERE t.org_id = $1 AND t.status <> 'resolved'
@@ -8616,12 +8730,12 @@ const server = createServer(async (req, res) => {
         ),
         pool.query("SELECT columns FROM ticket_list_prefs WHERE user_id = $1 AND org_id = $2", [actor.id, actor.org_id]),
       ]);
-      const book = await slaBook(actor.org_id);
+      const [book, setup] = await Promise.all([slaBook(actor.org_id), deskSetup(actor.org_id)]);
       const sla = book.base;
       const matched = sortTickets(filterTickets(all, filters, me), filters.sort, filters.dir);
       const page = pageOf(matched, filters.page);
-      const categories = new Map();
-      const tags = new Map();
+      const categories = new Map(setup.categories.map((item) => [item.name.toLowerCase(), item.name]));
+      const tags = new Map(setup.tags.map((item) => [item.name.toLowerCase(), item.name]));
       for (const ticket of all) {
         if (ticket.category) categories.set(ticket.category.toLowerCase(), ticket.category);
         for (const tag of ticket.tags) tags.set(tag.toLowerCase(), tag);
@@ -8659,17 +8773,64 @@ const server = createServer(async (req, res) => {
         devices: devices.rows.map(deviceChoice),
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
         sla,
+        statuses: setup.statuses,
+        priorityLabels: setup.priorityLabels,
+        canned: setup.canned,
         canPatch: patchAllowed(license),
         canReport: reportingAllowed(license),
         canMonitor: monitoringAllowed(license),
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/v1/tickets/similar") {
+      if (!(await requireTicketing(actor, res))) return;
+      const customerId = Number(url.searchParams.get("customer"));
+      const subject = String(url.searchParams.get("subject") || "").slice(0, 200);
+      if (!Number.isSafeInteger(customerId) || !subject.trim()) return send(res, 200, { tickets: [] });
+      const open = await pool.query(
+        `SELECT id, subject, status, created_at FROM tickets
+         WHERE org_id = $1 AND customer_id = $2 AND status <> 'resolved' AND merged_into_id IS NULL
+         ORDER BY id DESC LIMIT 200`,
+        [actor.org_id, customerId],
+      );
+      return send(res, 200, {
+        tickets: similarTickets(open.rows, subject).map((row) => ({
+          id: Number(row.id),
+          subject: row.subject,
+          status: row.status,
+          createdAt: row.created_at,
+        })),
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/tickets/due-preview") {
+      if (!(await requireTicketing(actor, res))) return;
+      const customerId = Number(url.searchParams.get("customer"));
+      const priority = url.searchParams.get("priority") || "normal";
+      if (!TICKET_PRIORITIES.has(priority)) return send(res, 400, { error: "Choose a priority." });
+      const customer = Number.isSafeInteger(customerId)
+        ? await pool.query("SELECT sla_plan_id FROM customers WHERE id = $1 AND org_id = $2", [customerId, actor.org_id])
+        : { rows: [] };
+      const book = await slaBook(actor.org_id);
+      const targets = slaFor(book, customer.rows[0]?.sla_plan_id ?? null);
+      const clock = ticketClock({ created_at: new Date(), status: "open", priority }, targets);
+      return send(res, 200, clock
+        ? {
+          dueAt: clock.resolveDueAt.toISOString(),
+          responseDueAt: clock.responseDueAt.toISOString(),
+          resolveMinutes: clock.resolveMinutes,
+          responseMinutes: clock.responseMinutes,
+          businessHours: clock.businessHours,
+          plan: targets?.name || null,
+        }
+        : { dueAt: null });
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/tickets") {
       if (!(await requireTicketing(actor, res, { deny: true }))) return;
       const body = await readJson(req);
       const subject = typeof body.subject === "string" ? body.subject.trim() : "";
-      const status = body.status || "open";
+      let status = body.status || "open";
       const priority = body.priority || "normal";
       const customerId = Number(body.customerId);
       const deviceId = body.deviceId == null || body.deviceId === "" ? null : Number(body.deviceId);
@@ -8678,6 +8839,14 @@ const server = createServer(async (req, res) => {
       const comment = typeof body.comment === "string" ? body.comment.trim() : "";
       const files = attachmentIds(body.attachmentIds);
       if (files == null) return send(res, 400, { error: "Attach up to 10 files at a time." });
+      const category = cleanCategory(body.category);
+      const tags = cleanTags(body.tags);
+      const due = parseDueAt(body.dueAt);
+      const channel = parseChannel(body.channel);
+      const cc = parseCc(body.cc);
+      const statusRef = parseStatusId(body.statusId);
+      const inputError = [due, channel, cc, statusRef].find((item) => item.error);
+      if (inputError) return send(res, 400, { error: inputError.error });
       if (!subject || subject.length > 200) return send(res, 400, { error: "Enter a subject." });
       if (!TICKET_STATUSES.has(status) || !TICKET_PRIORITIES.has(priority)) {
         return send(res, 400, { error: "Choose a status and priority." });
@@ -8717,13 +8886,40 @@ const server = createServer(async (req, res) => {
             return send(res, 400, { error: "Choose a contact on that account." });
           }
         }
+        if (statusRef.value != null) {
+          const custom = await client.query("SELECT base FROM desk_statuses WHERE id = $1 AND org_id = $2", [statusRef.value, actor.org_id]);
+          if (!custom.rows[0]) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "Choose a status." });
+          }
+          status = custom.rows[0].base;
+        }
+        if (cc.value.length) {
+          const found = await client.query(
+            "SELECT count(*)::int AS n FROM contacts WHERE id = ANY($1::bigint[]) AND customer_id = $2 AND org_id = $3",
+            [cc.value, customerId, actor.org_id],
+          );
+          if (found.rows[0].n !== cc.value.length) {
+            await client.query("ROLLBACK");
+            return send(res, 400, { error: "Only contacts on this account can be copied in." });
+          }
+        }
         const ticket = await client.query(
-          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by, contact_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `INSERT INTO tickets (org_id, customer_id, device_id, assignee_user_id, subject, status, priority, created_by, contact_id,
+                                category, tags, due_at, channel, status_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, 'console'), $14)
            RETURNING id`,
-          [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id, contactId],
+          [actor.org_id, customerId, deviceId, assigneeUserId, subject, status, priority, actor.id, contactId,
+            category, tags, due.value, channel.value, statusRef.value],
         );
         const ticketId = Number(ticket.rows[0].id);
+        if (cc.value.length) {
+          await client.query(
+            `INSERT INTO ticket_cc (org_id, ticket_id, contact_id)
+             SELECT $1, $2, unnest($3::bigint[]) ON CONFLICT DO NOTHING`,
+            [actor.org_id, ticketId, cc.value],
+          );
+        }
         await ticketEvent(actor.org_id, ticketId, "created", { actorId: actor.id, detail: { status, priority }, db: client });
         if (comment || files.length) {
           const added = await client.query(
@@ -8753,9 +8949,18 @@ const server = createServer(async (req, res) => {
           status,
           priority,
           assigneeUserId,
+          ...(category ? { category } : {}),
+          ...(tags.length ? { tags } : {}),
+          ...(due.value ? { dueAt: due.value.toISOString() } : {}),
+          channel: channel.value || "console",
+          ...(cc.value.length ? { cc: cc.value } : {}),
         });
-        await notifyNewTicket(actor.org_id, ticket.rows[0].id, subject);
-        return send(res, 201, { id: Number(ticket.rows[0].id) });
+        await runAutomations(deskHelpers(), actor.org_id, ticketId, "created");
+        await notifyNewTicket(actor.org_id, ticketId, subject, { actorId: actor.id });
+        if (assigneeUserId != null && assigneeUserId !== Number(actor.id)) {
+          await deskNotify(deskHelpers(), { orgId: actor.org_id, event: "assigned", ticketId, subject, userIds: [assigneeUserId], actorId: actor.id });
+        }
+        return send(res, 201, { id: ticketId });
       } catch (error) {
         try {
           await client.query("ROLLBACK");
@@ -8847,6 +9052,7 @@ const server = createServer(async (req, res) => {
           },
           { actorId: actor.id },
         );
+        if (before.status !== "resolved" && after.status === "resolved") await deskHelpers().ticketResolved(actor.org_id, Number(after.id));
       }
       return send(res, 200, { updated: updated.length });
     }
@@ -9126,7 +9332,7 @@ const server = createServer(async (req, res) => {
       }
       const outcome = await inTransaction(async (client) => {
         const ticket = await client.query(
-          "SELECT id FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE",
+          "SELECT id, subject FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE",
           [ticketCommentMatch[1], actor.org_id],
         );
         if (!ticket.rows[0]) return { status: 404, error: "Ticket not found." };
@@ -9143,13 +9349,17 @@ const server = createServer(async (req, res) => {
         }
         await ticketEvent(actor.org_id, ticketId, kind, { actorId: actor.id, detail: { commentId }, db: client });
         await client.query("UPDATE tickets SET updated_at = now() WHERE id = $1", [ticketId]);
-        return { ticketId, commentId };
+        return { ticketId, commentId, subject: ticket.rows[0].subject };
       });
       if (outcome.error) return send(res, outcome.status, { error: outcome.error });
       await writeAudit(actor.org_id, actor.id, kind === "note" ? "ticket.note" : "ticket.comment", "ticket", String(outcome.ticketId), {
         commentId: String(outcome.commentId),
         attachments: files.length,
       });
+      await notifyWatchers(actor.org_id, outcome.ticketId, `${kind === "note" ? "New note" : "New reply"}: ${outcome.subject}`, actor.id);
+      if (kind === "reply") {
+        emailAgentReply(deskHelpers(), actor.org_id, outcome.ticketId, outcome.commentId, actor);
+      }
       return send(res, 201, { id: outcome.commentId });
     }
 
@@ -9182,9 +9392,22 @@ const server = createServer(async (req, res) => {
         const changeTags = Object.hasOwn(body, "tags");
         const category = changeCategory ? cleanCategory(body.category) : null;
         const tags = changeTags ? cleanTags(body.tags) : null;
+        const changeDue = Object.hasOwn(body, "dueAt");
+        const changeChannel = Object.hasOwn(body, "channel") && body.channel != null && body.channel !== "";
+        const changeCc = Object.hasOwn(body, "cc");
+        const changeStatusId = Object.hasOwn(body, "statusId");
+        const due = changeDue ? parseDueAt(body.dueAt) : { value: null };
+        const channel = changeChannel ? parseChannel(body.channel) : { value: null };
+        const cc = changeCc ? parseCc(body.cc) : { value: [] };
+        const statusRef = changeStatusId ? parseStatusId(body.statusId) : { value: null };
+        const inputError = [due, channel, cc, statusRef].find((item) => item.error);
+        if (inputError) return send(res, 400, { error: inputError.error });
+        let nextStatus = status;
         const outcome = await inTransaction(async (client) => {
           const current = await client.query(
-            `SELECT id, customer_id, status, priority, assignee_user_id, contact_id, device_id, category, tags
+            `SELECT id, subject, customer_id, status, priority, assignee_user_id, contact_id, device_id, category, tags,
+                    due_at, channel, status_id,
+                    ARRAY(SELECT contact_id FROM ticket_cc WHERE ticket_id = tickets.id ORDER BY contact_id) AS cc
              FROM tickets WHERE id = $1 AND org_id = $2 FOR UPDATE`,
             [ticketMatch[1], actor.org_id],
           );
@@ -9193,6 +9416,22 @@ const server = createServer(async (req, res) => {
           if (contactId != null) {
             const contact = await client.query("SELECT id FROM contacts WHERE id = $1 AND customer_id = $2", [contactId, customerId]);
             if (!contact.rows[0]) return { status: 400, error: "Choose a contact on this ticket's account." };
+          }
+          if (statusRef.value != null) {
+            const custom = await client.query("SELECT base FROM desk_statuses WHERE id = $1 AND org_id = $2", [statusRef.value, actor.org_id]);
+            if (!custom.rows[0]) return { status: 400, error: "Choose a status." };
+            nextStatus = custom.rows[0].base;
+          }
+          let ccNames = null;
+          if (changeCc) {
+            const found = cc.value.length
+              ? await client.query(
+                "SELECT id, name FROM contacts WHERE id = ANY($1::bigint[]) AND customer_id = $2 AND org_id = $3 ORDER BY lower(name)",
+                [cc.value, customerId, actor.org_id],
+              )
+              : { rows: [] };
+            if (found.rows.length !== cc.value.length) return { status: 400, error: "Only contacts on this account can be copied in." };
+            ccNames = found.rows.map((row) => row.name);
           }
           let linked = null;
           if (deviceId != null) {
@@ -9205,14 +9444,40 @@ const server = createServer(async (req, res) => {
                  contact_id = CASE WHEN $4::boolean THEN $5::bigint ELSE contact_id END,
                  device_id = CASE WHEN $6::boolean THEN $7::bigint ELSE device_id END,
                  category = CASE WHEN $9::boolean THEN $10 ELSE category END,
-                 tags = CASE WHEN $11::boolean THEN $12::text[] ELSE tags END
+                 tags = CASE WHEN $11::boolean THEN $12::text[] ELSE tags END,
+                 due_at = CASE WHEN $13::boolean THEN $14::timestamptz ELSE due_at END,
+                 sla_warned = CASE WHEN $13::boolean THEN array_remove(sla_warned, 'resolve') ELSE sla_warned END,
+                 channel = CASE WHEN $15::boolean THEN $16 ELSE channel END,
+                 status_id = CASE WHEN $17::boolean THEN $18::bigint WHEN status = $1 THEN status_id ELSE NULL END
              WHERE id = $8`,
             [
-              status, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id,
+              nextStatus, priority, assigneeUserId, changeContact, contactId, changeDevice, deviceId, current.rows[0].id,
               changeCategory, category, changeTags, tags || [],
+              changeDue, due.value, changeChannel, channel.value, changeStatusId, statusRef.value,
             ],
           );
           const before = current.rows[0];
+          if (changeCc) {
+            await client.query("DELETE FROM ticket_cc WHERE ticket_id = $1", [before.id]);
+            if (cc.value.length) {
+              await client.query(
+                "INSERT INTO ticket_cc (org_id, ticket_id, contact_id) SELECT $1, $2, unnest($3::bigint[])",
+                [actor.org_id, before.id, cc.value],
+              );
+            }
+            const was = (before.cc || []).map(Number).sort((a, b) => a - b).join(",");
+            if (was !== [...cc.value].sort((a, b) => a - b).join(",")) {
+              await ticketEvent(actor.org_id, before.id, "cc", { actorId: actor.id, detail: { to: ccNames }, db: client });
+            }
+          }
+          const dueBefore = before.due_at ? new Date(before.due_at).toISOString() : null;
+          const dueAfter = due.value ? due.value.toISOString() : null;
+          if (changeDue && dueBefore !== dueAfter) {
+            await ticketEvent(actor.org_id, before.id, "due", { actorId: actor.id, detail: { from: dueBefore, to: dueAfter }, db: client });
+          }
+          if (changeChannel && before.channel !== channel.value) {
+            await ticketEvent(actor.org_id, before.id, "channel", { actorId: actor.id, detail: { from: before.channel, to: channel.value }, db: client });
+          }
           await ticketChangeEvents(
             actor.org_id,
             before.id,
@@ -9226,7 +9491,7 @@ const server = createServer(async (req, res) => {
               tags: before.tags || [],
             },
             {
-              status,
+              status: nextStatus,
               priority,
               assigneeUserId,
               ...(changeContact ? { contactId } : {}),
@@ -9236,7 +9501,14 @@ const server = createServer(async (req, res) => {
             },
             { actorId: actor.id, db: client },
           );
-          return { id: current.rows[0].id, customerId, linked };
+          return {
+            id: current.rows[0].id,
+            customerId,
+            linked,
+            subject: before.subject,
+            assigneeBefore: before.assignee_user_id == null ? null : Number(before.assignee_user_id),
+            statusBefore: before.status,
+          };
         });
         if (outcome.error) return send(res, outcome.status, { error: outcome.error });
         if (outcome.linked?.linked) {
@@ -9246,28 +9518,51 @@ const server = createServer(async (req, res) => {
           });
         }
         await writeAudit(actor.org_id, actor.id, "ticket.update", "ticket", String(outcome.id), {
-          status,
+          status: nextStatus,
           priority,
           assigneeUserId,
           ...(changeContact ? { contactId } : {}),
           ...(changeDevice ? { deviceId } : {}),
           ...(changeCategory ? { category } : {}),
           ...(changeTags ? { tags } : {}),
+          ...(changeDue ? { dueAt: due.value ? due.value.toISOString() : null } : {}),
+          ...(changeChannel ? { channel: channel.value } : {}),
+          ...(changeCc ? { cc: cc.value } : {}),
+          ...(changeStatusId ? { statusId: statusRef.value } : {}),
         });
+        if (assigneeUserId != null && assigneeUserId !== outcome.assigneeBefore && assigneeUserId !== Number(actor.id)) {
+          await deskNotify(deskHelpers(), {
+            orgId: actor.org_id,
+            event: "assigned",
+            ticketId: Number(outcome.id),
+            subject: outcome.subject,
+            userIds: [assigneeUserId],
+            actorId: actor.id,
+          });
+        }
+        if (outcome.statusBefore !== nextStatus) {
+          await notifyWatchers(actor.org_id, Number(outcome.id), `Status ${nextStatus}: ${outcome.subject}`, actor.id);
+          if (nextStatus === "resolved") await deskHelpers().ticketResolved(actor.org_id, Number(outcome.id));
+        }
+        await runAutomations(deskHelpers(), actor.org_id, Number(outcome.id), "updated");
       }
       const ticket = await pool.query(
         `SELECT t.id, t.subject, t.status, t.priority, t.customer_id, c.name AS customer_name, c.sla_plan_id,
-                t.category, t.tags, t.merged_into_id,
+                t.category, t.tags, t.merged_into_id, t.migration_lock,
+                (SELECT o.name FROM migration_requests m JOIN orgs o ON o.id = m.target_tenant_id WHERE m.id = t.migration_lock) AS moved_to,
                 ct.id AS contact_id, ct.name AS contact_name, ct.email AS contact_email,
                 t.device_id, d.hostname AS device_hostname, d.os_name AS device_os_name,
                 d.display_name AS device_display_name, d.users AS device_users,
                 d.mesh_node_id IS NOT NULL AS device_has_remote,
                 t.assignee_user_id, u.name AS assignee_name, u.email AS assignee_email,
-                t.created_at, t.updated_at, ${TICKET_CLOCK_SQL}
+                t.created_at, t.updated_at, t.channel, t.status_id, st.name AS status_label,
+                ARRAY(SELECT contact_id FROM ticket_cc WHERE ticket_id = t.id ORDER BY contact_id) AS cc,
+                ${TICKET_CLOCK_SQL}
          FROM tickets t
          JOIN customers c ON c.id = t.customer_id
          LEFT JOIN devices d ON d.id = t.device_id
          LEFT JOIN users u ON u.id = t.assignee_user_id
+         LEFT JOIN desk_statuses st ON st.id = t.status_id
          ${TICKET_CONTACT_JOIN}
          WHERE t.id = $1 AND t.org_id = $2`,
         [ticketMatch[1], actor.org_id],
@@ -9311,11 +9606,33 @@ const server = createServer(async (req, res) => {
         ),
         pool.query(
           `SELECT
-             (SELECT array_agg(DISTINCT category ORDER BY category) FROM tickets WHERE org_id = $1 AND category IS NOT NULL) AS categories,
-             (SELECT array_agg(DISTINCT tag ORDER BY tag) FROM tickets, unnest(tags) AS tag WHERE org_id = $1) AS tags`,
+             (SELECT array_agg(DISTINCT name ORDER BY name) FROM (
+                SELECT category AS name FROM tickets WHERE org_id = $1 AND category IS NOT NULL
+                UNION SELECT name FROM desk_categories WHERE org_id = $1) x) AS categories,
+             (SELECT array_agg(DISTINCT name ORDER BY name) FROM (
+                SELECT tag AS name FROM tickets, unnest(tags) AS tag WHERE org_id = $1
+                UNION SELECT name FROM desk_tags WHERE org_id = $1) y) AS tags`,
           [actor.org_id],
         ),
       ]);
+      const setup = await deskSetup(actor.org_id);
+      const [links, watchers, rating] = await Promise.all([
+        pool.query(
+          `SELECT id, subject, status, 'parent' AS relation FROM tickets
+           WHERE id = (SELECT parent_id FROM tickets WHERE id = $1) AND org_id = $2
+           UNION ALL
+           SELECT id, subject, status, 'child' FROM tickets WHERE parent_id = $1 AND org_id = $2
+           ORDER BY relation DESC, id
+           LIMIT 51`,
+          [ticket.rows[0].id, actor.org_id],
+        ),
+        pool.query("SELECT user_id FROM ticket_watchers WHERE ticket_id = $1 ORDER BY created_at", [ticket.rows[0].id]),
+        pool.query("SELECT rating, comment, updated_at FROM ticket_ratings WHERE ticket_id = $1", [ticket.rows[0].id]),
+      ]);
+      const ratingRow = rating.rows[0];
+      const linkView = (row) => ({ id: Number(row.id), subject: row.subject, status: row.status });
+      const parentRow = links.rows.find((row) => row.relation === "parent");
+      const watcherIds = watchers.rows.map((row) => Number(row.user_id));
       const primaryContact = accountContacts.rows.find((row) => row.is_primary) || null;
       const latestJob = await pool.query(
         `SELECT id, command, status, exit_code, output, finished_at
@@ -9340,11 +9657,23 @@ const server = createServer(async (req, res) => {
         clock: slaClock(ticket.rows[0], sla, new Date()),
         timeline,
         time,
+        statuses: setup.statuses,
+        priorityLabels: setup.priorityLabels,
+        canned: setup.canned,
         ticket: {
           ...view,
           category: ticket.rows[0].category || null,
           tags: ticket.rows[0].tags || [],
+          dueAt: ticket.rows[0].due_at,
+          channel: ticket.rows[0].channel || "console",
+          cc: (ticket.rows[0].cc || []).map(Number),
           mergedIntoId: ticket.rows[0].merged_into_id == null ? null : Number(ticket.rows[0].merged_into_id),
+          movedTo: ticket.rows[0].migration_lock == null ? null : ticket.rows[0].moved_to || "another tenant",
+          parent: parentRow ? linkView(parentRow) : null,
+          children: links.rows.filter((row) => row.relation === "child").map(linkView),
+          watchers: watcherIds,
+          watching: watcherIds.includes(Number(actor.id)),
+          rating: ratingRow ? { rating: ratingRow.rating, comment: ratingRow.comment || null, at: ratingRow.updated_at } : null,
           device: view.device
             ? {
               ...view.device,
@@ -9373,7 +9702,7 @@ const server = createServer(async (req, res) => {
           })),
         },
         users: users.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email })),
-        contacts: accountContacts.rows.map((row) => ({ id: Number(row.id), name: row.name, primary: row.is_primary })),
+        contacts: accountContacts.rows.map((row) => ({ id: Number(row.id), name: row.name, email: row.email || null, primary: row.is_primary })),
         devices: deviceChoices.rows.map(deviceChoice),
         categories: labels.rows[0].categories || [],
         tagChoices: labels.rows[0].tags || [],
@@ -9429,6 +9758,9 @@ const server = createServer(async (req, res) => {
 
     send(res, 404, { error: "Not found." });
   } catch (error) {
+    if (error.message === "DF_MIGRATION_LOCKED") {
+      return send(res, 409, { error: "This record was moved to another tenant and is now read-only." });
+    }
     const status = error.status || 500;
     if (status >= 500) console.error(error.message);
     send(res, status, { error: status >= 500 ? "Internal error." : error.message });
@@ -9450,9 +9782,17 @@ server.listen(port, "127.0.0.1", () => {
   setInterval(isolateTenantMesh, 600000);
   setInterval(sweepTicketSessions, 60000);
   setInterval(sweepPendingAttachments, 3600000);
+  const closePending = () => autoCloseSweep(deskHelpers()).catch((error) => console.error("auto-close failed", error.message));
+  setTimeout(closePending, 90000);
+  setInterval(closePending, 3600000);
+  setTimeout(() => pollMailboxes(deskHelpers()), 45000);
+  setInterval(() => pollMailboxes(deskHelpers()), 120000);
   setTimeout(writeDailySnapshots, 60000);
   setInterval(writeDailySnapshots, 600000);
   setInterval(sampleUptime, 5 * 60000);
   setTimeout(runDueSubscriptions, 120000);
   setInterval(runDueSubscriptions, 600000);
+  recoverMigrations()
+    .catch((error) => console.error(`migration recovery: ${error.message}`))
+    .finally(() => setInterval(() => migrationTick(migrationHelpers()), 60000));
 });

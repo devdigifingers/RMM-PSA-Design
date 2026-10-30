@@ -12,7 +12,9 @@
     "test": "node --test \"test/**/*.test.js\""
   },
   "dependencies": {
+    "imapflow": "^1.0.200",
     "ioredis": "^5.8.2",
+    "mailparser": "^3.7.4",
     "pg": "^8.16.3"
   }
 }

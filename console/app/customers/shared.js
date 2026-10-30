@@ -72,7 +72,7 @@ export function ReadOnlyNote({ show }) {
   if (!show) return null;
   return (
     <p className="cust-readonly" role="status">
-      The license is not active, so customers are read-only. <a href="/subscription">Manage Subscription</a>
+      The license is not active, so customers are read-only. <a href="/settings/org/subscription">Manage Subscription</a>
     </p>
   );
 }

@@ -7,6 +7,7 @@ import { OsMark } from "./os-mark";
 import { RemoteActions } from "./remote-actions";
 import { SessionFilter } from "./session-filter";
 import { BulkSite, CustomerFilter } from "./device-filters";
+import { ColumnPicker } from "./column-picker";
 
 const apiUrl = process.env.API_URL || "http://127.0.0.1:4000";
 
@@ -33,6 +34,7 @@ export default async function DevicesPage({ searchParams }) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
   if (!token) redirect("/");
+  const hiddenColumns = (jar.get("df_device_cols")?.value || "").split(",").filter(Boolean);
   const query = new URLSearchParams();
   if (q) query.set("q", q);
   for (const key of FILTERS) {
@@ -108,6 +110,9 @@ export default async function DevicesPage({ searchParams }) {
         {params?.error === "remote" && !body.remoteReason ? (
           <p className="error">Remote desktop is not available on this license.</p>
         ) : null}
+        <div className="systems-tools">
+          <ColumnPicker initialHidden={hiddenColumns} />
+        </div>
         <div className="systems">
         <table>
           <thead>

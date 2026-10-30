@@ -12,6 +12,14 @@ export const EVENT_GROUPS = {
   reply: "replies",
   note: "notes",
   sla_breach: "sla",
+  sla_warning: "sla",
+  due: "changes",
+  channel: "changes",
+  cc: "changes",
+  automation: "changes",
+  parent: "changes",
+  csat: "changes",
+  migrated: "changes",
   remote_start: "remote",
   remote_end: "remote",
   command: "remote",
@@ -97,6 +105,7 @@ export function timelineItem(row, lookups = {}) {
     const comment = lookups.comments?.get(Number(detail.commentId));
     item.body = comment ? comment.body : "";
     item.attachments = lookups.attachments?.get(Number(detail.commentId)) || [];
+    if (detail.email === true) item.email = true;
     return item;
   }
   if (row.kind === "assignee") {
@@ -119,7 +128,7 @@ export function timelineItem(row, lookups = {}) {
     item.user = detail.user || null;
     return item;
   }
-  for (const key of ["from", "to", "minutes", "billable", "note", "command", "exitCode", "output", "template", "target", "subject", "into", "tickets"]) {
+  for (const key of ["from", "to", "minutes", "billable", "note", "command", "exitCode", "output", "template", "target", "subject", "into", "tickets", "minutesLeft", "dueAt", "rule", "changes", "rating", "sourceTenant", "rollback"]) {
     if (Object.hasOwn(detail, key)) item[key] = detail[key];
   }
   return item;

@@ -46,16 +46,8 @@ export function slaFor(book, planId) {
   return (planId != null && book.plans.get(String(planId))) || book.base;
 }
 
-export function ticketDue(row, sla) {
-  if (!sla || row.status === "resolved") return null;
-  return new Date(new Date(row.created_at).getTime() + sla.resolveMinutes * 60000);
-}
-
-// The one overdue rule: not resolved and past the resolution target. Dashboard, ticket list and customer pages all use it.
-export function isOverdue(row, sla, now = new Date()) {
-  const due = ticketDue(row, sla);
-  return due ? due.getTime() < now.getTime() : false;
-}
+// Dashboard, ticket list and customer pages all use the same overdue rule from the SLA engine.
+export { isOverdue, ticketDue } from "./sla-engine.js";
 
 // node-postgres parses a `date` column as local midnight, so read it back with local fields.
 export function dateOnly(value) {

@@ -38,6 +38,12 @@ async function tenant(name) {
 async function seed(orgId, prefix, { withDevice = true } = {}) {
   const plan = await id("INSERT INTO sla_plans (org_id, name, response_minutes, resolve_minutes) VALUES ($1, 'Gold', 60, 480) RETURNING id", [orgId]);
   await pool.query("INSERT INTO desk_categories (org_id, name) VALUES ($1, 'Network'), ($1, $2)", [orgId, `${prefix} Printers`]);
+  await pool.query(
+    `INSERT INTO scripts (org_id, name, shell, body, parameters, risk, fixes)
+     VALUES ($1, 'Shared fix', 'cmd', 'ipconfig', '[]', 'safe', '{}'),
+            ($1, $2, 'powershell', 'Restart-Service $Name', '[{"name":"Name","label":"Service","default":"Spooler","required":true}]', 'approval', '{cpu,disk}')`,
+    [orgId, `${prefix} fix`],
+  );
   const customer = await id("INSERT INTO customers (org_id, name, email, sla_plan_id) VALUES ($1, $2, $3, $4) RETURNING id", [orgId, `${prefix} Corp`, `info@${prefix}.test`, plan]);
   const shared = await id("INSERT INTO customers (org_id, name) VALUES ($1, 'Shared Name Ltd') RETURNING id", [orgId]);
   const site = await id("INSERT INTO sites (org_id, customer_id, name) VALUES ($1, $2, 'Main') RETURNING id", [orgId, customer]);
@@ -77,7 +83,7 @@ async function seed(orgId, prefix, { withDevice = true } = {}) {
 }
 
 const TABLES = ["customers", "contacts", "sites", "devices", "device_samples", "tickets", "ticket_comments", "activity_events",
-  "ticket_time_entries", "ticket_attachments", "sla_plans", "desk_categories"];
+  "ticket_time_entries", "ticket_attachments", "sla_plans", "desk_categories", "scripts"];
 
 async function snapshot(orgId) {
   const out = {};
@@ -150,6 +156,9 @@ const printerCopy = targetAfter.tickets.find((row) => row.subject === "alpha pri
 const copiedReply = targetAfter.activity_events.find((row) => row.type === "ticket.reply" && String(row.ticket_id) === String(printerCopy));
 assert.ok(copiedReply, "ticket history copied with the ticket");
 assert.equal(targetAfter.ticket_comments.find((row) => String(row.id) === String(copiedReply.payload.commentId))?.body, "Looking into it", "reply points at the copied comment");
+const copiedScript = targetAfter.scripts.find((row) => row.name === "alpha fix");
+assert.deepEqual([copiedScript?.parameters, copiedScript?.fixes, copiedScript?.risk], [[{ name: "Name", label: "Service", default: "Spooler", required: true }], ["cpu", "disk"], "approval"], "script copied with its settings");
+assert.equal(targetAfter.scripts.filter((row) => row.name === "Shared fix").length, 1, "script with the same name not copied twice");
 assert.equal(targetAfter.devices.length, 1, "device moved");
 assert.equal(targetAfter.device_samples.length, 2, "device history followed");
 const copiedFile = targetAfter.ticket_attachments.find((row) => row.file_name === "a.txt" && !row.storage_key.includes("beta"));

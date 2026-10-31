@@ -29,6 +29,7 @@ import { handleMigrations, migrationTick, platformWaiting, recoverMigrations, te
 import { customerInsights } from "./customer-insights.js";
 import { remoteAgentChange, remoteAgentFrom, remoteAgentOffer, remoteAgentView } from "./remote-agent.js";
 import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
+import { handleScripts } from "./scripts.js";
 import { COMMAND_MAX, scriptProblem } from "./job-input.js";
 import {
   ACTIVITY_GROUPS,
@@ -5708,6 +5709,7 @@ const server = createServer(async (req, res) => {
     if (await handleInvites(req, res, url, actor, platformHelpers())) return;
     if (await handlePlatformTeam(req, res, url, actor, platformHelpers())) return;
     if (await handleApiTokens(req, res, url, actor, tokenHelpers())) return;
+    if (await handleScripts(req, res, url, actor, tokenHelpers())) return;
     if (await handleMigrations(req, res, url, actor, migrationHelpers())) return;
     if (await handleCsat(req, res, url, deskHelpers())) return;
     if (await handleDeskSettings(req, res, url, actor, deskHelpers())) return;

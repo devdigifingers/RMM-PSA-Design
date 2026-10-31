@@ -6937,3 +6937,31 @@ html[data-theme="dark"] .token-copy code { background: rgba(124, 58, 237, 0.18);
   .tl-row { grid-template-columns: 40px 14px minmax(0, 1fr); }
   .tl-row::before { left: 61px; }
 }
+
+/* Remote Desk → Settings → Script library */
+.script-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.script-head h2 { margin: 0; }
+.script-risk.is-safe { background: #e6f7ee; color: #1e8a50; }
+.script-risk.is-approval { background: #fff3e0; color: var(--df-warn-text); }
+.script-back { margin: 0 0 4px; font-size: 14px; }
+.script-form { display: grid; gap: 14px; }
+.script-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+.script-help { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.script-body { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; tab-size: 4; }
+pre.script-body { margin: 14px 0 0; padding: 14px; border-radius: 10px; background: var(--bg, #f5f7fa); overflow-x: auto; white-space: pre; }
+.script-params, .script-fixes { margin: 0; padding: 12px 14px; border: 1px solid var(--line, #e3e7ee); border-radius: 10px; }
+.script-params legend, .script-fixes legend { padding: 0 6px; font-size: 13px; font-weight: 600; }
+.script-param-head, .script-param { display: grid; grid-template-columns: 1fr 1fr 1fr 70px; gap: 8px; align-items: center; }
+.script-param-head { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.script-param + .script-param { margin-top: 6px; }
+.script-param input[type="checkbox"] { width: 16px; height: 16px; justify-self: center; accent-color: var(--blue); }
+.script-fixes { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.script-form > button[type="submit"] { justify-self: start; width: auto; }
+.script-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
+.script-facts dt { color: var(--muted); }
+.script-facts dd { margin: 0; }
+.script-actions { display: flex; gap: 20px; align-items: center; max-width: 860px; margin-top: 14px; }
+.script-actions .link-button { padding: 0; border: 0; background: none; box-shadow: none; color: var(--blue); font-size: 13px; text-decoration: underline; cursor: pointer; }
+@media (max-width: 640px) {
+  .script-param-head, .script-param { grid-template-columns: 1fr 1fr; }
+}

@@ -461,6 +461,21 @@ class Run {
         this.count("settings");
       }
     }
+    const scripts = await c.query(
+      `SELECT s.* FROM scripts s
+       WHERE s.org_id = $1 AND s.archived_at IS NULL AND NOT EXISTS (
+         SELECT 1 FROM scripts t WHERE t.org_id = $2 AND t.archived_at IS NULL AND lower(t.name) = lower(s.name))`,
+      [src, dst],
+    );
+    for (const row of scripts.rows) {
+      const made = await c.query(
+        `INSERT INTO scripts (org_id, name, description, shell, body, parameters, risk, fixes)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8) RETURNING id`,
+        [dst, row.name, row.description, row.shell, row.body, JSON.stringify(row.parameters), row.risk, row.fixes],
+      );
+      await this.record("script", row.id, made.rows[0].id);
+      this.count("settings");
+    }
   }
 
   async customers() {
@@ -1036,7 +1051,7 @@ async function runRollback(request, h) {
   try {
     await beginJob(client, row.id);
     const maps = {};
-    for (const type of ["customer", "site", "contact", "device", "ticket", "sla_plan", "desk_category", "desk_tag", "desk_canned_reply", "desk_holiday"]) {
+    for (const type of ["customer", "site", "contact", "device", "ticket", "sla_plan", "desk_category", "desk_tag", "desk_canned_reply", "desk_holiday", "script"]) {
       maps[type] = await mapRows(client, row.id, type);
     }
     const created = (type) => maps[type].filter((item) => !item.merged).map((item) => item.target);
@@ -1153,7 +1168,7 @@ async function runRollback(request, h) {
     const leftover = await deleteCustomers(client, dst, created("customer"));
     await client.query("UPDATE customers SET sla_plan_id = NULL WHERE org_id = $1 AND sla_plan_id = ANY($2::bigint[])", [dst, created("sla_plan")]);
     await client.query("DELETE FROM sla_plans WHERE org_id = $1 AND id = ANY($2::bigint[])", [dst, created("sla_plan")]);
-    for (const [type, table] of [["desk_category", "desk_categories"], ["desk_tag", "desk_tags"], ["desk_canned_reply", "desk_canned_replies"], ["desk_holiday", "desk_holidays"]]) {
+    for (const [type, table] of [["desk_category", "desk_categories"], ["desk_tag", "desk_tags"], ["desk_canned_reply", "desk_canned_replies"], ["desk_holiday", "desk_holidays"], ["script", "scripts"]]) {
       await client.query(`DELETE FROM ${table} WHERE org_id = $1 AND id = ANY($2::bigint[])`, [dst, created(type)]);
     }
     for (const table of ["customers", "contacts", "tickets"]) {

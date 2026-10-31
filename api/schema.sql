@@ -1230,6 +1230,29 @@ BEGIN
   END IF;
 END $$;
 
+-- Remote Desk → Settings → Script library. The built-in starter scripts live in code (script-library.js);
+-- this table holds each organisation's own scripts. Archived scripts stay so old jobs can still name them.
+CREATE TABLE IF NOT EXISTS scripts (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  description text NOT NULL DEFAULT '',
+  shell text NOT NULL CHECK (shell IN ('powershell', 'cmd', 'bash')),
+  body text NOT NULL,
+  parameters jsonb NOT NULL DEFAULT '[]'::jsonb,
+  risk text NOT NULL DEFAULT 'safe' CHECK (risk IN ('safe', 'approval')),
+  fixes text[] NOT NULL DEFAULT '{}',
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS scripts_org_name_key ON scripts (org_id, lower(name)) WHERE archived_at IS NULL;
+
+-- Which library script a job ran: a built-in key such as 'flush-dns', or the id of an organisation script.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_ref text;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS script_name text;
+
 -- One history for each customer and device. customer_id is fixed when the event happens, so a device that later
 -- moves to another customer keeps its earlier events with the first one. The ids are not foreign keys: history
 -- outlives the records it mentions. (source, source_id) makes the backfill and live writes safe to repeat.

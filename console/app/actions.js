@@ -434,6 +434,53 @@ export async function saveDeskSetting(formData) {
   redirect(`/desk/settings/${page}?saved=${form}${extra}${anchor ? `#${anchor}` : ""}`);
 }
 
+const SCRIPTS_PAGE = "/remote/settings/scripts";
+
+function scriptBody(f) {
+  const parameters = [0, 1, 2, 3, 4].map((i) => ({
+    name: String(f.get(`param${i}_name`) || ""),
+    label: String(f.get(`param${i}_label`) || ""),
+    default: String(f.get(`param${i}_default`) || ""),
+    required: f.get(`param${i}_required`) === "on",
+  }));
+  return {
+    name: f.get("name"),
+    description: f.get("description"),
+    shell: f.get("shell"),
+    risk: f.get("risk"),
+    body: f.get("body"),
+    fixes: f.getAll("fixes").map(String),
+    parameters,
+  };
+}
+
+export async function saveScript(formData) {
+  const ref = String(formData.get("ref") || "").replace(/[^0-9]/g, "");
+  const response = await callApi(ref ? `/v1/scripts/${ref}` : "/v1/scripts", { method: ref ? "PUT" : "POST", body: scriptBody(formData) });
+  if (response.status === 401) redirect("/");
+  const back = ref ? `${SCRIPTS_PAGE}/${ref}` : `${SCRIPTS_PAGE}/new`;
+  if (!response.ok) redirect(`${back}?error=${await errorText(response, "The script could not be saved.")}`);
+  const result = await response.json().catch(() => ({}));
+  redirect(`${SCRIPTS_PAGE}/${ref || result.ref}?saved=${ref ? "update" : "create"}`);
+}
+
+export async function duplicateScript(formData) {
+  const ref = String(formData.get("ref") || "").replace(/[^a-z0-9-]/g, "");
+  const response = await callApi(`/v1/scripts/${ref}/duplicate`, { body: {} });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`${SCRIPTS_PAGE}/${ref}?error=${await errorText(response, "The script could not be copied.")}`);
+  const result = await response.json().catch(() => ({}));
+  redirect(`${SCRIPTS_PAGE}/${result.ref}?saved=duplicate`);
+}
+
+export async function archiveScript(formData) {
+  const ref = String(formData.get("ref") || "").replace(/[^0-9]/g, "");
+  const response = await callApi(`/v1/scripts/${ref}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  if (!response.ok) redirect(`${SCRIPTS_PAGE}/${ref}?error=${await errorText(response, "The script could not be removed.")}`);
+  redirect(`${SCRIPTS_PAGE}?saved=archive`);
+}
+
 // ids: a list of notification ids, or null for all of them.
 export async function markNotificationsRead(ids) {
   const list = Array.isArray(ids) ? ids.map(Number).filter(Number.isInteger) : null;

@@ -9,6 +9,20 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-10-31 · Platform 1.5.0
+
+**Script library (roadmap Phase 2, part 1)**
+- New Remote Desk settings page, Scripts and commands → Script library. Each script has a name, description, shell
+  (PowerShell or CMD for Windows, Bash for Linux), up to five parameters, a risk level (Safe or Needs approval) and
+  the alert types it helps with.
+- 15 built-in starter scripts: clear print spooler, flush DNS, restart a service (needs approval), clear temporary
+  files, check disk (scan only), restart Explorer, sync time, refresh group policy, installed software, disk space,
+  network diagnostics, pending restart check and top processes for Windows; disk usage and top processes for Linux.
+  Built-ins cannot be changed; Duplicate makes an editable copy.
+- Everyone in the organisation can see the library; owners and admins add, change and remove scripts. Changes are
+  in the audit log. Tenant migrations copy an organisation's own scripts.
+- Running a script from a ticket comes in the next part.
+
 ## 2026-10-31 · Platform 1.4.1
 
 **Ticket history moved into the timeline store (roadmap Phase 1, step 1b)**

@@ -128,7 +128,7 @@ export const SETTINGS_SECTIONS = {
       title: "Scripts and commands",
       icon: "terminal",
       items: [
-        soon("Script library", { manage: true }),
+        { label: "Script library", href: "/remote/settings/scripts" },
         soon("Allowed commands per role", { manage: true }),
       ],
     },

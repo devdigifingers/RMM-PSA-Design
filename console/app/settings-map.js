@@ -47,6 +47,7 @@ export const SETTINGS_SECTIONS = {
         soon("Password policy", { manage: true }),
         { label: "Multi-factor authentication (MFA)", href: "/settings/org/mfa" },
         { label: "IP-based restriction", href: "/settings/org/ip-restriction", manage: true },
+        { label: "API tokens", href: "/settings/org/api-tokens", manage: true },
         { label: "Action log viewer", href: "/audit" },
         { label: "Data and privacy (POPIA)", href: "/settings/org/privacy" },
         soon("Data subject requests", { manage: true }),
@@ -68,7 +69,6 @@ export const SETTINGS_SECTIONS = {
       title: "Integrations and developer",
       icon: "plug",
       items: [
-        soon("API keys", { manage: true }),
         soon("Webhooks", { manage: true }),
         soon("Apps marketplace", { manage: true }),
         soon("Microsoft / Google sign-in", { manage: true }),

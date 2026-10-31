@@ -1,5 +1,6 @@
 export const DIAGNOSTIC_TOOLS = [
   { id: "overview", label: "Device Overview", kind: "details" },
+  { id: "timeline", label: "Timeline", kind: "timeline" },
   { id: "command", label: "Command Prompt", kind: "terminal" },
   { id: "tasks", label: "Task Manager", kind: "list" },
   { id: "services", label: "Services", kind: "list" },

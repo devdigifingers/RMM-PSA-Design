@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const agentVersion = "1.6.0"
+const agentVersion = "1.6.1"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -27,6 +27,7 @@ type savedState struct {
 type job struct {
 	ID      int64  `json:"id"`
 	Command string `json:"command"`
+	Kind    string `json:"kind"`
 }
 
 type deploy struct {
@@ -318,7 +319,13 @@ func jobLoop(ctx context.Context, api string, state savedState) {
 		case <-ctx.Done():
 			return
 		case item := <-jobQueue:
-			exitCode, output := runCommand(item.Command)
+			var exitCode int
+			var output string
+			if item.Kind == "script" {
+				exitCode, output = runScript(item.ID, item.Command)
+			} else {
+				exitCode, output = runCommand(item.Command)
+			}
 			postJobResult(api, state, item.ID, exitCode, output)
 		}
 	}

@@ -26,8 +26,8 @@ async function overview(orgId, customerId) {
               (SELECT count(*) FROM tickets t
                WHERE t.customer_id = $1 AND t.org_id = $2 AND t.merged_into_id IS NULL
                  AND t.created_at >= months.starts AND t.created_at < months.ends)::int AS created,
-              (SELECT count(DISTINCT e.ticket_id) FROM ticket_events e JOIN tickets t ON t.id = e.ticket_id
-               WHERE t.customer_id = $1 AND e.org_id = $2 AND e.kind = 'status' AND e.detail->>'to' = 'resolved'
+              (SELECT count(DISTINCT e.ticket_id) FROM activity_events e JOIN tickets t ON t.id = e.ticket_id
+               WHERE t.customer_id = $1 AND e.org_id = $2 AND e.type = 'ticket.status' AND e.payload->>'to' = 'resolved'
                  AND e.created_at >= months.starts AND e.created_at < months.ends)::int AS resolved
        FROM months ORDER BY local_month`,
       [customerId, orgId, ZONE],
@@ -38,21 +38,22 @@ async function overview(orgId, customerId) {
          WHERE customer_id = $1 AND org_id = $2 AND merged_into_id IS NULL AND created_at > now() - interval '6 months'
        ),
        first_reply AS (
-         SELECT e.ticket_id, min(e.created_at) AS at FROM ticket_events e JOIN t ON t.id = e.ticket_id
-         WHERE e.kind = 'reply' AND e.actor_user_id IS NOT NULL AND e.created_at > t.created_at
+         SELECT e.ticket_id, min(e.created_at) AS at FROM activity_events e JOIN t ON t.id = e.ticket_id
+         WHERE e.org_id = $2 AND e.type = 'ticket.reply' AND e.actor_user_id IS NOT NULL AND e.created_at > t.created_at
          GROUP BY e.ticket_id
        ),
        first_resolve AS (
-         SELECT e.ticket_id, min(e.created_at) AS at FROM ticket_events e JOIN t ON t.id = e.ticket_id
-         WHERE e.kind = 'status' AND e.detail->>'to' = 'resolved'
+         SELECT e.ticket_id, min(e.created_at) AS at FROM activity_events e JOIN t ON t.id = e.ticket_id
+         WHERE e.org_id = $2 AND e.type = 'ticket.status' AND e.payload->>'to' = 'resolved'
          GROUP BY e.ticket_id
        ),
        asks AS (
          SELECT c.ticket_id, c.created_at AS asked,
-                (SELECT min(a.created_at) FROM ticket_events a
-                 WHERE a.ticket_id = c.ticket_id AND a.kind = 'reply' AND a.actor_user_id IS NOT NULL AND a.created_at > c.created_at) AS answered
-         FROM ticket_events c JOIN t ON t.id = c.ticket_id
-         WHERE c.kind = 'created' OR (c.kind = 'reply' AND c.actor_user_id IS NULL)
+                (SELECT min(a.created_at) FROM activity_events a
+                 WHERE a.org_id = $2 AND a.ticket_id = c.ticket_id AND a.type = 'ticket.reply' AND a.actor_user_id IS NOT NULL
+                   AND a.created_at > c.created_at) AS answered
+         FROM activity_events c JOIN t ON t.id = c.ticket_id
+         WHERE c.org_id = $2 AND (c.type = 'ticket.created' OR (c.type = 'ticket.reply' AND c.actor_user_id IS NULL))
        )
        SELECT (SELECT avg(extract(epoch FROM fr.at - t.created_at) / 60) FROM t JOIN first_reply fr ON fr.ticket_id = t.id) AS first_response,
               (SELECT avg(extract(epoch FROM answered - asked) / 60) FROM asks WHERE answered IS NOT NULL) AS response,
@@ -78,46 +79,6 @@ async function overview(orgId, customerId) {
       resolutionMinutes: minutes(times.rows[0].resolution),
     },
   };
-}
-
-const HISTORY_KINDS = ["created", "status", "merged", "csat", "parent"];
-
-async function history(orgId, customerId) {
-  const rows = await pool.query(
-    `SELECT * FROM (
-       SELECT 'ticket' AS source, e.kind AS action, e.created_at, e.detail, e.ticket_id, t.subject,
-              COALESCE(u.name, e.actor_label, 'System') AS actor
-       FROM ticket_events e
-       JOIN tickets t ON t.id = e.ticket_id
-       LEFT JOIN users u ON u.id = e.actor_user_id
-       WHERE t.customer_id = $1 AND e.org_id = $2 AND e.kind = ANY($3::text[])
-       UNION ALL
-       SELECT 'audit', a.action, a.created_at, a.detail, NULL, NULL, COALESCE(u.name, 'System')
-       FROM audit_events a
-       LEFT JOIN users u ON u.id = a.actor_user_id
-       WHERE a.org_id = $2 AND (
-         (a.target_type = 'customer' AND a.target_id = $1::text)
-         OR (a.target_type = 'contact' AND (a.detail->>'accountId' = $1::text
-             OR a.target_id IN (SELECT id::text FROM contacts WHERE customer_id = $1)))
-         OR (a.target_type = 'device' AND a.action IN ('device.link', 'device.unlink') AND a.detail->>'customerId' = $1::text)
-       )
-     ) x
-     ORDER BY created_at DESC
-     LIMIT 100`,
-    [customerId, orgId, HISTORY_KINDS],
-  );
-  return rows.rows.map((row) => ({
-    source: row.source,
-    action: row.action,
-    at: row.created_at,
-    actor: row.actor,
-    ticketId: row.ticket_id == null ? null : Number(row.ticket_id),
-    subject: row.subject || null,
-    from: row.detail?.from ?? null,
-    to: row.detail?.to ?? null,
-    rating: row.detail?.rating ?? null,
-    name: row.detail?.name ?? null,
-  }));
 }
 
 async function attachments(orgId, customerId) {
@@ -186,12 +147,11 @@ async function ratings(orgId, customerId) {
 
 // Extra Service Desk tabs on the customer page. Devices only when the tenant also has Remote Desk.
 export async function customerInsights(orgId, customerId, { devices = false } = {}) {
-  const [over, past, files, kit, rated] = await Promise.all([
+  const [over, files, kit, rated] = await Promise.all([
     overview(orgId, customerId),
-    history(orgId, customerId),
     attachments(orgId, customerId),
     devices ? deskDevices(orgId, customerId) : null,
     ratings(orgId, customerId),
   ]);
-  return { overview: over, history: past, attachments: files, ratings: rated, ...(kit ? { deskDevices: kit } : {}) };
+  return { overview: over, attachments: files, ratings: rated, ...(kit ? { deskDevices: kit } : {}) };
 }

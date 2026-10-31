@@ -401,8 +401,8 @@
     <div class="stage">
       <iframe id="desk" title="Remote desktop" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
       <div class="reconnect" id="reconnect" role="status" hidden>
-        <strong>Reconnecting…</strong>
-        <p>The remote desktop closed, usually because the user signed out or switched user. The session stays open and reconnects to the sign-in screen.</p>
+        <strong id="reconnect-title">Reconnecting…</strong>
+        <p id="reconnect-text"></p>
         <div class="bar-run" aria-hidden="true"></div>
         <button type="button" class="btn ghost" id="reconnect-stop">Close session</button>
       </div>
@@ -677,6 +677,11 @@
     // Set while the desktop stream is being re-opened after it closed with the device still online.
     var reconnect = null;
     var RECONNECT_LIMIT = 120000;
+    // Set while the device is offline (usually restarting); the window polls the console for a fresh link.
+    var awaiting = null;
+    var AWAIT_LIMIT = 20 * 60000;
+    var resuming = null;
+    var shutdownSent = false;
     var viewState = { actual: false, cursor: true, quality: 40, scale: 1024 };
 
     function meshWindow() {
@@ -837,8 +842,7 @@
         var meshGo = win.go;
         win.go = function (view) {
           if (typeof view === "number" && view < 10 && wasConnected) {
-            if (!dropped) sessionDropped();
-            hideDesk();
+            deviceOffline();
             return;
           }
           return meshGo.apply(this, arguments);
@@ -869,7 +873,7 @@
     function tidy() {
       var connected = /^connected\b/i.test(statusText());
       if (connected) {
-        if (reconnect) reconnected();
+        if (reconnect || resuming) reconnected();
         wasConnected = true;
         document.getElementById("soon").hidden = true;
         document.getElementById("app").classList.add("on");
@@ -877,20 +881,30 @@
         if (mode === "view") fitDesk(true);
       } else if (wasConnected && !dropped && !reconnect && mode === "view" && !supportId && /disconnected/i.test(statusText()) && !deviceGone()) {
         startReconnect();
+      } else if (wasConnected && !dropped && !reconnect && deviceGone() && canResume()) {
+        startAwait();
       } else if (wasConnected && !dropped && !reconnect && (/disconnected/i.test(statusText()) || deviceGone())) {
         sessionDropped();
       }
       paintFoot();
     }
 
+    function overlay(heading, text) {
+      document.getElementById("reconnect-title").textContent = heading;
+      document.getElementById("reconnect-text").textContent = text;
+      document.getElementById("reconnect").hidden = false;
+    }
+
     function startReconnect() {
       reconnect = { since: Date.now(), next: Date.now() + 1500 };
       closeFly();
-      document.getElementById("reconnect").hidden = false;
+      overlay("Reconnecting…", "The remote desktop closed, usually because the user signed out or switched user. The session stays open and reconnects to the sign-in screen.");
     }
 
     function stopReconnect() {
       reconnect = null;
+      resuming = null;
+      awaiting = null;
       document.getElementById("reconnect").hidden = true;
     }
 
@@ -900,10 +914,96 @@
       toast("Reconnected to " + title + ".");
     }
 
+    function canResume() {
+      return Boolean(deviceId && consoleOrigin && !supportId && !shutdownSent);
+    }
+
+    function startAwait() {
+      if (awaiting) return;
+      reconnect = null;
+      resuming = null;
+      awaiting = { since: Date.now(), next: Date.now() + 10000, busy: false };
+      closeFly();
+      document.getElementById("app").classList.add("ended");
+      frame.src = "about:blank";
+      overlay("Waiting for " + title + "…", "The computer went offline, usually because it is restarting. Keep this window open: the session reconnects by itself when the computer is back, for up to 20 minutes.");
+    }
+
+    function awaitDevice() {
+      if (!awaiting || awaiting.busy || Date.now() < awaiting.next) return;
+      if (Date.now() - awaiting.since > AWAIT_LIMIT) {
+        stopReconnect();
+        dropped = true;
+        ask("Session ended", title + " did not come back online within 20 minutes. Click Connect in the console when it is back.", "Close window").then(function (yes) {
+          if (yes) window.close();
+        });
+        return;
+      }
+      awaiting.busy = true;
+      fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-resume", {
+        method: "POST",
+        credentials: "include"
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          return { status: response.status, ok: response.ok, body: body };
+        });
+      }).then(function (result) {
+        if (!awaiting) return;
+        awaiting.busy = false;
+        awaiting.next = Date.now() + 10000;
+        if (result.status === 401 || result.status === 403) {
+          stopReconnect();
+          dropped = true;
+          ask("Session ended", (result.body.error || "The console sign-in has ended.") + " Then click Connect again.", "Close window").then(function (yes) {
+            if (yes) window.close();
+          });
+          return;
+        }
+        if (result.ok && result.body.online && typeof result.body.url === "string" && sameOrigin(result.body.url)) resumeDesk(result.body.url);
+      }, function () {
+        if (!awaiting) return;
+        awaiting.busy = false;
+        awaiting.next = Date.now() + 10000;
+      });
+    }
+
+    function resumeDesk(url) {
+      awaiting = null;
+      resuming = { since: Date.now() };
+      base = url;
+      try {
+        var saved = JSON.parse(sessionStorage.getItem("df-session") || "null");
+        if (saved) { saved.url = url; sessionStorage.setItem("df-session", JSON.stringify(saved)); }
+      } catch (e) {}
+      prepared = false;
+      wasConnected = false;
+      dropped = false;
+      asked.view = false;
+      asked.terminal = false;
+      mode = "view";
+      mark("view");
+      document.getElementById("app").classList.remove("ended");
+      overlay("Reconnecting…", title + " is back online. Opening the desktop…");
+      frame.src = withView(base, 11);
+    }
+
+    function deviceOffline() {
+      if (canResume()) {
+        startAwait();
+        return;
+      }
+      if (!dropped) sessionDropped();
+      hideDesk();
+    }
+
     // Mesh clears its desktop object when the stream closes; its Connect button then opens a new
     // stream to whatever is on the console, which after a sign-out is the Windows sign-in screen.
     function retryDesk() {
       if (!reconnect) return;
+      if (deviceGone() && canResume()) {
+        startAwait();
+        return;
+      }
       if (deviceGone() || Date.now() - reconnect.since > RECONNECT_LIMIT) {
         stopReconnect();
         sessionDropped();
@@ -1198,6 +1298,14 @@
     }
 
     function poke() {
+      if (awaiting) {
+        awaitDevice();
+        return;
+      }
+      if (resuming && Date.now() - resuming.since > 60000) {
+        startAwait();
+        return;
+      }
       if (dropped && deviceGone()) hideDesk();
       var page = doc();
       if (!page) return;
@@ -1940,8 +2048,8 @@
     var POWER = {
       lock: { label: "Lock Screen", ask: "", done: "Lock sent. The screen will lock within a few seconds." },
       logoff: { label: "Log Off", ask: "Sign the user out of {0}? Unsaved work will be lost.", done: "Log off sent." },
-      restart: { label: "Reboot", ask: "Restart {0}? Anyone using it will lose unsaved work.", done: "Reboot sent. The session reconnects when the computer is back." },
-      safemode: { label: "Reboot in Safe Mode", ask: "Restart {0} in Safe Mode with Networking? It stays in Safe Mode until you choose Reboot from this menu.", done: "Safe Mode reboot sent." },
+      restart: { label: "Reboot", ask: "Restart {0}? Anyone using it will lose unsaved work.", done: "Reboot sent. Keep this window open: the session reconnects when the computer is back." },
+      safemode: { label: "Reboot in Safe Mode", ask: "Restart {0} in Safe Mode with Networking? It stays in Safe Mode until you choose Reboot from this menu.", done: "Safe Mode reboot sent. The session reconnects when the computer is back." },
       shutdown: { label: "Shutdown", ask: "Shut down {0}? Nobody can reconnect until someone turns it back on.", done: "Shutdown sent." }
     };
 
@@ -1963,6 +2071,7 @@
           body: JSON.stringify({ action: action })
         }).then(function (response) {
           return response.json().catch(function () { return {}; }).then(function (body) {
+            if (response.ok && action === "shutdown") shutdownSent = true;
             toast(response.ok ? item.done : (body.error || item.label + " did not start."));
           });
         }, function () { toast("Could not reach the console. " + item.label + " was not sent."); });
@@ -2497,7 +2606,13 @@
     };
     document.getElementById("tool-terminal").onclick = function () { show("terminal"); };
     document.getElementById("reconnect-stop").onclick = function () {
+      var offline = Boolean(awaiting);
       stopReconnect();
+      if (offline) {
+        dropped = true;
+        window.close();
+        return;
+      }
       sessionDropped();
     };
     document.getElementById("cad").onclick = function () {

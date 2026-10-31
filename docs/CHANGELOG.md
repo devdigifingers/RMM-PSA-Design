@@ -9,6 +9,74 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-10-31 · Platform 1.4.1
+
+**Ticket history moved into the timeline store (roadmap Phase 1, step 1b)**
+- A ticket's history is now written once, to the same store as the customer and device timeline, with its full
+  detail. The ticket page, the SLA breach check, the remote session tracking, customer response and resolution
+  times, and tenant migrations all read it from there.
+- The old `ticket_events` table is retired: it refuses new rows and is kept read-only as an archive. All of its
+  rows were copied across first.
+- Merging no longer copies the merged ticket's history onto the kept ticket; the kept ticket shows it in place
+  (marked "from #…"), up to the moment of the merge. Copies made by earlier merges were removed.
+- Remote sessions and commands started from a ticket stay on the ticket's own timeline but are not shown twice on
+  the customer and device timeline.
+- A ticket locked by a tenant migration gets no new timeline entries, as before.
+
+## 2026-10-31 · Platform 1.4.0
+
+**Customer and device timeline (roadmap Phase 1)**
+- New Timeline tab on customers in both apps (it replaces the Service Desk "History" tab; old `?tab=history` links
+  open it) and a Timeline tool on each device's diagnostics page.
+- One list of what happened, newest first and grouped by day: ticket changes and time, remote and support
+  sessions, commands and scripts (with their result), alerts raised, patches installed or failed, agent installs
+  and updates, device renames and moves, customer and contact changes. Each entry links to its ticket, device or
+  customer.
+- Filters: search, device, technician, date range and event type; more entries load on scroll. Events from an app
+  the tenant does not have (Remote Desk or Service Desk) are hidden.
+- Events are stored once in a new append-only table as they happen; past audit entries, ticket events and finished
+  jobs were copied in (1,253 events). Patch approvals are left out because there are hundreds of them.
+- Tenant migrations copy a customer's timeline (and that of moved devices) to the new tenant, and a rollback
+  removes the copies again.
+- Checked with 10,000 extra events on one customer: every timeline query took under 15 ms.
+
+## 2026-10-31 · Platform 1.3.0
+
+**Longer commands and PowerShell scripts**
+- One command line can now be up to 8,000 characters (was 400), from Run command, tickets and API tokens. cmd.exe
+  cannot take much more than that on one line.
+- API tokens can send a `script` instead of a `command`: multi-line PowerShell of up to 64 KB that runs as SYSTEM
+  for up to 5 minutes (commands stay at 20 seconds). The agent saves it in its locked folder, runs it with
+  `-File` and deletes it afterwards. Needs agent 1.6.1 on Windows; other devices get a clear refusal, and a script
+  that reaches an older agent is finished as failed instead of being run as a command.
+- Jobs have a `kind` (`command` or `script`); the audit log records the kind, the first 200 characters and the length.
+
+## 2026-10-31 · Platform 1.2.1
+
+**API tokens help**
+- The "Using a token" card now lists the job statuses (`queued`, `running`, `finished`; the exit code says whether
+  the command worked) and how to call PowerShell from a command. Found in the first live test, where a script waited
+  for a `done` status that never comes.
+
+## 2026-10-31 · Platform 1.2.0
+
+**API tokens (Organisation settings → Security and compliance → API tokens)**
+- Owners and admins with MFA can create tokens that let their own scripts run commands on chosen devices through
+  `https://api.digitalfingers.co.za/v1/token/…` (list the token's devices, run a command, read the result).
+- Each token is limited to the devices picked when it was made, must expire (7, 30, 90 days or 1 year), and can be
+  limited to IP addresses. It is shown once; only its SHA-256 is stored.
+- Tokens stop working when revoked, expired, or when their creator is no longer an owner or admin. 60 requests a
+  minute per token. Creating, revoking, refused calls and every command (with the token's name) are audited.
+- Replaces the "API keys (Soon)" item under Integrations and developer.
+
+## 2026-10-30 · Platform 1.1.0
+
+**Remote session survives a restart**
+- When the device goes offline during a session (a reboot from the Power menu, a script or Windows Update), the
+  session window stays open and shows "Waiting for <device>…". It checks every 10 seconds and reopens the desktop
+  as soon as the remote agent is back, for up to 20 minutes. The reconnect is not counted as a new remote session
+  (audited as `remote.resume`). After Shutdown from the Power menu the window ends as before.
+
 ## 2026-10-30 · Platform 1.0.0
 
 **Platform version**
@@ -152,6 +220,14 @@ earlier sections have dates only. Agent versions are separate and listed under [
 
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.6.1 (Windows), published 31 Oct**
+- Tested on FED-WIN-001: `powershell` by name, a 7,000-character command and a multi-line script all ran as SYSTEM;
+  the agent's enrolment token was not visible to the script and the script file was deleted afterwards.
+- Commands from Run command, scripts and API tokens can call `powershell` and `wmic` by name; the command's PATH
+  now includes the Windows PowerShell and WMI folders. Before, only the full path to `powershell.exe` worked.
+- Runs PowerShell script jobs (up to 64 KB, 5-minute limit) from a file in `C:\ProgramData\DigitalFingers\jobs`,
+  which only SYSTEM and Administrators can open. The agent's own variables are not passed to commands or scripts.
 
 **1.6.0 (Windows), published 30 Oct**
 - The installer no longer carries the remote support (Mesh) agent inside it; the agent downloads it with its device

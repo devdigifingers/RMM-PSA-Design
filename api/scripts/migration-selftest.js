@@ -56,7 +56,12 @@ async function seed(orgId, prefix, { withDevice = true } = {}) {
       [orgId, customer, device, contact, subject, status],
     );
     const comment = await id("INSERT INTO ticket_comments (org_id, ticket_id, body) VALUES ($1, $2, 'Looking into it') RETURNING id", [orgId, ticket]);
-    await pool.query("INSERT INTO ticket_events (org_id, ticket_id, kind, detail) VALUES ($1, $2, 'created', '{}'), ($1, $2, 'reply', $3::jsonb)", [orgId, ticket, JSON.stringify({ commentId: comment })]);
+    await pool.query(
+      `INSERT INTO activity_events (org_id, customer_id, ticket_id, type, app, actor_type, summary, payload)
+       VALUES ($1, $2, $3, 'ticket.created', 'servicedesk', 'system', 'created the ticket', '{}'),
+              ($1, $2, $3, 'ticket.reply', 'servicedesk', 'system', 'replied', $4::jsonb)`,
+      [orgId, customer, ticket, JSON.stringify({ commentId: comment })],
+    );
     await pool.query("INSERT INTO ticket_time_entries (org_id, ticket_id, minutes) VALUES ($1, $2, 15)", [orgId, ticket]);
     tickets.push(ticket);
   }
@@ -71,7 +76,7 @@ async function seed(orgId, prefix, { withDevice = true } = {}) {
   return { customer, shared, contact, device, tickets, plan };
 }
 
-const TABLES = ["customers", "contacts", "sites", "devices", "device_samples", "tickets", "ticket_comments", "ticket_events",
+const TABLES = ["customers", "contacts", "sites", "devices", "device_samples", "tickets", "ticket_comments", "activity_events",
   "ticket_time_entries", "ticket_attachments", "sla_plans", "desk_categories"];
 
 async function snapshot(orgId) {
@@ -140,7 +145,11 @@ const targetAfter = await snapshot(B.org);
 assert.equal(targetAfter.customers.length, targetBefore.customers.length + 1, "one new customer, one merged");
 assert.ok(targetAfter.sla_plans.some((row) => row.name === "Gold (migrated)"), "renamed SLA plan");
 assert.equal(targetAfter.tickets.length, targetBefore.tickets.length + 3);
-assert.ok(targetAfter.ticket_events.some((row) => row.kind === "migrated" && row.detail.from === a.tickets[0]), "migrated marker");
+assert.ok(targetAfter.activity_events.some((row) => row.type === "ticket.migrated" && row.payload.from === a.tickets[0]), "migrated marker");
+const printerCopy = targetAfter.tickets.find((row) => row.subject === "alpha printer").id;
+const copiedReply = targetAfter.activity_events.find((row) => row.type === "ticket.reply" && String(row.ticket_id) === String(printerCopy));
+assert.ok(copiedReply, "ticket history copied with the ticket");
+assert.equal(targetAfter.ticket_comments.find((row) => String(row.id) === String(copiedReply.payload.commentId))?.body, "Looking into it", "reply points at the copied comment");
 assert.equal(targetAfter.devices.length, 1, "device moved");
 assert.equal(targetAfter.device_samples.length, 2, "device history followed");
 const copiedFile = targetAfter.ticket_attachments.find((row) => row.file_name === "a.txt" && !row.storage_key.includes("beta"));
@@ -152,6 +161,10 @@ const lockedRows = (await one("SELECT count(*)::int AS n FROM tickets WHERE org_
 assert.equal(lockedRows, 3, "source tickets are read-only");
 await assert.rejects(pool.query("UPDATE tickets SET subject = 'x' WHERE id = $1", [a.tickets[0]]), /DF_MIGRATION_LOCKED/);
 await assert.rejects(pool.query("INSERT INTO ticket_comments (org_id, ticket_id, body) VALUES ($1, $2, 'x')", [A.org, a.tickets[0]]), /DF_MIGRATION_LOCKED/);
+await assert.rejects(pool.query(
+  "INSERT INTO activity_events (org_id, ticket_id, type, app, actor_type, summary) VALUES ($1, $2, 'ticket.note', 'servicedesk', 'system', 'x')",
+  [A.org, a.tickets[0]],
+), /DF_MIGRATION_LOCKED/);
 assert.deepEqual(await snapshot(C.org), bystanderBefore, "bystander untouched after move");
 
 // A change in the target after the move, kept by the rollback.
@@ -192,6 +205,7 @@ assert.deepEqual(await snapshot(C.org), bystanderBefore, "bystander untouched th
 
 const events = (await one("SELECT count(*)::int AS n FROM migration_events")).n;
 await assert.rejects(pool.query("DELETE FROM migration_events"), /append-only/);
-await assert.rejects(pool.query("DELETE FROM ticket_events"), /append-only/);
+await assert.rejects(pool.query("DELETE FROM activity_events"), /append-only/);
+await assert.rejects(pool.query("INSERT INTO ticket_events (org_id, ticket_id, kind) VALUES ($1, $2, 'note')", [A.org, a.tickets[0]]), /retired/);
 console.log(`migration self-test passed (${events} migration events)`);
 await pool.end();

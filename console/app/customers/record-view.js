@@ -14,6 +14,7 @@ import {
 } from "../actions";
 import { ConsoleBar } from "../bar";
 import { RemoteActions } from "../devices/remote-actions";
+import { TimelineView } from "../timeline/timeline-view";
 import { workTime } from "../tickets/format";
 import {
   AccountFields,
@@ -68,6 +69,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
   const tabs = remote
     ? [
       ["overview", "Overview", null],
+      ["timeline", "Timeline", null],
       ["devices", "Devices", devices.length],
       ["sessions", "Sessions", sessions.length],
       ["contacts", "Contacts", contacts.length],
@@ -75,7 +77,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
     ]
     : [
       ["overview", "Overview", null],
-      ["history", "History", null],
+      ["timeline", "Timeline", null],
       ["tickets", "Tickets", tickets.length],
       ["time", "Time Entry", time.entries.length],
       ["contacts", "Contacts", contacts.length],
@@ -84,7 +86,8 @@ export async function CustomerRecord({ app, params, searchParams }) {
       ["attachments", "Attachments", insights ? insights.attachments.length : null],
       ["notes", "Notes", null],
     ];
-  const tab = tabs.some(([key]) => key === query?.tab) ? query.tab : "overview";
+  const asked = query?.tab === "history" ? "timeline" : query?.tab;
+  const tab = tabs.some(([key]) => key === asked) ? asked : "overview";
   const primary = contacts.find((contact) => contact.primary);
   const online = devices.filter((device) => device.presence === "online").length;
   const connectable = devices.filter((device) => device.hasRemote);
@@ -423,7 +426,7 @@ export async function CustomerRecord({ app, params, searchParams }) {
 
           {tab === "time" && !remote ? <TimeTab time={time} /> : null}
 
-          {tab === "history" && !remote ? <HistoryTab items={insights?.history || []} /> : null}
+          {tab === "timeline" ? <TimelineView scope="accounts" id={account.id} /> : null}
 
           {tab === "attachments" && !remote ? <AttachmentsTab files={insights?.attachments || []} /> : null}
 
@@ -718,40 +721,6 @@ function DeskOverview({ insights, tickets, panel, href }) {
         )}
       </section>
     </div>
-  );
-}
-
-function historyLine(item) {
-  if (item.source === "ticket") {
-    switch (item.action) {
-      case "created": return "logged the ticket";
-      case "status": return `changed the status from ${item.from || "—"} to ${item.to || "—"}`;
-      case "merged": return "merged the ticket";
-      case "parent": return item.to ? "linked the ticket to a parent" : "removed the parent link";
-      case "csat": return `rated the support ${RATING_LABELS[item.rating] || item.rating}`;
-      default: return item.action;
-    }
-  }
-  const [target, verb] = String(item.action).split(".");
-  const what = target === "device" ? "a device" : target === "contact" ? `contact ${item.name || ""}`.trim() : "the customer";
-  const verbs = { create: "added", update: "updated", delete: "removed", link: "linked", unlink: "unlinked", assign: "assigned", notes: "updated the notes on", sla: "updated the SLA for" };
-  return `${verbs[verb] || verb || "changed"} ${what}`;
-}
-
-function HistoryTab({ items }) {
-  if (!items.length) return <p className="org-name">Nothing recorded for this customer yet.</p>;
-  return (
-    <ol className="cust-history">
-      {items.map((item, index) => (
-        <li key={`${item.at}-${index}`}>
-          <time dateTime={item.at}>{formatWhen(item.at)}</time>
-          <span>
-            <strong>{item.actor}</strong> {historyLine(item)}
-            {item.ticketId ? <> on <a href={`/tickets/${item.ticketId}`}>#{item.ticketId} {item.subject}</a></> : null}
-          </span>
-        </li>
-      ))}
-    </ol>
   );
 }
 

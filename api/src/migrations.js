@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { activityFromTicketEvent, recordActivity } from "./activity.js";
 import { insertAudit } from "./audit.js";
 import { pool } from "./db.js";
 import { consoleUrl } from "./invites.js";
@@ -77,7 +78,7 @@ async function loadSource(db, orgId) {
     q("SELECT id, org_id, site_id, hostname, display_name FROM devices WHERE org_id = $1 ORDER BY id"),
     q(`SELECT t.id, t.org_id, t.customer_id,
               (SELECT count(*)::int FROM ticket_comments c WHERE c.ticket_id = t.id AND c.org_id = t.org_id) AS comments,
-              (SELECT count(*)::int FROM ticket_events e WHERE e.ticket_id = t.id AND e.org_id = t.org_id) AS events,
+              (SELECT count(*)::int FROM activity_events e WHERE e.ticket_id = t.id AND e.org_id = t.org_id AND e.type LIKE 'ticket.%') AS events,
               (SELECT count(*)::int FROM ticket_attachments a WHERE a.ticket_id = t.id AND a.org_id = t.org_id AND a.linked_at IS NOT NULL) AS attachments,
               (SELECT count(*)::int FROM ticket_time_entries te WHERE te.ticket_id = t.id AND te.org_id = t.org_id) AS time_entries
        FROM tickets t WHERE t.org_id = $1 AND t.migration_lock IS NULL ORDER BY t.id`),
@@ -594,6 +595,12 @@ class Run {
     if (moved.length) await relinkDeviceRows(this.c, moved, this.dst, this.maps.ticket, this.maps.customer);
   }
 
+  async activity() {
+    const copied = await copyActivity(this.c, { from: this.src, to: this.dst, requestId: this.request.id, maps: this.maps });
+    this.count("activity", copied);
+    await this.progress("activity");
+  }
+
   async lockSource() {
     const { c, src } = this;
     const id = this.request.id;
@@ -610,7 +617,7 @@ class Run {
 async function deviceTables(c) {
   const rows = await c.query(
     `SELECT table_name FROM information_schema.columns
-     WHERE table_schema = 'public' AND column_name IN ('org_id', 'device_id') AND table_name NOT IN ('devices', 'tickets')
+     WHERE table_schema = 'public' AND column_name IN ('org_id', 'device_id') AND table_name NOT IN ('devices', 'tickets', 'activity_events')
      GROUP BY table_name HAVING count(*) = 2 ORDER BY table_name`,
   );
   return rows.rows.map((row) => row.table_name);
@@ -636,6 +643,65 @@ async function relinkDeviceRows(c, deviceIds, orgId, ticketMap, customerMap) {
     await c.query("UPDATE remote_sessions SET customer_id = $3 WHERE org_id = $1 AND device_id = ANY($2::bigint[]) AND customer_id = $4",
       [orgId, deviceIds, customerMap.get(Number(customerId)) ?? null, customerId]);
   }
+}
+
+const pairs = (map) => [[...map.keys()], [...map.values()]];
+
+// Copies the timeline of migrated customers and devices. Users belong to the old tenant, so only their names travel.
+export async function copyActivity(c, { from, to, requestId, maps }) {
+  const [customerFrom, customerTo] = pairs(maps.customer);
+  const [deviceFrom, deviceTo] = pairs(maps.device);
+  if (!customerFrom.length && !deviceFrom.length) return 0;
+  const [ticketFrom, ticketTo] = pairs(maps.ticket);
+  const [contactFrom, contactTo] = pairs(maps.contact);
+  const [commentFrom, commentTo] = pairs(maps.comment || new Map());
+  const result = await c.query(
+    `INSERT INTO activity_events (org_id, customer_id, device_id, ticket_id, contact_id, type, app, actor_type, actor_label,
+                                  summary, payload, source, source_id, created_at)
+     SELECT $2, cm.t, dm.t, tm.t, km.t, e.type, e.app, e.actor_type, COALESCE(u.name, e.actor_label), e.summary,
+            CASE WHEN e.payload ? 'commentId' THEN jsonb_set(e.payload, '{commentId}', COALESCE(to_jsonb(cc.t), 'null'::jsonb)) ELSE e.payload END,
+            'migration', $11 || ':' || e.id, e.created_at
+     FROM activity_events e
+     LEFT JOIN unnest($3::bigint[], $4::bigint[]) AS cm (s, t) ON cm.s = e.customer_id
+     LEFT JOIN unnest($5::bigint[], $6::bigint[]) AS dm (s, t) ON dm.s = e.device_id
+     LEFT JOIN unnest($7::bigint[], $8::bigint[]) AS tm (s, t) ON tm.s = e.ticket_id
+     LEFT JOIN unnest($9::bigint[], $10::bigint[]) AS km (s, t) ON km.s = e.contact_id
+     LEFT JOIN unnest($12::bigint[], $13::bigint[]) AS cc (s, t) ON cc.s::text = e.payload->>'commentId'
+     LEFT JOIN users u ON u.id = e.actor_user_id
+     WHERE e.org_id = $1 AND (cm.s IS NOT NULL OR dm.s IS NOT NULL)
+       AND NOT (e.type LIKE 'ticket.%' AND tm.s IS NULL)
+     ORDER BY e.created_at, e.id
+     ON CONFLICT (source, source_id) WHERE source IS NOT NULL DO NOTHING`,
+    [from, to, customerFrom, customerTo, deviceFrom, deviceTo, ticketFrom, ticketTo, contactFrom, contactTo, String(requestId), commentFrom, commentTo],
+  );
+  return result.rowCount;
+}
+
+// Undoes copyActivity. After a Move, what the moved records gathered in the target since goes back with them.
+// Ticket history only goes back when the rollback keeps the target's ticket work; device and customer events always do.
+export async function rollbackActivity(c, { src, dst, requestId, move, keep = false, customers, devices, tickets, contacts, comments = new Map() }) {
+  await c.query("DELETE FROM activity_events WHERE org_id = $1 AND source = 'migration' AND source_id LIKE $2", [dst, `${requestId}:%`]);
+  if (!move || (!customers.size && !devices.length)) return;
+  const [customerFrom, customerTo] = pairs(customers);
+  const [ticketFrom, ticketTo] = pairs(tickets);
+  const [contactFrom, contactTo] = pairs(contacts);
+  const [commentFrom, commentTo] = pairs(comments);
+  await c.query(
+    `UPDATE activity_events e SET
+       org_id = $2,
+       customer_id = (SELECT m.t FROM unnest($4::bigint[], $5::bigint[]) AS m (s, t) WHERE m.s = e.customer_id),
+       ticket_id = (SELECT m.t FROM unnest($6::bigint[], $7::bigint[]) AS m (s, t) WHERE m.s = e.ticket_id),
+       contact_id = (SELECT m.t FROM unnest($8::bigint[], $9::bigint[]) AS m (s, t) WHERE m.s = e.contact_id),
+       payload = CASE WHEN e.payload ? 'commentId' THEN jsonb_set(e.payload, '{commentId}', COALESCE(
+         (SELECT to_jsonb(m.t) FROM unnest($11::bigint[], $12::bigint[]) AS m (s, t) WHERE m.s::text = e.payload->>'commentId'),
+         'null'::jsonb)) ELSE e.payload END,
+       actor_label = COALESCE((SELECT u.name FROM users u WHERE u.id = e.actor_user_id), e.actor_label),
+       actor_user_id = NULL
+     WHERE e.org_id = $1 AND e.created_at > (SELECT completed_at FROM migration_requests WHERE id = $3)
+       AND (e.customer_id = ANY($4::bigint[]) OR e.device_id = ANY($10::bigint[]))
+       AND ($13::boolean OR e.type NOT LIKE 'ticket.%')`,
+    [dst, src, requestId, customerFrom, customerTo, ticketFrom, ticketTo, contactFrom, contactTo, devices, commentFrom, commentTo, keep],
+  );
 }
 
 async function newStorageKey(orgId, key, files, warnings) {
@@ -671,10 +737,12 @@ async function copyTickets(c, { from, to, ids, maps, record, files, warnings, ma
     if (record) await record("ticket", row.id, newId);
     else maps.ticket.set(Number(row.id), newId);
     if (marker) {
-      await c.query(
-        "INSERT INTO ticket_events (org_id, ticket_id, kind, actor_label, detail) VALUES ($1, $2, $3, $4, $5::jsonb)",
-        [to, newId, marker.kind, marker.label, JSON.stringify(marker.detail(row))],
-      );
+      await recordActivity(c, to, {
+        ...activityFromTicketEvent(marker.kind, marker.detail(row)),
+        ticketId: newId,
+        actorType: "system",
+        actorLabel: marker.label,
+      });
     }
     counter("tickets", 1);
   }
@@ -697,21 +765,6 @@ async function copyTickets(c, { from, to, ids, maps, record, files, warnings, ma
     else maps.comment.set(Number(row.id), Number(made.rows[0].id));
   }
   counter("comments", comments.rows.length);
-
-  const events = await c.query(
-    `SELECT e.*, u.name AS actor_name FROM ticket_events e LEFT JOIN users u ON u.id = e.actor_user_id
-     WHERE e.org_id = $1 AND e.ticket_id = ANY($2::bigint[]) ORDER BY e.id`,
-    [from, mapped],
-  );
-  for (const row of events.rows) {
-    const detail = { ...(row.detail || {}) };
-    if (detail.commentId != null) detail.commentId = maps.comment.get(Number(detail.commentId)) ?? null;
-    await c.query(
-      "INSERT INTO ticket_events (org_id, ticket_id, kind, actor_label, detail, created_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6)",
-      [to, ticketOf(row.ticket_id), row.kind, row.actor_label || row.actor_name || null, JSON.stringify(detail), row.created_at],
-    );
-  }
-  counter("events", events.rows.length);
 
   const attachments = await c.query(
     "SELECT * FROM ticket_attachments WHERE org_id = $1 AND ticket_id = ANY($2::bigint[]) AND linked_at IS NOT NULL ORDER BY id",
@@ -788,6 +841,7 @@ async function deleteTickets(c, orgId, ids, removedFiles) {
   await c.query("UPDATE tickets SET merged_into_id = NULL WHERE merged_into_id = ANY($1::bigint[]) AND NOT (id = ANY($1::bigint[]))", list);
   const files = await c.query("DELETE FROM ticket_attachments WHERE org_id = $1 AND ticket_id = ANY($2::bigint[]) RETURNING storage_key", [orgId, ids]);
   removedFiles.push(...files.rows.map((row) => row.storage_key));
+  await c.query("DELETE FROM activity_events WHERE org_id = $1 AND ticket_id = ANY($2::bigint[])", [orgId, ids]);
   for (const table of ["ticket_timers", "ticket_time_entries", "ticket_comments", "ticket_events", "ticket_cc", "ticket_watchers", "ticket_ratings", "user_notifications"]) {
     await c.query(`DELETE FROM ${table} WHERE ticket_id = ANY($1::bigint[])`, list);
   }
@@ -923,6 +977,7 @@ async function runRequest(row, h) {
     await run.contacts();
     if (request.mode === "move") await run.devices();
     await run.tickets();
+    await run.activity();
     if (request.mode === "move") await run.lockSource();
     const result = { done: run.done, warnings: run.warnings, users: plan.users };
     await client.query(
@@ -999,6 +1054,8 @@ async function runRollback(request, h) {
       [dst, since, created("customer"), created("contact")],
     )).rows : [];
 
+    const keptTickets = new Map();
+    const keptComments = new Map();
     if (move && row.rollback_keep) {
       const ticketBack = reverse("ticket");
       const customerBack = reverse("customer");
@@ -1019,10 +1076,11 @@ async function runRollback(request, h) {
         [dst, since, created("ticket")],
       );
       for (const comment of comments.rows) {
-        await client.query(
-          "INSERT INTO ticket_comments (org_id, ticket_id, author_label, body, kind, created_at) VALUES ($1, $2, $3, $4, $5, $6)",
+        const made = await client.query(
+          "INSERT INTO ticket_comments (org_id, ticket_id, author_label, body, kind, created_at) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
           [src, ticketBack.get(Number(comment.ticket_id)), comment.author_label || comment.author_name, comment.body, comment.kind, comment.created_at],
         );
+        keptComments.set(Number(comment.id), Number(made.rows[0].id));
         kept.comments = (kept.comments || 0) + 1;
       }
       const time = await client.query(
@@ -1051,7 +1109,7 @@ async function runRollback(request, h) {
         from: dst,
         to: src,
         ids: newTickets,
-        maps: { customer: customerBack, contact: contactBack, device: deviceBack, ticket: new Map(), comment: new Map() },
+        maps: { customer: customerBack, contact: contactBack, device: deviceBack, ticket: keptTickets, comment: keptComments },
         record: null,
         files: copied,
         warnings: [],
@@ -1059,6 +1117,16 @@ async function runRollback(request, h) {
         counter: (key, n) => { if (key === "tickets") kept.newTickets = (kept.newTickets || 0) + n; },
       });
     }
+
+    const own = (type) => new Map(maps[type].filter((item) => !item.merged).map((item) => [item.target, item.source]));
+    await rollbackActivity(client, {
+      src, dst, requestId: row.id, move, keep: Boolean(row.rollback_keep),
+      customers: own("customer"),
+      devices: maps.device.filter((item) => !item.merged).map((item) => item.source),
+      tickets: new Map([...reverse("ticket"), ...keptTickets]),
+      contacts: own("contact"),
+      comments: keptComments,
+    });
 
     await deleteTickets(client, dst, [...created("ticket"), ...newTickets], removed);
 
@@ -1129,6 +1197,8 @@ async function runPurge(request) {
     const customers = await ids("customers");
     const leftover = await deleteCustomers(client, src, customers);
     if (leftover.length) await client.query("UPDATE customers SET migration_lock = NULL WHERE id = ANY($1::bigint[])", [leftover]);
+    const gone = customers.filter((id) => !leftover.includes(id));
+    if (gone.length) await client.query("DELETE FROM activity_events WHERE org_id = $1 AND customer_id = ANY($2::bigint[])", [src, gone]);
     await client.query("UPDATE migration_requests SET purged_at = now(), updated_at = now() WHERE id = $1", [request.id]);
     await logEvent(client, request, "purged", null, { tickets: tickets.length, contacts: contacts.length, customers: customers.length - leftover.length, customersKept: leftover.length });
     await client.query("COMMIT");

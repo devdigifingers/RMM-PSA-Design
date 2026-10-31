@@ -930,23 +930,69 @@ func runCommand(command string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, `C:\Windows\System32\cmd.exe`, "/d", "/s", "/c", command)
+	cmd.Env = jobEnv()
+	// cmd.exe does not understand Go's \" escaping, so the command line is passed through untouched.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+		CmdLine:    `C:\Windows\System32\cmd.exe /d /s /c "` + command + `"`,
+	}
+	return runJobProcess(cmd)
+}
+
+// runScript runs a PowerShell script from a file in the agent folder, which only SYSTEM and Administrators can read or change.
+func runScript(id int64, script string) (int, string) {
+	dir := filepath.Join(agentDir, "jobs")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return 1, "could not prepare the script folder: " + err.Error()
+	}
+	path := filepath.Join(dir, fmt.Sprintf("job-%d.ps1", id))
+	// The byte order mark makes Windows PowerShell 5.1 read the file as UTF-8.
+	if err := os.WriteFile(path, append([]byte{0xEF, 0xBB, 0xBF}, []byte(script)...), 0o600); err != nil {
+		return 1, "could not save the script: " + err.Error()
+	}
+	defer os.Remove(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+	cmd.Env = append(jobEnv(),
+		`TEMP=C:\Windows\Temp`,
+		`TMP=C:\Windows\Temp`,
+		`PROGRAMDATA=C:\ProgramData`,
+		`ProgramFiles=C:\Program Files`,
+		`ProgramFiles(x86)=C:\Program Files (x86)`,
+		`SystemDrive=C:`,
+		`USERPROFILE=C:\Windows\System32\config\systemprofile`,
+		`APPDATA=C:\Windows\System32\config\systemprofile\AppData\Roaming`,
+		`LOCALAPPDATA=C:\Windows\System32\config\systemprofile\AppData\Local`,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	exitCode, output := runJobProcess(cmd)
+	if ctx.Err() == context.DeadlineExceeded {
+		output += "\nThe script was stopped after 5 minutes."
+	}
+	return exitCode, output
+}
+
+// jobEnv is the environment for commands and scripts; it leaves out the agent's own variables, such as its enrolment token.
+func jobEnv() []string {
 	computer, err := os.Hostname()
 	if err != nil || computer == "" {
 		computer = "localhost"
 	}
-	cmd.Env = []string{
-		`PATH=C:\Windows\System32;C:\Windows`,
+	return []string{
+		`PATH=C:\Windows\System32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0`,
 		`SYSTEMROOT=C:\Windows`,
 		`WINDIR=C:\Windows`,
 		`COMSPEC=C:\Windows\System32\cmd.exe`,
 		`PATHEXT=.COM;.EXE;.BAT;.CMD`,
 		"COMPUTERNAME=" + computer,
 	}
-	// cmd.exe does not understand Go's \" escaping, so the command line is passed through untouched.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true,
-		CmdLine:    `C:\Windows\System32\cmd.exe /d /s /c "` + command + `"`,
-	}
+}
+
+// runJobProcess runs a prepared job inside a Windows job object, so a timeout also ends anything it started.
+func runJobProcess(cmd *exec.Cmd) (int, string) {
+	var err error
 	var buf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &buf, max: 8000}
 	cmd.Stderr = cmd.Stdout

@@ -42,6 +42,7 @@ const COUNT_LABEL = [
   ["comments", "comments", "comment"],
   ["attachments", "attachments", "attachment"],
   ["timeEntries", "time entries", "time entry"],
+  ["activity", "timeline events", "timeline event"],
   ["slaPlans", "SLA plans", "SLA plan"],
   ["settings", "desk settings", "desk setting"],
 ];

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { activityFromAudit, recordActivitySafely } from "./activity.js";
 
 const requestContext = new AsyncLocalStorage();
 
@@ -31,9 +32,9 @@ export function auditMeta() {
   return { role: store?.role ?? null, ip: store?.ip ?? null, userAgent: store?.userAgent ?? null };
 }
 
-export function insertAudit(db, orgId, actorId, action, targetType, targetId, detail) {
+export async function insertAudit(db, orgId, actorId, action, targetType, targetId, detail) {
   const meta = auditMeta();
-  return db.query(
+  const result = await db.query(
     `INSERT INTO audit_events (org_id, actor_user_id, action, target_type, target_id, detail, actor_role, ip, user_agent)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
      RETURNING id`,
@@ -49,4 +50,7 @@ export function insertAudit(db, orgId, actorId, action, targetType, targetId, de
       meta.userAgent,
     ],
   );
+  const event = orgId == null ? null : activityFromAudit({ action, targetType, targetId, detail, actorId });
+  if (event) await recordActivitySafely(db, orgId, { ...event, source: "audit", sourceId: result.rows[0].id });
+  return result;
 }

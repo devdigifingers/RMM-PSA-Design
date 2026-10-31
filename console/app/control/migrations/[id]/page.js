@@ -20,7 +20,7 @@ const SAVED = {
 };
 
 const DECISION_LABEL = { approved: "Approved", declined: "Declined" };
-const PHASE_LABEL = { settings: "Settings", customers: "Customers", contacts: "Contacts", devices: "Devices", tickets: "Tickets", done: "Finished" };
+const PHASE_LABEL = { settings: "Settings", customers: "Customers", contacts: "Contacts", devices: "Devices", tickets: "Tickets", activity: "Timeline", done: "Finished" };
 
 function Hidden({ id, action }) {
   return (

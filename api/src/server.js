@@ -28,6 +28,18 @@ import { handleCsat } from "./desk-csat.js";
 import { handleMigrations, migrationTick, platformWaiting, recoverMigrations, tenantWaiting } from "./migrations.js";
 import { customerInsights } from "./customer-insights.js";
 import { remoteAgentChange, remoteAgentFrom, remoteAgentOffer, remoteAgentView } from "./remote-agent.js";
+import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
+import { COMMAND_MAX, scriptProblem } from "./job-input.js";
+import {
+  ACTIVITY_GROUPS,
+  activityFromTicketEvent,
+  recordActivity,
+  recordActivitySafely,
+  ticketActor,
+  ticketTimelineQuery,
+  timelineQuery,
+  timelineView,
+} from "./activity.js";
 import { fleetVersions } from "./system-view.js";
 import { geoLocator, ipApiLocator, parseIp } from "./geoip.js";
 import { dailyStats, fillDays, osFamily } from "./daily-stats.js";
@@ -2935,7 +2947,7 @@ async function sweepBreaches() {
              AND e.target_type = 'ticket'
              AND e.target_id = t.id::text
          )
-         AND NOT EXISTS (SELECT 1 FROM ticket_events te WHERE te.ticket_id = t.id AND te.kind = 'sla_breach')`,
+         AND NOT EXISTS (SELECT 1 FROM activity_events te WHERE te.org_id = t.org_id AND te.ticket_id = t.id AND te.type = 'ticket.sla_breach')`,
       [afterId, await orgsWithFeature("ticketing")],
     );
     const now = new Date();
@@ -4311,12 +4323,13 @@ async function writeAudit(orgId, actorId, action, targetType, targetId, detail, 
   await insertAudit(db, orgId, actorId, action, targetType, targetId, detail);
 }
 
+// Ticket history is part of the timeline store; this returns the new event's id.
 async function ticketEvent(orgId, ticketId, kind, { actorId = null, label = null, detail = {}, db = pool } = {}) {
-  await db.query(
-    `INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-    [orgId, ticketId, kind, actorId, actorId == null ? label : null, JSON.stringify(detail)],
-  );
+  return recordActivity(db, orgId, {
+    ...activityFromTicketEvent(kind, detail),
+    ticketId: Number(ticketId),
+    ...ticketActor(kind, actorId, label),
+  });
 }
 
 async function ticketChangeEvents(orgId, ticketId, before, after, options) {
@@ -4417,15 +4430,9 @@ function idsFromEvents(rows, kinds, key) {
 }
 
 async function ticketTimeline(orgId, ticketId, comments) {
+  const timeline = ticketTimelineQuery(orgId, ticketId);
   const [events, attachments, users] = await Promise.all([
-    pool.query(
-      `SELECT e.id, e.kind, e.actor_user_id, e.actor_label, e.detail, e.created_at, u.name AS actor_name
-       FROM ticket_events e
-       LEFT JOIN users u ON u.id = e.actor_user_id
-       WHERE e.ticket_id = $1 AND e.org_id = $2
-       ORDER BY e.created_at, e.id`,
-      [ticketId, orgId],
-    ),
+    pool.query(timeline.text, timeline.values),
     pool.query(
       `SELECT id, comment_id, file_name, content_type, is_image, size_bytes
        FROM ticket_attachments
@@ -4435,6 +4442,9 @@ async function ticketTimeline(orgId, ticketId, comments) {
     ),
     pool.query("SELECT id, name FROM users WHERE org_id = $1", [orgId]),
   ]);
+  for (const row of events.rows) {
+    if (String(row.ticket_id) !== String(ticketId)) row.detail = { ...row.detail, mergedFrom: Number(row.ticket_id) };
+  }
   const contactIds = events.rows
     .filter((row) => row.kind === "contact")
     .flatMap((row) => [row.detail.from, row.detail.to])
@@ -4548,14 +4558,15 @@ async function sweepTicketSessions() {
   try {
     const open = await pool.query(
       `SELECT e.id, e.org_id, e.ticket_id, e.created_at, d.mesh_node_id
-       FROM ticket_events e
-       JOIN devices d ON d.id = (e.detail->>'deviceId')::bigint AND d.org_id = e.org_id
-       WHERE e.kind = 'remote_start'
+       FROM activity_events e
+       JOIN devices d ON d.id = (e.payload->>'deviceId')::bigint AND d.org_id = e.org_id
+       WHERE e.type = 'ticket.remote_start'
          AND e.created_at > now() - interval '12 hours'
-         AND NOT (e.detail ? 'backfilled')
+         AND NOT (e.payload ? 'backfilled')
          AND NOT EXISTS (
-           SELECT 1 FROM ticket_events x
-           WHERE x.ticket_id = e.ticket_id AND x.kind = 'remote_end' AND x.detail->>'startId' = e.id::text
+           SELECT 1 FROM activity_events x
+           WHERE x.org_id = e.org_id AND x.ticket_id = e.ticket_id AND x.type = 'ticket.remote_end'
+             AND (x.payload->>'startEvent' = e.id::text OR (e.source = 'ticket_event' AND x.payload->>'startId' = e.source_id))
          )`,
     );
     const tracked = await pool.query(
@@ -4579,7 +4590,7 @@ async function sweepTicketSessions() {
       liveTicketSessions.delete(key);
       await ticketEvent(row.org_id, row.ticket_id, "remote_end", {
         label: "Remote Desk",
-        detail: { startId: Number(row.id), minutes: Math.max(1, Math.round(age / 60000)) },
+        detail: { startEvent: Number(row.id), minutes: Math.max(1, Math.round(age / 60000)) },
       });
     }
   } catch (error) {
@@ -4620,6 +4631,10 @@ function platformHelpers() {
     canOperate,
     USER_ROLES,
   };
+}
+
+function tokenHelpers() {
+  return { send, readJson, requireActor, canOperate, clientAddress, addressAllowed, parseAllowlist, licenseQuery, hasApp, redis };
 }
 
 function migrationHelpers() {
@@ -5069,6 +5084,8 @@ const server = createServer(async (req, res) => {
       stream.pipe(res);
       return;
     }
+
+    if (await handleTokenApi(req, res, url, tokenHelpers())) return;
 
     const actor = await actorFrom(req);
     setRequestRole(actor);
@@ -5690,6 +5707,7 @@ const server = createServer(async (req, res) => {
 
     if (await handleInvites(req, res, url, actor, platformHelpers())) return;
     if (await handlePlatformTeam(req, res, url, actor, platformHelpers())) return;
+    if (await handleApiTokens(req, res, url, actor, tokenHelpers())) return;
     if (await handleMigrations(req, res, url, actor, migrationHelpers())) return;
     if (await handleCsat(req, res, url, deskHelpers())) return;
     if (await handleDeskSettings(req, res, url, actor, deskHelpers())) return;
@@ -6005,11 +6023,11 @@ const server = createServer(async (req, res) => {
              reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END,
              agent_version = COALESCE(NULLIF($16, ''), agent_version),
              remote_agent = COALESCE($21::jsonb, remote_agent)
-         FROM (SELECT public_ip AS previous_ip, remote_agent AS previous_remote FROM devices WHERE id = $1) prior
+         FROM (SELECT public_ip AS previous_ip, remote_agent AS previous_remote, agent_version AS previous_agent FROM devices WHERE id = $1) prior
          WHERE devices.id = $1
          RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
                    agent_update_requested_at, agent_update_offered_at,
-                   public_ip, geo_updated_at, prior.previous_ip, prior.previous_remote`,
+                   public_ip, geo_updated_at, prior.previous_ip, prior.previous_remote, prior.previous_agent`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -6042,6 +6060,18 @@ const server = createServer(async (req, res) => {
         });
         if (remoteChange === "device.remote_agent_ok") setTimeout(isolateTenantMesh, 15000);
       }
+      const previousAgent = saved.rows[0]?.previous_agent;
+      if (agentVersion && previousAgent && previousAgent !== agentVersion) {
+        await recordActivitySafely(pool, device.org_id, {
+          type: "agent.updated",
+          group: "agent",
+          summary: `updated the agent from ${previousAgent} to ${agentVersion}`,
+          actorType: "system",
+          actorLabel: hostname || device.hostname || "Device agent",
+          deviceId: Number(device.id),
+          payload: { from: previousAgent, to: agentVersion },
+        });
+      }
       if (saved.rows[0]) {
         locateDevice(device.id, saved.rows[0].previous_ip, saved.rows[0])
           .catch((error) => console.error(`geoip update: ${error.message}`));
@@ -6065,11 +6095,19 @@ const server = createServer(async (req, res) => {
       } catch (error) {
         console.error(`agent update offer: ${error.message}`);
       }
+      const cannotScript = scriptProblem(saved.rows[0] || {});
+      if (cannotScript) {
+        await pool.query(
+          `UPDATE jobs SET status = 'finished', exit_code = 1, output = $2, finished_at = now()
+           WHERE device_id = $1 AND status = 'queued' AND kind = 'script'`,
+          [device.id, cannotScript],
+        );
+      }
       const jobs = await pool.query(
         `UPDATE jobs
          SET status = 'running'
          WHERE device_id = $1 AND status = 'queued'
-         RETURNING id, command`,
+         RETURNING id, command, kind`,
         [device.id],
       );
       const deploys = body.acceptDeploys === false
@@ -6089,7 +6127,7 @@ const server = createServer(async (req, res) => {
         );
       const remoteOffer = remoteAgentOffer(remoteAgent, remoteAgent ? await remoteRelease() : null);
       return send(res, 200, {
-        jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command })),
+        jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command, kind: row.kind })),
         deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
         scanUpdates,
         ...(agentUpdate ? { agentUpdate } : {}),
@@ -6108,10 +6146,23 @@ const server = createServer(async (req, res) => {
         `UPDATE jobs
          SET status = 'finished', exit_code = $1, output = $2, finished_at = now()
          WHERE id = $3 AND device_id = $4 AND status = 'running'
-         RETURNING id, org_id, ticket_id`,
+         RETURNING id, org_id, ticket_id, kind`,
         [exitCode, output, jobResultMatch[1], device.id],
       );
       if (!updated.rows[0]) return send(res, 404, { error: "Job not found." });
+      const finished = updated.rows[0];
+      await recordActivitySafely(pool, finished.org_id, {
+        type: finished.kind === "script" ? "script.finished" : "command.finished",
+        group: "commands",
+        summary: `${finished.kind === "script" ? "script" : "command"} ${exitCode === 0 ? "finished" : "failed"} with exit code ${exitCode}`,
+        actorType: "system",
+        actorLabel: device.hostname || "Device agent",
+        deviceId: Number(device.id),
+        ticketId: finished.ticket_id == null ? null : Number(finished.ticket_id),
+        payload: { jobId: Number(finished.id), exitCode },
+        source: "job_result",
+        sourceId: finished.id,
+      });
       if (updated.rows[0].ticket_id != null) {
         await ticketEvent(updated.rows[0].org_id, updated.rows[0].ticket_id, "command_result", {
           label: device.hostname || "Device agent",
@@ -7016,8 +7067,8 @@ const server = createServer(async (req, res) => {
       }
       const body = await readJson(req);
       const command = typeof body.command === "string" ? body.command.trim() : "";
-      if (!command || command.length > 400 || command.includes("\n") || command.includes("\0")) {
-        return send(res, 400, { error: "Enter one command line." });
+      if (!command || command.length > COMMAND_MAX || /[\n\r\0]/.test(command)) {
+        return send(res, 400, { error: `Enter one command line of up to ${COMMAND_MAX} characters.` });
       }
       const device = await pool.query(
         "SELECT id FROM devices WHERE id = $1 AND org_id = $2",
@@ -7118,6 +7169,27 @@ const server = createServer(async (req, res) => {
         remaining: Number(remaining.total) || 0,
       });
       return send(res, 200, { back: Boolean(result.back), remaining });
+    }
+
+    // An open session window polls this after the device went offline (usually a restart). It returns a fresh
+    // desktop link once the remote agent is back, without counting a new remote session.
+    const deviceResumeMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/remote\/resume$/);
+    if (req.method === "POST" && deviceResumeMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const license = await licenseQuery(actor.org_id);
+      const access = remoteAccess(license.rows[0]);
+      if (!access.canRemote) return licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id, os_name FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceResumeMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      const node = await resolveMeshNode(device.rows[0], actor.org_id);
+      if (!node.nodeId || !node.online) return send(res, 200, { online: false });
+      const link = await tenantDesktopUrl(actor.org_id, actor, node.nodeId, `df-${device.rows[0].id}-${Date.now()}`, device.rows[0].os_name);
+      await writeAudit(actor.org_id, actor.id, "remote.resume", "device", String(device.rows[0].id), {});
+      return send(res, 200, { online: true, url: link });
     }
 
     const deviceRemoteMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/remote$/);
@@ -7313,6 +7385,59 @@ const server = createServer(async (req, res) => {
         ...(created.contactId ? { contactId: String(created.contactId) } : {}),
       });
       return send(res, 201, { id: Number(created.accountId) });
+    }
+
+    const timelineMatch = url.pathname.match(/^\/v1\/(accounts|devices)\/(\d+)\/timeline$/);
+    if (timelineMatch && req.method === "GET") {
+      const access = await customerAccess(actor, res);
+      if (!access) return;
+      const forDevice = timelineMatch[1] === "devices";
+      const scopeId = Number(timelineMatch[2]);
+      const owner = await pool.query(
+        forDevice ? "SELECT id FROM devices WHERE id = $1 AND org_id = $2" : "SELECT id FROM customers WHERE id = $1 AND org_id = $2",
+        [scopeId, actor.org_id],
+      );
+      if (!owner.rows[0]) return send(res, 404, { error: forDevice ? "Device not found." : "Customer not found." });
+      const apps = [access.remote ? "remote" : null, access.service ? "servicedesk" : null].filter(Boolean);
+      const params = url.searchParams;
+      const filters = {
+        groups: (params.get("type") || "").split(",").filter(Boolean),
+        device: forDevice ? null : params.get("device") || null,
+        actor: params.get("actor") || null,
+        from: params.get("from"),
+        to: params.get("to"),
+        q: params.get("q"),
+        before: params.get("before"),
+      };
+      const query = timelineQuery({ orgId: actor.org_id, ...(forDevice ? { deviceId: scopeId } : { customerId: scopeId }), apps, filters });
+      const rows = await pool.query(query.text, query.values);
+      const body = timelineView(rows.rows, query.size);
+      if (!filters.before) {
+        const scope = forDevice ? "device_id" : "customer_id";
+        const visible = ["core", ...apps];
+        const [deviceOptions, actorOptions] = await Promise.all([
+          forDevice ? { rows: [] } : pool.query(
+            `SELECT DISTINCT d.id, COALESCE(d.display_name, d.hostname) AS name
+             FROM activity_events e JOIN devices d ON d.id = e.device_id AND d.org_id = e.org_id
+             WHERE e.org_id = $1 AND e.customer_id = $2 AND e.app = ANY($3::text[]) ORDER BY 2`,
+            [actor.org_id, scopeId, visible],
+          ),
+          pool.query(
+            `SELECT DISTINCT u.id, COALESCE(u.name, u.email) AS name
+             FROM activity_events e JOIN users u ON u.id = e.actor_user_id
+             WHERE e.org_id = $1 AND e.${scope} = $2 AND e.app = ANY($3::text[]) ORDER BY 2`,
+            [actor.org_id, scopeId, visible],
+          ),
+        ]);
+        body.options = {
+          groups: Object.entries(ACTIVITY_GROUPS)
+            .filter(([, group]) => visible.includes(group.app))
+            .map(([key, group]) => ({ key, label: group.label })),
+          devices: deviceOptions.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+          actors: actorOptions.rows.map((row) => ({ id: Number(row.id), name: row.name })),
+        };
+      }
+      return send(res, 200, body);
     }
 
     const accountMatch = url.pathname.match(/^\/v1\/accounts\/(\d+)$/);
@@ -9139,13 +9264,6 @@ const server = createServer(async (req, res) => {
           return { rollback: true, status: 409, error: "Only tickets for the same customer can be merged." };
         }
         for (const sourceId of sources) {
-          await client.query(
-            `INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-             SELECT org_id, $2, kind, actor_user_id, actor_label, detail || jsonb_build_object('mergedFrom', $1::bigint), created_at
-             FROM ticket_events
-             WHERE ticket_id = $1 AND org_id = $3 AND kind <> 'created'`,
-            [sourceId, targetId, actor.org_id],
-          );
           await client.query("UPDATE ticket_comments SET ticket_id = $2 WHERE ticket_id = $1", [sourceId, targetId]);
           await client.query("UPDATE ticket_attachments SET ticket_id = $2 WHERE ticket_id = $1 AND org_id = $3", [sourceId, targetId, actor.org_id]);
           await client.query("UPDATE ticket_time_entries SET ticket_id = $2 WHERE ticket_id = $1 AND org_id = $3", [sourceId, targetId, actor.org_id]);

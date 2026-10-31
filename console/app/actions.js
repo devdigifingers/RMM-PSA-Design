@@ -996,6 +996,27 @@ export async function deviceDetails(deviceId) {
   return { ok: true, ...body };
 }
 
+const TIMELINE_PARAMS = ["type", "device", "actor", "from", "to", "q", "before"];
+
+export async function loadTimeline(scope, id, params = {}) {
+  if (!["accounts", "devices"].includes(scope) || !/^\d+$/.test(String(id))) return { ok: false, error: "That timeline is not available." };
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const query = new URLSearchParams();
+  for (const key of TIMELINE_PARAMS) {
+    const value = params?.[key];
+    if (typeof value === "string" && value.trim()) query.set(key, value.trim().slice(0, 200));
+  }
+  const response = await fetch(`${apiUrl}/v1/${scope}/${id}/timeline?${query}`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The timeline is not available." };
+  return { ok: true, ...body };
+}
+
 export async function powerDevice(deviceId, action) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;
@@ -1302,4 +1323,27 @@ export async function saveIpAllowlist(formData) {
   const response = await callApi("/v1/org/security", { method: "PUT", body: { ipAllowlist: String(formData.get("ipAllowlist") || "") } });
   if (!response.ok) await securityError("/settings/org/ip-restriction", response);
   redirect("/settings/org/ip-restriction?saved=1");
+}
+
+export async function createApiToken(_prev, formData) {
+  const response = await callApi("/v1/org/api-tokens", {
+    body: {
+      name: String(formData.get("name") || ""),
+      deviceIds: formData.getAll("deviceId").map(String),
+      expiresInDays: Number(formData.get("expiresInDays")),
+      allowedIps: String(formData.get("allowedIps") || ""),
+    },
+  });
+  if (response.status === 401) redirect("/");
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body.token) return { error: body.error || "The token was not created." };
+  return { token: body.token, name: String(formData.get("name") || "").trim(), expiresAt: body.expiresAt };
+}
+
+export async function revokeApiToken(formData) {
+  const id = Number(formData.get("tokenId"));
+  const response = await callApi(`/v1/org/api-tokens/${id}`, { method: "DELETE" });
+  if (response.status === 401) redirect("/");
+  const body = await response.json().catch(() => ({}));
+  redirect(response.ok ? "/settings/org/api-tokens?saved=revoked" : `/settings/org/api-tokens?error=${encodeURIComponent(body.error || "The token was not revoked.")}`);
 }

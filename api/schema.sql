@@ -579,16 +579,17 @@ CREATE TABLE IF NOT EXISTS ticket_events (
 CREATE INDEX IF NOT EXISTS ticket_events_ticket_idx ON ticket_events (ticket_id, created_at, id);
 CREATE INDEX IF NOT EXISTS ticket_events_org_kind_idx ON ticket_events (org_id, kind, created_at);
 
--- Timeline rows only disappear when a tenant migration purge or rollback deletes the whole ticket.
+-- Retired on 31 Oct 2026: ticket history now lives in activity_events (type 'ticket.<kind>', detail in payload).
+-- Kept read-only as an archive; rows only disappear when a tenant migration purge or rollback deletes the ticket.
 CREATE OR REPLACE FUNCTION ticket_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' AND COALESCE(current_setting('df.migration', true), '') <> '' THEN
     RETURN OLD;
   END IF;
-  RAISE EXCEPTION 'ticket_events is append-only';
+  RAISE EXCEPTION 'ticket_events is retired; ticket history is written to activity_events';
 END $$;
 DROP TRIGGER IF EXISTS ticket_events_append_only ON ticket_events;
-CREATE TRIGGER ticket_events_append_only BEFORE UPDATE OR DELETE ON ticket_events
+CREATE TRIGGER ticket_events_append_only BEFORE INSERT OR UPDATE OR DELETE ON ticket_events
   FOR EACH ROW EXECUTE FUNCTION ticket_events_append_only();
 
 -- Uploaded first, then linked to a ticket and comment when the reply or ticket is saved.
@@ -632,70 +633,6 @@ CREATE TABLE IF NOT EXISTS ticket_timers (
   started_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (ticket_id, user_id)
 );
-
--- One-time backfill so existing tickets start with a timeline.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM ticket_events) THEN
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT t.org_id, t.id, 'created', t.created_by,
-           CASE WHEN t.created_by IS NOT NULL THEN NULL
-                WHEN t.subject LIKE 'Offline on %' THEN 'Offline monitor'
-                WHEN t.subject LIKE 'Missing %' THEN 'Patch monitor'
-                ELSE NULL END,
-           jsonb_build_object('backfilled', true), t.created_at
-    FROM tickets t;
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT tc.org_id, tc.ticket_id, tc.kind, tc.author_user_id,
-           CASE WHEN tc.author_user_id IS NULL AND tc.body LIKE 'Missing %' THEN 'Patch monitor' END,
-           jsonb_build_object('commentId', tc.id, 'backfilled', true), tc.created_at
-    FROM ticket_comments tc;
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT org_id, ticket_id, field, actor_user_id, NULL,
-           jsonb_build_object('from', prev, 'to', value, 'backfilled', true), created_at
-    FROM (
-      SELECT e.org_id, t.id AS ticket_id, e.actor_user_id, e.created_at, e.action, f.field, e.detail->>f.key AS value,
-             LAG(e.detail->>f.key) OVER (PARTITION BY t.id, f.field ORDER BY e.id) AS prev,
-             ROW_NUMBER() OVER (PARTITION BY t.id, f.field ORDER BY e.id) AS seq
-      FROM audit_events e
-      JOIN tickets t ON e.target_id ~ '^[0-9]+$' AND t.id = e.target_id::bigint AND t.org_id = e.org_id
-      CROSS JOIN (VALUES ('status', 'status'), ('priority', 'priority'), ('assignee', 'assigneeUserId')) AS f (field, key)
-      WHERE e.target_type = 'ticket' AND e.action IN ('ticket.create', 'ticket.update') AND e.detail ? f.key
-    ) changes
-    WHERE action = 'ticket.update' AND seq > 1 AND value IS DISTINCT FROM prev;
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT e.org_id, t.id, CASE e.action WHEN 'ticket.breach' THEN 'sla_breach' ELSE 'email' END, NULL, NULL,
-           jsonb_build_object('template', CASE e.action WHEN 'ticket.breach' THEN 'breach' ELSE 'new_ticket' END, 'backfilled', true),
-           e.created_at
-    FROM audit_events e
-    JOIN tickets t ON e.target_id ~ '^[0-9]+$' AND t.id = e.target_id::bigint AND t.org_id = e.org_id
-    WHERE e.target_type = 'ticket' AND e.action IN ('ticket.breach', 'ticket.mail');
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT e.org_id, t.id, 'remote_start', e.actor_user_id, NULL,
-           jsonb_build_object('deviceId', e.target_id::bigint, 'user', e.detail->>'user', 'backfilled', true), e.created_at
-    FROM audit_events e
-    JOIN tickets t ON (e.detail->>'ticketId') ~ '^[0-9]+$' AND t.id = (e.detail->>'ticketId')::bigint AND t.org_id = e.org_id
-    WHERE e.action = 'remote.launch' AND e.target_id ~ '^[0-9]+$';
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT j.org_id, j.ticket_id, 'command', j.created_by, NULL,
-           jsonb_build_object('jobId', j.id, 'command', j.command, 'deviceId', j.device_id, 'backfilled', true), j.created_at
-    FROM jobs j JOIN tickets t ON t.id = j.ticket_id AND t.org_id = j.org_id;
-
-    INSERT INTO ticket_events (org_id, ticket_id, kind, actor_user_id, actor_label, detail, created_at)
-    SELECT j.org_id, j.ticket_id, 'command_result', NULL, d.hostname,
-           jsonb_build_object('jobId', j.id, 'exitCode', j.exit_code, 'output', left(COALESCE(j.output, ''), 4000), 'backfilled', true),
-           j.finished_at
-    FROM jobs j
-    JOIN tickets t ON t.id = j.ticket_id AND t.org_id = j.org_id
-    JOIN devices d ON d.id = j.device_id
-    WHERE j.status = 'finished' AND j.finished_at IS NOT NULL;
-  END IF;
-END $$;
 
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS category text;
 ALTER TABLE tickets ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
@@ -1260,3 +1197,78 @@ END $$;
 DROP TRIGGER IF EXISTS audit_events_append_only ON audit_events;
 CREATE TRIGGER audit_events_append_only BEFORE UPDATE OR DELETE ON audit_events
   FOR EACH ROW EXECUTE FUNCTION audit_events_append_only();
+
+-- Tenant API tokens (Organisation settings → Security → API tokens). Only the SHA-256 of a token is stored.
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL,
+  token_hash text NOT NULL UNIQUE,
+  hint text NOT NULL,
+  scopes text[] NOT NULL DEFAULT '{jobs}',
+  device_ids bigint[] NOT NULL,
+  allowed_ips text[] NOT NULL DEFAULT '{}',
+  created_by bigint NOT NULL REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  last_used_at timestamptz,
+  last_used_ip text,
+  revoked_at timestamptz,
+  revoked_by bigint REFERENCES users (id)
+);
+
+CREATE INDEX IF NOT EXISTS api_tokens_org_id_idx ON api_tokens (org_id, created_at DESC);
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS api_token_id bigint REFERENCES api_tokens (id);
+
+-- 'script' jobs carry a multi-line PowerShell script in command; agents before 1.6.1 cannot run them.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'command';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'jobs_kind_check') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK (kind IN ('command', 'script'));
+  END IF;
+END $$;
+
+-- One history for each customer and device. customer_id is fixed when the event happens, so a device that later
+-- moves to another customer keeps its earlier events with the first one. The ids are not foreign keys: history
+-- outlives the records it mentions. (source, source_id) makes the backfill and live writes safe to repeat.
+CREATE TABLE IF NOT EXISTS activity_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint,
+  device_id bigint,
+  ticket_id bigint,
+  contact_id bigint,
+  type text NOT NULL,
+  app text NOT NULL CHECK (app IN ('core', 'remote', 'servicedesk')),
+  actor_type text NOT NULL CHECK (actor_type IN ('user', 'system', 'automation', 'api')),
+  actor_user_id bigint,
+  actor_label text,
+  summary text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  source text,
+  source_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS activity_events_customer_idx ON activity_events (org_id, customer_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS activity_events_device_idx ON activity_events (org_id, device_id, created_at DESC, id DESC) WHERE device_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS activity_events_ticket_idx ON activity_events (org_id, ticket_id, created_at, id) WHERE ticket_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS activity_events_source_idx ON activity_events (source, source_id) WHERE source IS NOT NULL;
+
+-- Rows are only changed or removed by a tenant migration, which sets df.migration for its transaction.
+CREATE OR REPLACE FUNCTION activity_events_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF COALESCE(current_setting('df.migration', true), '') <> '' THEN
+    RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+  END IF;
+  RAISE EXCEPTION 'activity_events is append-only';
+END $$;
+DROP TRIGGER IF EXISTS activity_events_append_only ON activity_events;
+CREATE TRIGGER activity_events_append_only BEFORE UPDATE OR DELETE ON activity_events
+  FOR EACH ROW EXECUTE FUNCTION activity_events_append_only();
+-- Ticket history lives here, so a ticket locked by a migration gets no new events (like its comments).
+DROP TRIGGER IF EXISTS activity_events_migration_guard ON activity_events;
+CREATE TRIGGER activity_events_migration_guard BEFORE INSERT ON activity_events
+  FOR EACH ROW EXECUTE FUNCTION df_migration_ticket_child_guard();
+CREATE INDEX IF NOT EXISTS activity_events_type_idx ON activity_events (type, created_at);

@@ -95,6 +95,10 @@ func runCommand(command string) (int, string) {
 	return 1, buf.String()
 }
 
+func runScript(int64, string) (int, string) {
+	return 1, "Scripts run on Windows devices only."
+}
+
 func collectMetrics() (sample, error) {
 	cpu, err := cpuPercent()
 	if err != nil {

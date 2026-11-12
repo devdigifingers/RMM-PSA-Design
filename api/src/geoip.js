@@ -206,7 +206,18 @@ export function placeFrom(record) {
   };
 }
 
-export function geoLocator(path, { recheckMs = 60 * 60 * 1000 } = {}) {
+export const NO_PROVIDER = Object.freeze({ name: "", asn: null });
+
+export function providerFrom(record) {
+  if (!record) return NO_PROVIDER;
+  const asn = Number(record.autonomous_system_number);
+  return {
+    name: String(record.autonomous_system_organization || "").trim(),
+    asn: Number.isInteger(asn) && asn > 0 ? asn : null,
+  };
+}
+
+export function geoLocator(path, { recheckMs = 60 * 60 * 1000, map = placeFrom, empty = UNKNOWN } = {}) {
   let database = null;
   let loadedMtime = 0;
   let checkedAt = 0;
@@ -228,14 +239,14 @@ export function geoLocator(path, { recheckMs = 60 * 60 * 1000 } = {}) {
   return {
     available: () => current() !== null,
     lookup(ip) {
-      if (!isPublicIp(ip)) return UNKNOWN;
+      if (!isPublicIp(ip)) return empty;
       const db = current();
-      if (!db) return UNKNOWN;
+      if (!db) return empty;
       try {
-        return placeFrom(db.get(ip));
+        return map(db.get(ip));
       } catch (error) {
         console.error(`geoip lookup: ${error.message}`);
-        return UNKNOWN;
+        return empty;
       }
     },
   };
@@ -250,10 +261,14 @@ export function placeFromIpApi(body) {
     city: String(body.city || ""),
     lat: rounded(body.lat),
     lon: rounded(body.lon),
+    provider: {
+      name: String(body.isp || body.org || "").trim(),
+      asn: Number(/^AS(\d+)/.exec(String(body.as || ""))?.[1]) || null,
+    },
   };
 }
 
-const IP_API_FIELDS = "status,message,countryCode,country,regionName,city,lat,lon";
+const IP_API_FIELDS = "status,message,countryCode,country,regionName,city,lat,lon,isp,org,as";
 
 // Fallback while no local database is installed. The free endpoint is HTTP only,
 // limited to 45 requests a minute and non-commercial; a key switches to pro (HTTPS).
@@ -311,6 +326,8 @@ export function ipApiLocator({ key = "", fetchImpl = fetch, cacheMs = 24 * 60 * 
 export function deviceGroup(device) {
   const site = String(device.site_override || "").trim();
   if (site) return { kind: "site", label: site };
+  const province = String(device.province_override || "").trim();
+  if (province && province !== device.geo_region) return { kind: "location", label: province };
   const place = [device.geo_city, device.geo_region].filter(Boolean).join(", ");
   return { kind: "location", label: place || String(device.geo_country_name || "").trim() || "Unknown" };
 }

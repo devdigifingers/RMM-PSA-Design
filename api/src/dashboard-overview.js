@@ -49,8 +49,10 @@ export function deviceFacts(row, { now = Date.now(), releases = {} } = {}) {
   const total = Number(metrics?.diskTotalBytes);
   const used = Number(metrics?.diskUsedBytes);
   const diskFreePct = total > 0 && used >= 0 ? Math.max(0, ((total - used) / total) * 100) : null;
-  const located = Boolean(row.geo_updated_at);
-  const country = located && row.geo_country ? row.geo_country : "Unknown";
+  const province = ZA_PROVINCES.includes(row.province_override) ? row.province_override : "";
+  const located = Boolean(row.geo_updated_at) || Boolean(province);
+  const country = province ? "ZA" : located && row.geo_country ? row.geo_country : "Unknown";
+  const ipProvince = row.geo_country === "ZA" ? row.geo_region || "" : "";
   return {
     online: age < 60 * 1000,
     stale: age >= STALE_MS,
@@ -64,9 +66,10 @@ export function deviceFacts(row, { now = Date.now(), releases = {} } = {}) {
     diskFreePct,
     lowDisk: diskFreePct != null && diskFreePct < 10,
     country,
-    countryName: located ? row.geo_country_name || row.geo_country || "Unknown" : "Unknown",
-    region: country === "ZA" ? row.geo_region || "Unknown" : "",
-    city: located ? row.geo_city || "" : "",
+    countryName: province ? "South Africa" : located ? row.geo_country_name || row.geo_country || "Unknown" : "Unknown",
+    region: province || (country === "ZA" ? row.geo_region || "Unknown" : ""),
+    provinceSet: Boolean(province),
+    city: !province || province === ipProvince ? (row.geo_updated_at && row.geo_city) || "" : "",
     group: deviceGroup(row).label,
     site: String(row.site_override || "").trim(),
     missing: Number(row.missing) || 0,
@@ -190,11 +193,13 @@ export function overviewFrom(items, { releases = {}, monitor = false, patch = fa
   const cityCounts = {};
   const groupCounts = {};
   const groupKinds = {};
+  let provinceSet = 0;
   for (const { row, facts } of items) {
     bump(countryCounts, facts.country);
     countryNames[facts.country] = facts.countryName;
     if (facts.country === "ZA") {
       bump(provinceCounts, facts.region);
+      if (facts.provinceSet) provinceSet += 1;
       if (facts.city) bump(cityCounts, `${facts.city}|${facts.region}`);
     }
     bump(groupCounts, facts.group);
@@ -203,7 +208,7 @@ export function overviewFrom(items, { releases = {}, monitor = false, patch = fa
   const countryShares = percentages(countryCounts);
   const za = countryCounts.ZA || 0;
   const unknown = countryCounts.Unknown || 0;
-  const provinceShares = percentages(Object.fromEntries(ZA_PROVINCES.map((name) => [name, provinceCounts[name] || 0])));
+  const provinceShares = percentages(Object.fromEntries([...ZA_PROVINCES, "Unknown"].map((name) => [name, provinceCounts[name] || 0])));
   const location = {
     located: total - unknown,
     unknown,
@@ -216,6 +221,8 @@ export function overviewFrom(items, { releases = {}, monitor = false, patch = fa
       .map(([code, count]) => ({ code, name: countryNames[code] || code, count, pct: countryShares[code] || 0 })),
     provinces: ZA_PROVINCES.map((name) => ({ name, count: provinceCounts[name] || 0, pct: provinceShares[name] || 0 })),
     provinceUnknown: provinceCounts.Unknown || 0,
+    provinceUnknownPct: provinceShares.Unknown || 0,
+    provinceSet,
     cities: ranked(cityCounts, 5).map(([key, count]) => {
       const [city, region] = key.split("|");
       return { city, region, count };

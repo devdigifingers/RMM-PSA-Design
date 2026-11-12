@@ -18,6 +18,18 @@ export function reportByKey(key) {
   return REPORTS.find((report) => report.key === key) || null;
 }
 
+export const PROVINCE_COLORS = {
+  Gauteng: "#3B82F6",
+  "Western Cape": "#22D3EE",
+  "KwaZulu-Natal": "#818CF8",
+  "Eastern Cape": "#F472B6",
+  "Free State": "#FB923C",
+  Limpopo: "#FACC15",
+  Mpumalanga: "#34D399",
+  "North West": "#A78BFA",
+  "Northern Cape": "#2DD4BF",
+};
+
 const DAY = 86400000;
 const SAMPLE_MINUTES = 5;
 const ROW_LIMIT = 500;
@@ -399,13 +411,33 @@ export function locationsReport(data, ctx) {
     countryName: drill.country ? countryNames[drill.country] || drill.country : "",
     region: drill.region || "",
   };
-  report.charts.push({
-    type: "bars",
-    title: level.title,
-    colorBy: "index",
-    items: level.rows.filter((row) => row.devices > 0).slice(0, 12).map((row) => ({ label: row.name, value: row.devices, tone: row.name === "Unknown" ? "muted" : undefined })),
-    empty: "No devices here yet.",
-  });
+  const provinceLevel = drill.country === "ZA" && !drill.region;
+  if (provinceLevel) {
+    const set = inCountry.filter((item) => item.facts.provinceSet).length;
+    report.charts.push({
+      type: "donut",
+      title: level.title,
+      centerLabel: "in SA",
+      items: level.rows.filter((row) => row.devices > 0).map((row) => ({
+        label: row.name === "Unknown" ? "Province unknown" : row.name,
+        value: row.devices,
+        pct: Number.parseInt(row.share, 10) || 0,
+        color: PROVINCE_COLORS[row.name] || "#94A3B8",
+      })),
+      empty: "No devices here yet.",
+    });
+    report.notes.push(set === inCountry.length && set
+      ? "Every province in this report was set on the device."
+      : `${set} of ${inCountry.length} provinces were set on the device; the rest come from the device's internet address, which can show the provider's city instead of the site.`);
+  } else {
+    report.charts.push({
+      type: "bars",
+      title: level.title,
+      colorBy: "index",
+      items: level.rows.filter((row) => row.devices > 0).slice(0, 12).map((row) => ({ label: row.name, value: row.devices, tone: row.name === "Unknown" ? "muted" : undefined })),
+      empty: "No devices here yet.",
+    });
+  }
   report.tables.push({
     key: "level",
     title: level.title,
@@ -425,6 +457,7 @@ export function locationsReport(data, ctx) {
       ip: row.public_ip || "",
       city: facts.city || "",
       region: regionOf(facts) === "Unknown" ? "" : regionOf(facts),
+      provinceFrom: facts.country !== "ZA" ? "" : facts.provinceSet ? "Set" : "IP",
       country: facts.country === "Unknown" ? "Unknown" : facts.countryName,
       site: facts.site || "",
       lastSeen: lastSeen(facts),
@@ -439,6 +472,7 @@ export function locationsReport(data, ctx) {
       { key: "ip", label: "Public IP", width: 2.5 },
       { key: "city", label: "City", width: 2 },
       { key: "region", label: "Province / region", width: 2.5 },
+      { key: "provinceFrom", label: "Source", width: 1.5 },
       { key: "country", label: "Country", width: 2 },
       { key: "site", label: "Site override", width: 2 },
       { key: "lastSeen", label: "Last seen", width: 2.5 },
@@ -446,7 +480,7 @@ export function locationsReport(data, ctx) {
     ...limited(rows, "devices"),
     empty: "No devices here yet.",
   });
-  report.notes.push("Locations come from the public IP address a device connects from, so they are approximate (often the internet provider's nearest exchange). A site override set on a device replaces it when devices are grouped. This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com.");
+  report.notes.push("Locations come from the public IP address a device connects from, so they are approximate (often the internet provider's nearest exchange), unless a province was set on the device (Source: Set; IP means it came from the address). A site override set on a device replaces it when devices are grouped. This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com.");
   return report;
 }
 

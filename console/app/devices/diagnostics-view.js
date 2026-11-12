@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { changeHostname, deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice, restartPendingDevice, setDeviceSite } from "../actions";
+import { changeHostname, deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice, restartPendingDevice, setDeviceProvince, setDeviceSite } from "../actions";
 import { DiagnosticIcon, TileIcon } from "./diagnostic-icons";
 import { DIAGNOSTIC_TOOLS, diagnosticTool } from "./diagnostic-tools";
 import { DetailColumns } from "./details-window";
@@ -158,6 +158,7 @@ function ToolBody({ deviceId, osName, users, canRemote, selected, state, setStat
 const EDITABLE = {
   "Device Name": { label: "Device name", action: "Rename" },
   "Site / Branch": { label: "Site or branch", action: "Change", empty: "Not set", placeholder: "e.g. Durban branch" },
+  Province: { label: "Province", action: "Change" },
 };
 
 function HostnameRow({ deviceId, row, users, access, busy, onBusy }) {
@@ -312,6 +313,7 @@ function HostnameRow({ deviceId, row, users, access, busy, onBusy }) {
 function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
   const [editing, setEditing] = useState("");
   const [hostEditing, setHostEditing] = useState(false);
+  const [province, setProvince] = useState(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -326,15 +328,25 @@ function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
     setError("");
     const result = editing === "Device Name"
       ? await renameDevice(String(deviceId), value)
-      : await setDeviceSite([deviceId], value);
+      : editing === "Province"
+        ? await setDeviceProvince([deviceId], value)
+        : await setDeviceSite([deviceId], value);
     setSaving(false);
     if (!result.ok) {
       setError(result.error);
       return;
     }
     if (editing === "Device Name") onRename(result.name);
+    else if (editing === "Province") setProvince(result.province);
     else onSite(result.site);
     setEditing("");
+  }
+
+  function shown(row, edit) {
+    if (row.label !== "Province") return row.value || edit?.empty || "";
+    const value = province ?? row.value;
+    if (value) return value;
+    return row.detected ? `${row.detected} (from internet address)` : "Not set";
   }
 
   return (
@@ -375,7 +387,12 @@ function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
                 <div key={row.label} className={edit ? "name-line" : undefined}>
                   <dt>{row.label}</dt>
                   <dd>
-                    {open ? (
+                    {open && row.options ? (
+                      <select value={draft} aria-label={edit.label} onChange={(event) => setDraft(event.target.value)}>
+                        <option value="">{row.detected ? `From IP (${row.detected})` : "Not set"}</option>
+                        {row.options.map((name) => <option key={name} value={name}>{name}</option>)}
+                      </select>
+                    ) : open ? (
                       <input
                         value={draft}
                         aria-label={edit.label}
@@ -384,7 +401,7 @@ function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
                         onChange={(event) => setDraft(event.target.value)}
                         onKeyDown={(event) => { if (event.key === "Enter") save(); }}
                       />
-                    ) : row.value || edit?.empty || ""}
+                    ) : shown(row, edit)}
                   </dd>
                   {edit ? (
                     <span className="rename-actions">
@@ -394,7 +411,7 @@ function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
                           <button type="button" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                         </>
                       ) : (
-                        <button type="button" disabled={Boolean(editing) || hostEditing} onClick={() => { setDraft(row.value || ""); setEditing(row.label); setError(""); }}>{edit.action}</button>
+                        <button type="button" disabled={Boolean(editing) || hostEditing} onClick={() => { setDraft((row.label === "Province" ? province ?? row.value : row.value) || ""); setEditing(row.label); setError(""); }}>{edit.action}</button>
                       )}
                     </span>
                   ) : null}

@@ -671,7 +671,13 @@ table {
   align-items: center;
 }
 
-.name-line input {
+.name-line select {
+  padding: 0 26px 0 8px;
+  background-position: right 8px center;
+}
+
+.name-line input,
+.name-line select {
   width: 100%;
   height: 26px;
   font-size: 13px;

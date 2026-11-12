@@ -130,3 +130,27 @@ test("an empty fleet gives zeros, not errors", () => {
   assert.deepEqual(overview.agents.versions, []);
   assert.equal(overview.location.restPct, 0);
 });
+
+test("a province set on the device wins over the IP location", () => {
+  const rows = [
+    row(1, { province_override: "Eastern Cape" }),
+    row(2, { province_override: "Northern Cape", geo_updated_at: null }),
+    row(3, { province_override: "Free State", geo_country: "GB", geo_region: "England", geo_city: "London" }),
+    row(4),
+    row(5, { province_override: "Atlantis" }),
+  ];
+  const all = items(rows);
+  const overview = overviewFrom(all, { releases: RELEASES });
+  const count = (name) => overview.location.provinces.find((item) => item.name === name).count;
+  assert.equal(overview.location.zaCount, 5);
+  assert.equal(count("Eastern Cape"), 1);
+  assert.equal(count("Northern Cape"), 1);
+  assert.equal(count("Free State"), 1);
+  assert.equal(count("Gauteng"), 2);
+  assert.equal(overview.location.provinceSet, 3);
+  assert.equal(overview.location.provinces.reduce((sum, item) => sum + item.pct, 0) + overview.location.provinceUnknownPct, 100);
+  assert.equal(all[0].facts.city, "");
+  assert.equal(all[3].facts.city, "Johannesburg");
+  const filter = deviceFilterFrom(new URLSearchParams("region=Eastern%20Cape"));
+  assert.deepEqual(all.filter((item) => deviceMatches(item.facts, filter)).map((item) => item.row.id), [1]);
+});

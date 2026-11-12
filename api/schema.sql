@@ -700,6 +700,12 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS site_override text
   CHECK (site_override IS NULL OR length(site_override) BETWEEN 1 AND 80);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS restart_reasons jsonb;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS pending_hostname text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS province_override text
+  CHECK (province_override IS NULL OR province_override IN ('Eastern Cape', 'Free State', 'Gauteng', 'KwaZulu-Natal',
+    'Limpopo', 'Mpumalanga', 'North West', 'Northern Cape', 'Western Cape'));
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS isp_name text;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS isp_asn integer;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS isp_updated_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS device_daily_stats (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

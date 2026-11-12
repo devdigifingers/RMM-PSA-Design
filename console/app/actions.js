@@ -874,6 +874,21 @@ export async function setDeviceSite(deviceIds, site) {
   return { ok: true, site: body.site, updated: body.updated };
 }
 
+export async function setDeviceProvince(deviceIds, province) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/province`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ deviceIds: deviceIds.map(Number), province: String(province || "") }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "The province was not saved." };
+  return { ok: true, province: body.province, updated: body.updated };
+}
+
 export async function deviceFiles(deviceId, path) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh the MaxMind GeoLite2-City database used for device locations
+Description=Refresh the MaxMind GeoLite2-City and GeoLite2-ASN databases used for device locations and providers
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/GeoIP.conf

@@ -1,6 +1,6 @@
 // Platform version shown on the sign-in page and in the side rail. Bump it with every deploy and add a matching
 // "## <date> · Platform <version>" section to docs/CHANGELOG.md (test/version.test.mjs checks they agree).
-export const PLATFORM_VERSION = "1.7.1";
+export const PLATFORM_VERSION = "1.8.0";
 export const PLATFORM_RELEASED = "2026-11-10";
 
 export function versionLabel() {

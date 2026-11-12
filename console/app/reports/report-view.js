@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { createReportSubscription, reportContacts } from "../actions";
-import { Bars, TimeChart, toneColor } from "../charts";
+import { Bars, Donut, Legend, TimeChart, toneColor } from "../charts";
 
 function localToday() {
   return new Date(Date.now() + 2 * 3600000).toISOString().slice(0, 10);
@@ -150,13 +150,20 @@ function Drill({ drill, go }) {
 }
 
 function ChartCard({ chart }) {
-  const hasData = chart.type === "bars"
+  const listed = chart.type === "bars" || chart.type === "donut";
+  const hasData = listed
     ? chart.items?.length > 0
     : chart.days?.length > 0 && chart.series?.some((series) => series.values.some((value) => value != null));
+  const total = chart.type === "donut" ? chart.items.reduce((sum, item) => sum + item.value, 0) : 0;
   return (
-    <section className={`dx-card rx-chart-card ${chart.type === "bars" ? "is-bars" : ""}`}>
+    <section className={`dx-card rx-chart-card ${listed ? "is-bars" : ""}`}>
       <header><h2>{chart.title}</h2></header>
-      {!hasData ? <p className="rx-empty">{chart.empty}</p> : chart.type === "bars" ? (
+      {!hasData ? <p className="rx-empty">{chart.empty}</p> : chart.type === "donut" ? (
+        <div className="dx-chart-row">
+          <Donut segments={chart.items.map((item) => ({ ...item, key: item.label }))} centerValue={String(total)} centerLabel={chart.centerLabel} />
+          <Legend items={chart.items.map((item) => ({ ...item, key: item.label }))} />
+        </div>
+      ) : chart.type === "bars" ? (
         <Bars items={chart.items.map((item, index) => ({
           key: `${item.label}-${index}`,
           label: item.label,

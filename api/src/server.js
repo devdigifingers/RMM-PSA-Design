@@ -44,11 +44,11 @@ import {
   timelineView,
 } from "./activity.js";
 import { fleetVersions } from "./system-view.js";
-import { geoLocator, ipApiLocator, parseIp } from "./geoip.js";
+import { NO_PROVIDER, geoLocator, ipApiLocator, parseIp, providerFrom } from "./geoip.js";
 import { dailyStats, fillDays, osFamily } from "./daily-stats.js";
 import { reportPdf } from "./pdf.js";
 import { REPORTS, buildReport, localDay, previousMonth, reportByKey, reportCsv, reportJson, reportRange } from "./reports.js";
-import { deviceFacts, deviceFilterFrom, deviceMatches, overviewFrom } from "./dashboard-overview.js";
+import { deviceFacts, deviceFilterFrom, deviceMatches, overviewFrom, ZA_PROVINCES } from "./dashboard-overview.js";
 import {
   ATTACHMENT_LIMIT,
   attachmentIds,
@@ -1742,6 +1742,7 @@ function detailSections(device, info, groupName, clock = {}) {
   const networkRows = [
     detailLine("Public IP Address", device.public_ip || device.ipv4),
     detailLine("Location", locationLabel(device)),
+    detailLine("Internet Provider", providerLabel(device)),
     detailLine("Private IP Address", privateIp),
     detailLine("MAC Address", primary?.mac || cards.find((card) => card.mac)?.mac),
     detailLine("Network Adapters", cards.length ? String(cards.length) : ""),
@@ -1875,6 +1876,12 @@ function locationLabel(device) {
   return place || "Unknown";
 }
 
+function providerLabel(device) {
+  const name = String(device.isp_name || "").trim();
+  if (!name) return "";
+  return device.isp_asn ? `${name} (AS${device.isp_asn})` : name;
+}
+
 function blank(value) {
   const text = value == null ? "" : String(value).trim();
   return text || "N/A";
@@ -1974,6 +1981,13 @@ function deviceOverview(device, info, raw) {
       { label: "System type", value: blank(systemType(architecture)) },
       { label: "Service tag", value: blank(system.Serial || info?.BIOS?.Serial || device.serial) },
       { label: "Location", value: blank(locationLabel(device)) },
+      { label: "Internet provider", value: blank(providerLabel(device)) },
+      {
+        label: "Province",
+        value: device.province_override || "",
+        detected: device.geo_country === "ZA" ? device.geo_region || "" : "",
+        options: ZA_PROVINCES,
+      },
       { label: "Site / Branch", value: device.site_override || "" },
     ],
     windowsTitle: windows ? "Windows Specifications" : "Operating System",
@@ -2264,6 +2278,10 @@ function ipv4From(req) {
 }
 
 const geo = geoLocator(process.env.GEOIP_DB || "/var/lib/GeoIP/GeoLite2-City.mmdb");
+const providers = geoLocator(process.env.GEOIP_ASN_DB || "/var/lib/GeoIP/GeoLite2-ASN.mmdb", {
+  map: providerFrom,
+  empty: NO_PROVIDER,
+});
 const ipApi = process.env.IP_API === "off" ? null : ipApiLocator({ key: process.env.IP_API_KEY || "" });
 
 function publicIpFrom(req) {
@@ -2281,16 +2299,22 @@ async function locateDevice(deviceId, previousIp, current) {
   const local = geo.available();
   if (!current.public_ip || (!local && !ipApi)) return;
   const stale = !current.geo_updated_at || Date.now() - new Date(current.geo_updated_at).getTime() > 35 * 86400000;
-  if (current.public_ip === previousIp && !stale) return;
+  const noProvider = !current.isp_updated_at && (!local || providers.available());
+  if (current.public_ip === previousIp && !stale && !noProvider) return;
   const place = local ? geo.lookup(current.public_ip) : await ipApi.lookup(current.public_ip);
   if (!place) return;
+  const provider = providers.available() ? providers.lookup(current.public_ip) : place.provider || null;
   await pool.query(
     `UPDATE devices
      SET geo_country = NULLIF($2, ''), geo_country_name = NULLIF($3, ''), geo_region = NULLIF($4, ''),
-         geo_city = NULLIF($5, ''), geo_lat = $6, geo_lon = $7, geo_updated_at = now()
+         geo_city = NULLIF($5, ''), geo_lat = $6, geo_lon = $7, geo_updated_at = now(),
+         isp_name = CASE WHEN $8 THEN NULLIF($9, '') ELSE isp_name END,
+         isp_asn = CASE WHEN $8 THEN $10::integer ELSE isp_asn END,
+         isp_updated_at = CASE WHEN $8 THEN now() ELSE isp_updated_at END
      WHERE id = $1`,
     [deviceId, place.country, place.countryName.slice(0, 80), place.region.slice(0, 80),
-      place.city.slice(0, 80), place.lat, place.lon],
+      place.city.slice(0, 80), place.lat, place.lon,
+      Boolean(provider), String(provider?.name || "").slice(0, 120), provider?.asn ?? null],
   );
 }
 
@@ -3718,7 +3742,7 @@ async function fleetItems(orgId, { patch = false, customer = null } = {}) {
     pool.query(
       `SELECT d.id, d.hostname, d.display_name, d.os_name, d.os_version, d.os_build, d.last_seen_at,
               d.agent_version, d.metrics, d.ipv4, d.public_ip, d.users, d.geo_country, d.geo_country_name,
-              d.geo_region, d.geo_city, d.geo_updated_at, d.site_override, d.remote_agent,
+              d.geo_region, d.geo_city, d.geo_updated_at, d.site_override, d.province_override, d.remote_agent,
               ${patch ? "d.updates, d.software," : ""}
               c.id AS customer_id, c.name AS customer_name
        FROM devices d
@@ -3773,7 +3797,10 @@ async function writeDailySnapshots() {
       const [fleet, succeeded] = await Promise.all([
         pool.query(
           `SELECT d.id, d.last_seen_at, d.agent_version, d.os_name, d.os_version, d.updates, d.software,
-                  d.geo_country, d.geo_region, d.geo_updated_at, s.customer_id
+                  CASE WHEN d.province_override IS NULL THEN d.geo_country ELSE 'ZA' END AS geo_country,
+                  COALESCE(d.province_override, d.geo_region) AS geo_region,
+                  CASE WHEN d.province_override IS NULL THEN d.geo_updated_at ELSE COALESCE(d.geo_updated_at, now()) END AS geo_updated_at,
+                  s.customer_id
            FROM devices d
            LEFT JOIN sites s ON s.id = d.site_id
            WHERE d.org_id = $1`,
@@ -6109,7 +6136,7 @@ const server = createServer(async (req, res) => {
          WHERE devices.id = $1
          RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
                    agent_update_requested_at, agent_update_offered_at,
-                   public_ip, geo_updated_at, prior.previous_ip, prior.previous_remote, prior.previous_agent`,
+                   public_ip, geo_updated_at, isp_updated_at, prior.previous_ip, prior.previous_remote, prior.previous_agent`,
         [
           device.id,
           hostname.slice(0, 200),
@@ -6359,8 +6386,8 @@ const server = createServer(async (req, res) => {
       const device = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
                 d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name,
-                d.public_ip, d.geo_city, d.geo_region, d.geo_country_name, d.geo_updated_at, d.site_override,
-                d.reboot_pending, d.restart_reasons, d.pending_hostname
+                d.public_ip, d.geo_city, d.geo_region, d.geo_country, d.geo_country_name, d.geo_updated_at, d.site_override,
+                d.province_override, d.reboot_pending, d.restart_reasons, d.pending_hostname, d.isp_name, d.isp_asn
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -6448,6 +6475,31 @@ const server = createServer(async (req, res) => {
         devices: changed,
       });
       return send(res, 200, { site, updated: changed.length });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/devices/province") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const ids = Array.isArray(body.deviceIds)
+        ? [...new Set(body.deviceIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
+        : [];
+      if (!ids.length || ids.length > 500) return send(res, 400, { error: "Choose between 1 and 500 devices." });
+      const province = typeof body.province === "string" ? body.province.trim() : "";
+      if (province && !ZA_PROVINCES.includes(province)) return send(res, 400, { error: "Choose a South African province." });
+      const updated = await pool.query(
+        `UPDATE devices SET province_override = NULLIF($1, '')
+         WHERE org_id = $2 AND id = ANY($3::bigint[])
+         RETURNING id`,
+        [province, actor.org_id, ids],
+      );
+      if (!updated.rows.length) return send(res, 404, { error: "Device not found." });
+      const changed = updated.rows.map((row) => Number(row.id));
+      await writeAudit(actor.org_id, actor.id, "device.province", "device", changed.length === 1 ? String(changed[0]) : "bulk", {
+        province: province || null,
+        devices: changed,
+      });
+      return send(res, 200, { province, updated: changed.length });
     }
 
     const deviceNameMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/name$/);
@@ -7199,6 +7251,37 @@ const server = createServer(async (req, res) => {
       } catch (error) {
         return send(res, error.status || 502, { error: error.message || "The restart could not be sent." });
       }
+    }
+
+    const deviceSwitchMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/switch-user$/);
+    if (req.method === "POST" && deviceSwitchMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const action = body.action === "signin" ? "signin" : body.action === "view" ? "view" : "";
+      if (!action) return send(res, 400, { error: "Choose a session." });
+      const found = await pool.query(
+        "SELECT id, os_name, hostname FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceSwitchMatch[1], actor.org_id],
+      );
+      const device = found.rows[0];
+      if (!device) return send(res, 404, { error: "Device not found." });
+      if (!/windows/i.test(device.os_name || "")) return send(res, 400, { error: "Switch user works on Windows computers." });
+      if (action === "signin") {
+        if (!canOperate(actor)) {
+          await writeAudit(actor.org_id, actor.id, "power.deny", "device", String(device.id), { reason: "role", action: "signin" });
+          return send(res, 403, { error: "An admin sends a computer to the sign-in screen." });
+        }
+        if (isServerOs(device.os_name) && body.confirmServer !== true) {
+          return send(res, 409, { error: "This is a server. Confirm first.", needsConfirm: true });
+        }
+        await writeAudit(actor.org_id, actor.id, "remote.signin_screen", "device", String(device.id), {});
+        return send(res, 201, { ok: true });
+      }
+      const user = String(body.user || "").trim().slice(0, 120);
+      const station = String(body.station || "").trim().slice(0, 60);
+      await writeAudit(actor.org_id, actor.id, "remote.switch_user", "device", String(device.id), { user, station });
+      return send(res, 201, { ok: true });
     }
 
     const devicePowerMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/power$/);

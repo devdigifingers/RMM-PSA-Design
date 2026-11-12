@@ -233,7 +233,45 @@ export class PdfDocument {
   chart(chart) {
     if (chart.title) this.heading(chart.title, { size: 11 });
     if (chart.type === "bars") return this.barChart(chart);
+    if (chart.type === "donut") return this.donutChart(chart);
     return this.timeChart(chart);
+  }
+
+  // chart.items: [{ label, value, pct, color }]
+  donutChart(chart) {
+    const items = (chart.items || []).filter((item) => Number(item.value) > 0);
+    if (!items.length) return this.paragraph(chart.empty || "No data for this period.");
+    const total = items.reduce((sum, item) => sum + Number(item.value), 0);
+    const outer = 60;
+    const inner = 38;
+    const rowsH = items.length * 15;
+    const height = Math.max(outer * 2, rowsH) + 10;
+    this.ensure(height);
+    const cx = MARGIN + outer;
+    const cy = this.y + outer;
+    let angle = -Math.PI / 2;
+    for (const item of items) {
+      const sweep = (Number(item.value) / total) * Math.PI * 2;
+      const steps = Math.max(2, Math.ceil(sweep / (Math.PI / 60)));
+      const arc = (radius) => Array.from({ length: steps + 1 }, (_, i) => {
+        const a = angle + (sweep * i) / steps;
+        return [cx + radius * Math.cos(a), cy + radius * Math.sin(a)];
+      });
+      this.polygon([...arc(outer), ...arc(inner).reverse()], item.color || seriesColorPdf(0));
+      angle += sweep;
+    }
+    this.text(cx - inner, cy - 11, String(total), { size: 16, bold: true, align: "center", width: inner * 2 });
+    if (chart.centerLabel) this.text(cx - inner, cy + 6, chart.centerLabel, { size: 8, color: MUTED, align: "center", width: inner * 2 });
+    const left = MARGIN + outer * 2 + 30;
+    let y = this.y + Math.max(0, outer - rowsH / 2);
+    for (const item of items) {
+      this.rect(left, y + 1.5, 8, 8, item.color || seriesColorPdf(0));
+      this.text(left + 14, y, item.label, { size: 9, width: 160 });
+      this.text(left + 180, y, String(item.value), { size: 9, bold: true, align: "right", width: 40 });
+      this.text(left + 226, y, `${item.pct ?? Math.round((Number(item.value) / total) * 100)}%`, { size: 9, color: MUTED, align: "right", width: 40 });
+      y += 15;
+    }
+    this.y += height;
   }
 
   barChart(chart) {

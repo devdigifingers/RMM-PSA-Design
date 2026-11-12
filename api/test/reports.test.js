@@ -86,6 +86,14 @@ test("location report drills from countries to provinces to cities", () => {
   const za = locationsReport({ items: fleet, drill: { country: "ZA" } }, ctx);
   assert.equal(za.tables[0].rows.length, 9);
   assert.equal(za.tables[1].rows.length, 2);
+  assert.equal(za.charts[0].type, "donut");
+  assert.deepEqual(za.charts[0].items.map((entry) => [entry.label, entry.value, entry.pct]), [["Gauteng", 1, 50], ["Western Cape", 1, 50]]);
+  assert.deepEqual(za.tables[1].rows.map((row) => row.provinceFrom), ["IP", "IP"]);
+  assert.equal(top.charts[0].type, "bars");
+  const pinned = locationsReport({ items: [item({ ...fleet[0].row, province_override: "Eastern Cape" })], drill: { country: "ZA" } }, ctx);
+  assert.deepEqual(pinned.charts[0].items.map((entry) => entry.label), ["Eastern Cape"]);
+  assert.equal(pinned.tables[1].rows[0].provinceFrom, "Set");
+  assert.ok(pinned.notes.some((note) => note.startsWith("Every province")));
   const wc = locationsReport({ items: fleet, drill: { country: "ZA", region: "Western Cape" } }, ctx);
   assert.deepEqual(wc.tables[0].rows.map((row) => row.name), ["Cape Town"]);
   assert.deepEqual(wc.tables[1].rows.map((row) => row.device), ["pc2"]);

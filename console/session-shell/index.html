@@ -136,6 +136,13 @@
     .sub-scroll .restore { color: var(--blue); font-weight: 600; }
     .sub-scroll .restore:disabled { color: var(--muted); font-weight: 500; cursor: default; background: none; }
     .sub-scroll hr { margin: 4px 6px; border: 0; border-top: 1px solid var(--line); }
+    #user-sessions { min-width: 230px; }
+    #user-sessions .session { flex-direction: column; align-items: flex-start; gap: 1px; }
+    #user-sessions .session small { color: var(--muted); font-size: 12px; font-weight: 500; }
+    #user-sessions .session:disabled { cursor: default; background: none; color: var(--muted); }
+    #user-sessions .session.on::after { position: absolute; right: 12px; margin-top: 6px; }
+    #user-sessions .session.on { position: relative; padding-right: 34px; }
+    #user-sessions .signin { color: var(--blue); font-weight: 600; }
     .fly.tools { width: 300px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; overflow: hidden; }
     .fly.tools.on { display: flex; }
     .tool-search {
@@ -436,6 +443,10 @@
       <div class="fly dark" id="fly-session">
         <p class="who" id="who"></p>
         <button type="button" id="s-invite"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M19 8v6M22 11h-6"/></svg>Invite Technician</button>
+        <div class="has-sub win-only" id="s-user">
+          <button type="button"><svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="3.5"/><path d="M2 20v-1.5A4.5 4.5 0 0 1 6.5 14h3A4.5 4.5 0 0 1 14 18.5V20M15 4.5a3.5 3.5 0 0 1 0 7M17 14a4.5 4.5 0 0 1 4.5 4.5V20"/><path d="m18 6 2 2-2 2"/></svg>Switch User<span class="grow">›</span></button>
+          <div class="sub"><div class="sub-scroll" id="user-sessions"></div></div>
+        </div>
         <button type="button" id="s-alttab"><svg viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/></svg>Send Alt+Tab</button>
         <button type="button" id="s-paste"><svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M9 12v-1h6v1M12 11v6M11 17h2"/></svg>Send Clipboard Keystrokes</button>
         <button type="button" id="s-copy"><svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 10v7M9 14l3 3 3-3"/></svg>Copy Remote Clipboard</button>
@@ -909,9 +920,10 @@
     }
 
     function reconnected() {
+      var done = reconnect && reconnect.done;
       stopReconnect();
       prepared = false;
-      toast("Reconnected to " + title + ".");
+      toast(done || "Reconnected to " + title + ".");
     }
 
     function canResume() {
@@ -1015,7 +1027,8 @@
       var button = page && page.getElementById("connectbutton1");
       if (!win || win.desktop || !button || button.disabled) return;
       reconnect.next = Date.now() + 8000;
-      button.click();
+      if (typeof reconnect.tsid === "number" && typeof win.connectDesktop === "function") win.connectDesktop(null, 1, reconnect.tsid);
+      else button.click();
     }
 
     function deviceGone() {
@@ -1473,6 +1486,168 @@
       });
     }
 
+    var SESSIONS_TAG = 78;
+    var sessionList = null;
+
+    function sessionName(s) {
+      if (!s.Username) return "Sign-in screen";
+      return s.Domain ? s.Domain + "\\" + s.Username : s.Username;
+    }
+
+    function sessionWhere(s) {
+      var station = String(s.StationName || "");
+      var where = /^console$/i.test(station) ? "At the screen" : /^rdp/i.test(station) ? "Remote Desktop" : station || "Session";
+      return where + " · " + (s.State === "Active" ? "active" : s.State === "Disconnected" ? "disconnected" : "signed in");
+    }
+
+    function sessionNote(box, text) {
+      box.textContent = "";
+      var note = document.createElement("p");
+      note.className = "sub-note";
+      note.textContent = text;
+      box.appendChild(note);
+    }
+
+    function listSessions(win) {
+      return new Promise(function (resolve, reject) {
+        hookMesh(win);
+        var timer = setTimeout(function () {
+          sessionList = null;
+          reject(new Error("The computer did not list its sessions."));
+        }, 10000);
+        sessionList = function (data) {
+          clearTimeout(timer);
+          sessionList = null;
+          var all = [];
+          for (var key in data || {}) {
+            var s = data[key];
+            if (s && typeof s.SessionId === "number" && s.SessionId > 0) all.push(s);
+          }
+          resolve(all);
+        };
+        win.meshserver.send({ action: "msg", type: "userSessions", nodeid: win.currentNode._id, tag: SESSIONS_TAG });
+      });
+    }
+
+    function paintSessions() {
+      var box = document.getElementById("user-sessions");
+      var win = live();
+      if (!win) {
+        sessionNote(box, "The remote connection is not ready yet.");
+        return;
+      }
+      if (box.dataset.busy === "1") return;
+      box.dataset.busy = "1";
+      sessionNote(box, "Reading signed-in users…");
+      listSessions(win).then(function (all) {
+        box.dataset.busy = "";
+        box.textContent = "";
+        var current = win.desktop && win.desktop.options ? win.desktop.options.tsid : null;
+        var viewable = all.filter(function (s) { return s.State === "Active" || s.State === "Connected" || /^console$/i.test(s.StationName || ""); });
+        var parked = all.filter(function (s) { return viewable.indexOf(s) < 0 && s.Username; });
+        viewable.sort(function (a, b) { return (/^console$/i.test(b.StationName || "") ? 1 : 0) - (/^console$/i.test(a.StationName || "") ? 1 : 0); });
+        viewable.forEach(function (s) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "session";
+          var on = typeof current === "number" ? current === s.SessionId : /^console$/i.test(s.StationName || "");
+          button.classList.toggle("on", on);
+          var strong = document.createElement("span");
+          strong.textContent = sessionName(s);
+          var small = document.createElement("small");
+          small.textContent = sessionWhere(s);
+          button.appendChild(strong);
+          button.appendChild(small);
+          button.onclick = function () { if (!on) viewSession(s); else closeFly(); };
+          box.appendChild(button);
+        });
+        parked.forEach(function (s) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "session";
+          button.disabled = true;
+          button.title = "Disconnected sessions have no screen to show until the user signs back in.";
+          var strong = document.createElement("span");
+          strong.textContent = sessionName(s);
+          var small = document.createElement("small");
+          small.textContent = sessionWhere(s) + " · not viewable";
+          button.appendChild(strong);
+          button.appendChild(small);
+          box.appendChild(button);
+        });
+        if (!viewable.length && !parked.length) sessionNote(box, "Nobody is signed in.");
+        box.appendChild(document.createElement("hr"));
+        var signin = document.createElement("button");
+        signin.type = "button";
+        signin.className = "signin";
+        signin.textContent = "Go to sign-in screen";
+        signin.onclick = signinScreen;
+        box.appendChild(signin);
+      }, function (error) {
+        box.dataset.busy = "";
+        sessionNote(box, error.message);
+      });
+    }
+
+    function switchRequest(payload) {
+      if (!deviceId || !consoleOrigin) return Promise.reject(new Error("Close this window and click Connect again to switch user."));
+      return fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-switch", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          if (!response.ok) throw new Error(body.error || "Switch user did not start.");
+          return body;
+        });
+      }, function () { throw new Error("Could not reach the console. Switch user was not sent."); });
+    }
+    function reconnectTo(tsid, heading, text, done) {
+      var win = meshWindow();
+      reconnect = { since: Date.now(), next: Date.now() + 1200, tsid: tsid, done: done };
+      overlay(heading, text);
+      if (win && win.desktop && typeof win.connectDesktop === "function") win.connectDesktop(null);
+    }
+
+    function viewSession(s) {
+      var name = sessionName(s);
+      closeFly();
+      switchRequest({ action: "view", user: name, station: String(s.StationName || "") }).then(function () {
+        reconnectTo(s.SessionId, "Switching to " + name + "…", "Connecting to " + name + "'s session on " + title + ". Nobody is signed out.", "Now viewing " + name + "'s session.");
+      }, function (error) { toast(error.message); });
+    }
+
+    var SIGNIN_SCRIPT = [
+      "$ErrorActionPreference = 'Stop'",
+      "Add-Type -Namespace DF -Name Wts -MemberDefinition '[DllImport(\"wtsapi32.dll\", SetLastError=true)] public static extern bool WTSDisconnectSession(IntPtr server, int sessionId, bool wait); [DllImport(\"kernel32.dll\")] public static extern int WTSGetActiveConsoleSessionId();'",
+      "$id = [DF.Wts]::WTSGetActiveConsoleSessionId()",
+      "if ($id -lt 1) { Write-Output 'Nobody is at the screen.'; exit 1 }",
+      "if ([DF.Wts]::WTSDisconnectSession([IntPtr]::Zero, $id, $false)) { Write-Output 'OK' } else { Write-Output ('Windows refused: ' + (New-Object ComponentModel.Win32Exception).Message); exit 1 }"
+    ].join("\n");
+
+    function signinScreen() {
+      var win = live();
+      closeFly();
+      if (!win) {
+        toast("The remote connection is not ready yet.");
+        return;
+      }
+      var server = /server/i.test(String((win.currentNode && win.currentNode.osdesc) || ""));
+      var text = "Whoever is at the screen of " + title + " stays signed in with their programs open, but sees the sign-in screen until they sign back in." +
+        (server ? " This is a server: anyone working at its console is interrupted." : "");
+      ask("Go to sign-in screen?", text, "Go to sign-in screen", true).then(function (yes) {
+        if (!yes) return;
+        switchRequest({ action: "signin", confirmServer: server }).then(function () {
+          return runMesh(2, powershellLine(SIGNIN_SCRIPT), 0);
+        }).then(function (result) {
+          var out = cleanOutput(result || "");
+          if (!/\bOK\b/.test(out)) throw new Error(out || "Windows did not switch to the sign-in screen.");
+          reconnectTo(null, "Opening the sign-in screen…", "The signed-in user's programs stay open. Reconnecting to the sign-in screen of " + title + ".", "Showing the sign-in screen. Sign in with any account.");
+        }).catch(function (error) { toast(error.message); });
+      });
+    }
+
     function press(name) {
       var win = live();
       if (!win) return;
@@ -1501,16 +1676,18 @@
       focusDesk();
     }
 
-    ["s-keys", "s-net", "s-monitor"].forEach(function (id) {
+    ["s-user", "s-keys", "s-net", "s-monitor"].forEach(function (id) {
       var node = document.getElementById(id);
       node.addEventListener("mouseenter", function () {
         if (id === "s-net") paintStats();
         if (id === "s-monitor") paintMonitors();
+        if (id === "s-user") paintSessions();
       });
       node.querySelector("button").onclick = function (event) {
         event.stopPropagation();
         if (id === "s-net") paintStats();
         if (id === "s-monitor") paintMonitors();
+        if (id === "s-user") paintSessions();
         var open = node.classList.contains("open");
         document.querySelectorAll("#fly-session .has-sub").forEach(function (other) { other.classList.remove("open"); });
         if (!open) node.classList.add("open");
@@ -1922,6 +2099,10 @@
       win.meshserver.onMessage = function (server, message) {
         if (message && message.action === "msg" && message.type === "getclip" && message.tag === REMOTE_CLIP_TAG) {
           if (clipReader) clipReader(typeof message.data === "string" ? message.data : "");
+          return;
+        }
+        if (message && message.action === "msg" && message.type === "userSessions" && message.tag == SESSIONS_TAG) {
+          if (sessionList) sessionList(message.data);
           return;
         }
         var done = message && message.responseid && waiting[message.responseid];

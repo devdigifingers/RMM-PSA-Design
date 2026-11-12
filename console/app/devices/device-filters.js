@@ -2,7 +2,16 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
-import { setDeviceSite } from "../actions";
+import { setDeviceProvince, setDeviceSite } from "../actions";
+
+const PROVINCES = [
+  "Eastern Cape", "Free State", "Gauteng", "KwaZulu-Natal", "Limpopo",
+  "Mpumalanga", "North West", "Northern Cape", "Western Cape",
+];
+
+function devices(count) {
+  return `${count} ${count === 1 ? "device" : "devices"}`;
+}
 
 export function CustomerFilter({ customers, value }) {
   const router = useRouter();
@@ -29,6 +38,7 @@ export function BulkSite() {
   const router = useRouter();
   const [picked, setPicked] = useState([]);
   const [site, setSite] = useState("");
+  const [province, setProvince] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -54,10 +64,27 @@ export function BulkSite() {
       setMessage(result.error);
       return;
     }
-    setMessage(value ? `Site set to ${value} on ${result.updated} ${result.updated === 1 ? "device" : "devices"}.` : `Site cleared on ${result.updated} ${result.updated === 1 ? "device" : "devices"}.`);
+    done(value ? `Site set to ${value} on ${devices(result.updated)}.` : `Site cleared on ${devices(result.updated)}.`);
+  }
+
+  async function saveProvince(value) {
+    setBusy(true);
+    setMessage("");
+    const result = await setDeviceProvince(picked, value === "ip" ? "" : value);
+    setBusy(false);
+    if (!result.ok) {
+      setMessage(result.error);
+      return;
+    }
+    done(value === "ip" ? `Province reset to the internet-address location on ${devices(result.updated)}.` : `Province set to ${value} on ${devices(result.updated)}.`);
+  }
+
+  function done(text) {
+    setMessage(text);
     document.querySelectorAll(".bulk-pick, .bulk-all").forEach((box) => { box.checked = false; });
     setPicked([]);
     setSite("");
+    setProvince("");
     router.refresh();
   }
 
@@ -71,6 +98,15 @@ export function BulkSite() {
       </label>
       <button type="submit" disabled={busy || !site.trim()}>{busy ? "Saving…" : "Set site"}</button>
       <button type="button" className="secondary" disabled={busy} onClick={() => save("")}>Clear site</button>
+      <label>
+        <span>Province</span>
+        <select value={province} onChange={(event) => setProvince(event.target.value)}>
+          <option value="">Choose…</option>
+          {PROVINCES.map((name) => <option key={name} value={name}>{name}</option>)}
+          <option value="ip">Use internet address</option>
+        </select>
+      </label>
+      <button type="button" disabled={busy || !province} onClick={() => saveProvince(province)}>Set province</button>
       {message ? <span className="error">{message}</span> : null}
     </form>
   );

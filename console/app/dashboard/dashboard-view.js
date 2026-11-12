@@ -241,6 +241,44 @@ function OsCard({ data, href }) {
   );
 }
 
+const PROVINCE_COLORS = {
+  Gauteng: "#3B82F6",
+  "Western Cape": "#22D3EE",
+  "KwaZulu-Natal": "#818CF8",
+  "Eastern Cape": "#F472B6",
+  "Free State": "#FB923C",
+  Limpopo: "#FACC15",
+  Mpumalanga: "#34D399",
+  "North West": "#A78BFA",
+  "Northern Cape": "#2DD4BF",
+};
+
+function ProvinceDonut({ loc, href }) {
+  const total = loc.zaCount;
+  const segments = loc.provinces
+    .filter((item) => item.count)
+    .sort((a, b) => b.count - a.count)
+    .map((item) => ({ key: item.name, label: item.name, value: item.count, pct: item.pct, color: PROVINCE_COLORS[item.name], href: href({ region: item.name }) }));
+  if (loc.provinceUnknown) {
+    segments.push({ key: "Unknown", label: "Province unknown", value: loc.provinceUnknown, pct: loc.provinceUnknownPct, color: "#94A3B8", href: href({ region: "Unknown" }) });
+  }
+  return (
+    <>
+      <div className="dx-chart-row">
+        <Donut segments={segments} centerValue={String(total)} centerLabel="in SA" />
+        <Legend items={segments} />
+      </div>
+      <p className="dx-note">
+        {loc.provinceSet === total
+          ? "Every province was set on the device."
+          : loc.provinceSet
+            ? `${loc.provinceSet} of ${total} set on the device; the rest from the internet address, which can show the provider's city.`
+            : "From each device's internet address, which can show the provider's city. Set the province on a device for an exact count."}
+      </p>
+    </>
+  );
+}
+
 function LocationCard({ data, href }) {
   const [mode, setMode] = useState("location");
   const loc = data.location;
@@ -248,7 +286,7 @@ function LocationCard({ data, href }) {
   return (
     <Card
       title="South Africa"
-      info="Devices by province, from each device's public IP at city level. A Site / Branch set on a device replaces its location when grouping by site."
+      info="Devices by province. A province set on the device wins; otherwise it comes from the device's public IP at city level. A Site / Branch set on a device replaces its location when grouping by site."
       report="locations"
       canReport={data.canReport}
       href={href({ country: "ZA" })}
@@ -264,10 +302,8 @@ function LocationCard({ data, href }) {
         <div className="dx-location">
           <ZaMap provinces={loc.provinces} hrefFor={(name) => href({ region: name })} />
           <div className="dx-location-lists">
-            <h3>Top provinces</h3>
-            {zaTotal ? (
-              <Bars items={loc.provinces.filter((item) => item.count).sort((a, b) => b.count - a.count).slice(0, 5).map((item) => ({ key: item.name, label: item.name, value: item.count, href: href({ region: item.name }) }))} />
-            ) : <p className="dx-note">No devices located in South Africa yet.</p>}
+            <h3>Provinces</h3>
+            {zaTotal ? <ProvinceDonut loc={loc} href={href} /> : <p className="dx-note">No devices located in South Africa yet.</p>}
             <h3>Top cities</h3>
             {loc.cities.length ? (
               <Bars items={loc.cities.map((item) => ({ key: `${item.city}-${item.region}`, label: `${item.city}${item.region ? `, ${item.region}` : ""}`, value: item.count, href: href({ city: item.city }) }))} />

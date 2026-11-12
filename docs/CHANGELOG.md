@@ -9,6 +9,25 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-10 · Platform 1.8.0
+
+**Province doughnut and a province you can set**
+- The dashboard's South Africa card shows a doughnut of devices per province (percentage of devices in South
+  Africa, with a grey "Province unknown" slice) in place of the Top provinces bars. Slices link to the filtered list.
+- A province set on a device (Device Overview → Province, or several at once from the device list) wins over the
+  internet-address location in the doughnut, map, filters, daily stats and grouping; "Use internet address" clears
+  it. The card says how many devices have a set province. `POST /v1/devices/province`, audit `device.province`.
+- Device locations report: the South Africa level shows the same province doughnut (screen and PDF), a note with
+  how many provinces were set on the device, and a Source column (Set / IP) in the devices table and CSV.
+- Session window, Session menu: **Switch User** (Windows). Lists the computer's Windows sessions (at the screen,
+  Remote Desktop, disconnected) and moves the remote view onto the one you pick without signing anyone out
+  (MeshCentral `tsid`). **Go to sign-in screen** disconnects the console session as SYSTEM (WTSDisconnectSession),
+  so Windows shows its sign-in screen and the view reconnects to it; admins only, server warning. Audited as
+  `remote.switch_user` / `remote.signin_screen` via `POST /v1/devices/:id/switch-user`.
+- Internet provider: Device Overview and Device Details show who owns the device's public IP (MaxMind
+  GeoLite2-ASN, refreshed with the City database; ip-api as fallback), e.g. "Vodacom (AS29975)". Looked up with
+  the location when the IP changes.
+
 ## 2026-11-10 · Platform 1.7.1
 
 **Hostname and "Reboot required" in the device Overview**

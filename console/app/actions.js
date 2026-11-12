@@ -1079,6 +1079,20 @@ export async function loadTimeline(scope, id, params = {}) {
   return { ok: true, ...body };
 }
 
+export async function loadChatTranscript(sessionId) {
+  if (!/^\d+$/.test(String(sessionId))) return { ok: false, error: "That conversation was not found." };
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/remote-sessions/${sessionId}/chat`, {
+    headers: { authorization: `Bearer ${token}` },
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || "That conversation is not available." };
+  return { ok: true, ...body };
+}
+
 export async function powerDevice(deviceId, action) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

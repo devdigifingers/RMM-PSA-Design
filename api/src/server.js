@@ -40,6 +40,18 @@ import {
   supportEventFrom,
 } from "./session-panel.js";
 import { deviceSession, livePanelSession, pingSession } from "./session-panel-store.js";
+import {
+  addMessage,
+  chatCursor,
+  chatInput,
+  chatTranscript,
+  claimChatLog,
+  finishedChats,
+  markRead,
+  setTyping,
+  technicianChatSession,
+  waitChatState,
+} from "./session-chat.js";
 import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
 import { handleScripts } from "./scripts.js";
 import { handlePublicBilling } from "./billing/documents.js";
@@ -2206,6 +2218,26 @@ function laterDropMeshSession(deviceId, orgId) {
   setTimeout(() => {
     dropMeshSession(deviceId, orgId).catch((error) => console.error(`panel drop: ${error.message}`));
   }, 4000);
+}
+
+// Puts each finished Session Panel chat on the device and ticket timelines as one entry with the message count.
+async function logFinishedChats() {
+  for (const row of await finishedChats(pool)) {
+    if (!(await claimChatLog(pool, row.id))) continue;
+    const orgId = Number(row.org_id);
+    const actorId = row.user_id == null ? null : Number(row.user_id);
+    const detail = { sessionId: Number(row.id), messages: Number(row.messages) };
+    await writeAudit(orgId, actorId, "remote.chat", "device", row.device_id == null ? null : String(row.device_id), {
+      ...detail,
+      ...(row.ticket_id == null ? {} : { ticketId: Number(row.ticket_id) }),
+    });
+    if (row.ticket_id != null) {
+      await ticketEvent(orgId, row.ticket_id, "remote_chat", {
+        actorId,
+        detail: { ...detail, ...(row.device_id == null ? {} : { deviceId: Number(row.device_id) }) },
+      });
+    }
+  }
 }
 
 let pauseSweepRunning = false;
@@ -6221,6 +6253,39 @@ const server = createServer(async (req, res) => {
       return send(res, 200, await deviceSupport(device, row.rows[0]?.os_name));
     }
 
+    // The customer's side of the chat, relayed by the device agent: GET long-polls, POST sends a message, a typing
+    // signal or a read mark. Only a session on this device in its own tenant that the customer hasn't ended.
+    if ((req.method === "GET" || req.method === "POST") && url.pathname === "/v1/agent/support/chat") {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const sessionId = Number(req.method === "POST" ? body.sessionId : url.searchParams.get("session"));
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return send(res, 400, { error: "Which session?" });
+      const row = await deviceSession(pool, sessionId, device.id, device.org_id);
+      if (!row) return send(res, 404, { error: "That session has ended." });
+      if (req.method === "GET") {
+        return send(res, 200, await waitChatState(pool, {
+          orgId: device.org_id, sessionId: row.id, side: "customer", cursor: chatCursor(url.searchParams), req,
+        }));
+      }
+      const input = chatInput(body);
+      if (input.error) return send(res, 400, { error: input.error });
+      if (input.kind === "typing") {
+        setTyping(row.id, "customer", input.on);
+        return send(res, 200, { ok: true });
+      }
+      if (input.kind === "read") {
+        await markRead(pool, { orgId: device.org_id, sessionId: row.id, side: "customer", id: input.id });
+        return send(res, 200, { ok: true });
+      }
+      const user = typeof body.user === "string" ? body.user.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) : "";
+      const message = await addMessage(pool, {
+        orgId: device.org_id, sessionId: row.id, sender: "customer", name: user || "Customer", text: input.text,
+      });
+      if (!message) return send(res, 409, { error: "That session has ended." });
+      return send(res, 201, { message });
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/agent/support/event") {
       const device = await deviceFrom(req);
       if (!device) return send(res, 401, { error: "Device login required." });
@@ -7598,6 +7663,49 @@ const server = createServer(async (req, res) => {
       return send(res, 200, await pingSession(pool, {
         deviceId: sessionPingMatch[1], orgId: actor.org_id, userId: actor.id, tsid, closed: body.closed === true,
       }));
+    }
+
+    // Chat with the customer's Session Panel from the session window: GET long-polls for new messages, POST sends a
+    // message, a typing signal or a read mark. Only the technician's own session in their own tenant.
+    const sessionChatMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/session-chat$/);
+    if ((req.method === "GET" || req.method === "POST") && sessionChatMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const row = await technicianChatSession(pool, { deviceId: sessionChatMatch[1], orgId: actor.org_id, userId: actor.id });
+      if (!row) return send(res, 404, { error: "There is no remote session on this device." });
+      const panel = panelOptions(row.panel_options).enabled && row.support_panel?.state === "ready";
+      if (req.method === "GET") {
+        const state = await waitChatState(pool, {
+          orgId: actor.org_id, sessionId: row.id, side: "technician", cursor: chatCursor(url.searchParams), req,
+        });
+        return send(res, 200, { ...state, panel, ended: row.ended_by != null });
+      }
+      const input = chatInput(await readJson(req));
+      if (input.error) return send(res, 400, { error: input.error });
+      if (input.kind === "typing") {
+        setTyping(row.id, "technician", input.on);
+        return send(res, 200, { ok: true });
+      }
+      if (input.kind === "read") {
+        await markRead(pool, { orgId: actor.org_id, sessionId: row.id, side: "technician", id: input.id });
+        return send(res, 200, { ok: true });
+      }
+      if (row.ended_by != null) return send(res, 409, { error: "The customer ended the session." });
+      const message = await addMessage(pool, {
+        orgId: actor.org_id, sessionId: row.id, sender: "technician", userId: actor.id, name: actor.name || actor.email, text: input.text,
+      });
+      if (!message) return send(res, 409, { error: "The session has ended." });
+      return send(res, 201, { message });
+    }
+
+    // The saved conversation of one remote session, for the timeline.
+    const sessionTranscriptMatch = url.pathname.match(/^\/v1\/remote-sessions\/(\d+)\/chat$/);
+    if (req.method === "GET" && sessionTranscriptMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const transcript = await chatTranscript(pool, { orgId: actor.org_id, sessionId: sessionTranscriptMatch[1] });
+      if (!transcript) return send(res, 404, { error: "That conversation was not found." });
+      return send(res, 200, transcript);
     }
 
     const deviceSwitchMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/switch-user$/);
@@ -10563,6 +10671,7 @@ server.listen(port, "127.0.0.1", () => {
     sweepSupport();
     enforcePauses();
   }, 15000);
+  setInterval(() => logFinishedChats().catch((error) => console.error(`chat timeline: ${error.message}`)), 60000);
   setTimeout(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 60000);
   setInterval(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 600000);
   runDueExports();

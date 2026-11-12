@@ -9,6 +9,22 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-12 · Platform 1.10.0
+
+**Session Panel, Phase B: chat (pilot: POS-3316E-Setup only)**
+- The technician and the person at the computer can chat during a remote session. On a device whose Session Panel
+  is ready, the session window's **Chat with User** uses the panel instead of opening a MeshCentral chat window on
+  the computer; every other device keeps the MeshCentral chat as before.
+- Session window: messages arrive within about a second (long-poll through `GET /devices/:id/session-chat` on the
+  console, `GET /v1/devices/:id/session-chat` on the API), with "typing" dots and "Seen" under the last message the
+  customer read. The chat window opens on its own when the customer writes first. Closing it only hides it.
+- Messages are stored with the session (`remote_session_messages`, at most 2,000 characters each, only the session's
+  own technician in its own tenant can read or write them; nothing can be sent once the customer ends the session).
+- Timelines: when the session is over (customer ended it, or the session window has been closed for 10 minutes), one
+  entry per session, "chatted with the customer during a remote session (N messages)", on the device timeline, and on
+  the ticket when the session was opened from one. **View chat** shows the whole conversation
+  (`GET /v1/remote-sessions/:id/chat`). Audited as `remote.chat`.
+
 ## 2026-11-12 · Platform 1.9.0
 
 **Session Panel, Phase A (pilot: POS-3316E-Setup only)**
@@ -346,6 +362,16 @@ earlier sections have dates only. Agent versions are separate and listed under [
 
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.8.0 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
+- Includes 1.7.2. While a session is live on a tenant that shows the panel, keeps one long-poll open to
+  `/v1/agent/support/chat` and passes the conversation to the tray with its state; the tray's messages, typing and
+  read marks go back through the pipe (`chat`), only for the session that tray can see.
+- Support app 1.1.0: a **Chat** section in the panel (open by default, can be folded): messages with the
+  technician's name and time, links that open in the browser, "… is typing", "Seen" under the last message the
+  technician read, Enter to send and Shift+Enter for a new line, 2,000 characters (count shown near the limit).
+  Unread technician messages show as a red number on the Chat heading, on the collapsed tab and on the tray icon
+  (tooltip "N new messages").
 
 **1.7.2 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
 - Includes 1.7.1. Sends a live session to the tray in the session it was opened on, or in the console session when

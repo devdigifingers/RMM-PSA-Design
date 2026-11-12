@@ -22,6 +22,7 @@ export const EVENT_GROUPS = {
   migrated: "changes",
   remote_start: "remote",
   remote_end: "remote",
+  remote_chat: "remote",
   command: "remote",
   command_result: "remote",
   time: "time",
@@ -126,6 +127,11 @@ export function timelineItem(row, lookups = {}) {
   if (row.kind === "remote_start") {
     item.device = lookups.devices?.get(idOrNull(detail.deviceId)) || null;
     item.user = detail.user || null;
+    return item;
+  }
+  if (row.kind === "remote_chat") {
+    item.chatSessionId = idOrNull(detail.sessionId);
+    item.messages = Number(detail.messages) || 0;
     return item;
   }
   for (const key of ["from", "to", "minutes", "billable", "note", "command", "exitCode", "output", "template", "target", "subject", "into", "tickets", "minutesLeft", "dueAt", "rule", "changes", "rating", "sourceTenant", "rollback"]) {

@@ -69,6 +69,7 @@ func supportLoop(ctx context.Context, api string, state savedState) {
 	support.state = state
 	support.Unlock()
 	go supportPipeServer(ctx)
+	go chatLoop(ctx)
 	var lastPoll, lastInstall time.Time
 	for {
 		select {
@@ -564,6 +565,10 @@ type pipeRequest struct {
 	Type      string `json:"type"`
 	Detail    string `json:"detail"`
 	SessionID int64  `json:"sessionId"`
+	ChatAfter int64  `json:"chatAfter"`
+	Text      string `json:"text"`
+	Typing    *bool  `json:"typing"`
+	Read      int64  `json:"read"`
 }
 
 // serveTray answers one tray app. The client must be our DFSupport.exe, in the session it was started in, holding
@@ -579,7 +584,7 @@ func serveTray(handle windows.Handle) {
 	if windows.ProcessIdToSessionId(pid, &session) != nil || !strings.EqualFold(processPath(pid), supportExe) {
 		return
 	}
-	reader := bufio.NewReaderSize(file, 16<<10)
+	reader := bufio.NewReaderSize(file, 64<<10)
 	writer := json.NewEncoder(file)
 	greeted := false
 	for {
@@ -617,9 +622,11 @@ func serveTray(handle windows.Handle) {
 		var reply any
 		switch req.Op {
 		case "state":
-			reply = trayState(session)
+			reply = trayState(session, req.ChatAfter)
 		case "event":
 			reply = trayEvent(session, req)
+		case "chat":
+			reply = trayChat(session, req)
 		default:
 			reply = map[string]any{"ok": false, "error": "unknown request"}
 		}
@@ -631,7 +638,7 @@ func serveTray(handle windows.Handle) {
 
 // trayState is what one session's tray sees: the live session reaches the session the technician is viewing and
 // the session at the physical screen, so whoever sits at the computer always sees it.
-func trayState(session uint32) map[string]any {
+func trayState(session uint32, chatAfter int64) map[string]any {
 	info := supportLatest.Load()
 	if info == nil {
 		return map[string]any{"ok": true}
@@ -645,6 +652,9 @@ func trayState(session uint32) map[string]any {
 	}
 	if keys, live := info.liveSession(); live && sessionSees(keys, session) {
 		out["session"] = info.Session
+		if info.Panel {
+			out["chat"] = chatView(keys.ID, chatAfter)
+		}
 	}
 	return out
 }

@@ -251,6 +251,7 @@
     }
     .bubble time { display: block; margin-top: 3px; font-size: 11px; opacity: 0.65; text-align: right; }
     .bubble.me { align-self: flex-end; background: #7c3aed; color: #fff; border-bottom-right-radius: 6px; }
+    .bubble.me.seen time::after { content: " · Seen"; }
     .bubble.them { align-self: flex-start; background: #fff; color: #0f172a; border-bottom-left-radius: 6px; box-shadow: 0 1px 2px rgba(16,40,70,0.1); }
     .chat-note {
       align-self: center; margin: 6px 0; padding: 4px 12px; border-radius: 999px;
@@ -581,7 +582,7 @@
         </header>
         <div class="chat-log" id="chat-log" aria-live="polite"></div>
         <form class="chat-compose" id="chat-form">
-          <textarea id="chat-text" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Message"></textarea>
+          <textarea id="chat-text" rows="1" maxlength="2000" placeholder="Write a message…" aria-label="Message"></textarea>
           <button type="submit" id="chat-send" aria-label="Send" title="Send">
             <svg viewBox="0 0 24 24"><path d="M4 12l16-8-6 16-2.5-6.5z" fill="currentColor"/></svg>
           </button>
@@ -1612,7 +1613,7 @@
 
     // Check-ins tell the device's Session Panel that this window is open; the reply says when the customer paused or
     // ended the session from the panel.
-    var customer = { paused: false, ended: false, busy: false, next: 0, tsid: null };
+    var customer = { paused: false, ended: false, busy: false, next: 0, tsid: null, panel: null };
     var PING_EVERY = 3000;
 
     function viewedTsid() {
@@ -1637,6 +1638,8 @@
         customer.busy = false;
         customer.next = Date.now() + PING_EVERY;
         if (!body) return;
+        customer.panel = body.panel;
+        if (body.panel === "ready" && !body.endedBy) panelChatStart();
         if (body.endedBy === "customer") customerEnded();
         else if (body.paused) customerPaused();
         else if (customer.paused) customerResumed();
@@ -1676,6 +1679,7 @@
       awaiting = null;
       dropped = true;
       leaveDesk();
+      panelChatStop("The customer ended the session");
       document.getElementById("reconnect").hidden = true;
       closeFly();
       hideDesk();
@@ -2527,7 +2531,10 @@
     function nodeName(win) {
       return (win && win.currentNode && win.currentNode.name) || title;
     }
-    var chat = { socket: null, state: 0, wanted: false, typing: false, fails: 0, device: "", lines: [] };
+    var chat = { socket: null, state: 0, wanted: false, typing: false, typedAt: 0, fails: 0, device: "", lines: [], mode: "" };
+    // The Session Panel channel: kept open in the background once the panel is ready, so the customer can start the
+    // conversation too. "after" and "theirRead" are what this window already shows.
+    var panelChat = { on: false, stopped: false, after: 0, theirTyping: false, theirRead: 0, myRead: 0, seen: {}, fails: 0, abort: null, gen: 0 };
 
     function chatWho() {
       return person ? person.replace(/^.*\\/, "") : "the user";
@@ -2568,11 +2575,11 @@
       return row;
     }
 
-    function chatLine(kind, text) {
+    function chatLine(kind, text, at) {
       var log = document.getElementById("chat-log");
       var empty = document.getElementById("chat-empty");
       if (empty) empty.remove();
-      var now = new Date();
+      var now = at ? new Date(at) : new Date();
       var node = document.createElement("div");
       if (kind === "note") {
         node.className = "chat-note";
@@ -2588,6 +2595,7 @@
       chatTypingRow();
       chat.lines.push("[" + chatTime(now) + "] " + (kind === "me" ? "You" : kind === "them" ? chatWho() : "—") + ": " + text);
       chatScroll();
+      return node;
     }
 
     function chatEmpty() {
@@ -2600,8 +2608,11 @@
         "<path d=\"M13 9h16a7 7 0 0 1 7 7v8a7 7 0 0 1-7 7H19l-7 6v-6.3A7 7 0 0 1 6 24v-8a7 7 0 0 1 7-7z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linejoin=\"round\"/>" +
         "<path d=\"M38 17a6 6 0 0 1 4 5.7v6.6A6 6 0 0 1 37 35v5l-6-5h-6\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" opacity=\"0.55\"/></svg>" +
         "<strong></strong><span></span><div class=\"chat-wait\"><i></i><i></i><i></i></div>";
-      box.querySelector("strong").textContent = "Starting the chat";
-      box.querySelector("span").textContent = "A chat window is opening on " + chat.device + ". The conversation starts as soon as " + chatWho() + " sees it.";
+      box.querySelector("strong").textContent = chat.mode === "panel" ? "Chat with " + chatWho() : "Starting the chat";
+      box.querySelector("span").textContent = chat.mode === "panel"
+        ? "Messages appear in the Session Panel on " + chat.device + "."
+        : "A chat window is opening on " + chat.device + ". The conversation starts as soon as " + chatWho() + " sees it.";
+      if (chat.mode === "panel") box.querySelector(".chat-wait").remove();
       log.appendChild(box);
       chatTypingRow();
     }
@@ -2617,7 +2628,15 @@
     }
 
     function chatOutText(on) {
-      if (chat.typing === on || chat.state !== 2) return;
+      if (chat.state !== 2) return;
+      if (chat.mode === "panel") {
+        if (chat.typing === on && (!on || Date.now() - chat.typedAt < 4000)) return;
+        chat.typing = on;
+        chat.typedAt = Date.now();
+        panelChatPost({ typing: on });
+        return;
+      }
+      if (chat.typing === on) return;
       chat.typing = on;
       chatSend({ action: "outtext", value: on });
     }
@@ -2720,6 +2739,152 @@
       if (socket) try { socket.close(); } catch (e) {}
     }
 
+    function chatHeader(win) {
+      chat.device = nodeName(win);
+      var who = chatWho();
+      document.getElementById("chat-name").textContent = person ? who : chat.device;
+      document.getElementById("chat-avatar").textContent = person
+        ? who.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map(function (part) { return part.charAt(0).toUpperCase(); }).join("")
+        : "DF";
+    }
+
+    function panelChatUrl(query) {
+      return consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-chat" + (query || "");
+    }
+
+    function panelChatPost(data) {
+      return fetch(panelChatUrl(), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(data)
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          if (!response.ok) throw new Error(body.error || "Not sent.");
+          return body;
+        });
+      });
+    }
+
+    function panelChatShown() {
+      var box = document.getElementById("chat-win");
+      return chat.mode === "panel" && !box.hidden && !box.classList.contains("min") && document.visibilityState === "visible";
+    }
+
+    function panelChatSeen() {
+      var mine = document.querySelectorAll("#chat-log .bubble.me[data-id]");
+      for (var i = 0; i < mine.length; i++) {
+        mine[i].classList.toggle("seen", Number(mine[i].getAttribute("data-id")) <= panelChat.theirRead);
+      }
+    }
+
+    function panelChatMarkRead() {
+      if (!panelChatShown() || panelChat.after <= panelChat.myRead) return;
+      panelChat.myRead = panelChat.after;
+      panelChatPost({ read: panelChat.after }).catch(function () {});
+    }
+
+    function panelChatAdd(message) {
+      if (panelChat.seen[message.id]) return;
+      panelChat.seen[message.id] = true;
+      var node = chatLine(message.from === "technician" ? "me" : "them", message.text, message.at);
+      if (message.from === "technician") node.setAttribute("data-id", String(message.id));
+    }
+
+    // Switches the chat window to the Session Panel channel; the next poll reloads the conversation from the start.
+    function panelChatOpen(focus) {
+      var box = document.getElementById("chat-win");
+      if (chat.mode !== "panel") {
+        if (chat.wanted) chatEnd();
+        chat.mode = "panel";
+        chat.wanted = true;
+        chat.state = customer.ended ? 0 : 2;
+        chat.typing = false;
+        chat.lines = [];
+        chatHeader(meshNode());
+        document.getElementById("chat-text").value = "";
+        chatEmpty();
+        panelChat.seen = {};
+        panelChat.after = 0;
+        panelChat.theirRead = 0;
+        panelChat.gen++;
+        if (panelChat.abort) panelChat.abort.abort();
+      }
+      chatState(customer.ended ? "The customer ended the session" : "Online in the Session Panel", !customer.ended);
+      box.hidden = false;
+      box.classList.remove("min");
+      if (focus && chat.state === 2) document.getElementById("chat-text").focus();
+      panelChatMarkRead();
+    }
+
+    function panelChatApply(body) {
+      var messages = body.messages || [];
+      var fromCustomer = false;
+      messages.forEach(function (message) {
+        if (message.id > panelChat.after) panelChat.after = message.id;
+        if (message.from === "customer" && !panelChat.seen[message.id]) fromCustomer = true;
+      });
+      panelChat.theirTyping = body.typing === true;
+      panelChat.theirRead = Number(body.read) || 0;
+      if (chat.mode !== "panel") {
+        if (fromCustomer) panelChatOpen(false);
+        return;
+      }
+      messages.forEach(panelChatAdd);
+      if (fromCustomer && document.getElementById("chat-win").hidden) panelChatOpen(false);
+      chatTyping(panelChat.theirTyping);
+      panelChatSeen();
+      panelChatMarkRead();
+    }
+
+    function panelChatPoll() {
+      if (!panelChat.on) return;
+      var gen = panelChat.gen;
+      var controller = typeof AbortController === "function" ? new AbortController() : null;
+      panelChat.abort = controller;
+      var query = "?after=" + panelChat.after + "&read=" + panelChat.theirRead + "&wait=1" + (panelChat.theirTyping ? "&typing=1" : "");
+      fetch(panelChatUrl(query), { credentials: "include", signal: controller ? controller.signal : undefined }).then(function (response) {
+        if (response.status === 401 || response.status === 403) return { signedOut: true };
+        if (!response.ok) throw new Error("chat " + response.status);
+        return response.json();
+      }).then(function (body) {
+        panelChat.abort = null;
+        if (body.signedOut) {
+          panelChatStop("Sign in to the console again to chat");
+          return;
+        }
+        panelChat.fails = 0;
+        if (gen === panelChat.gen) panelChatApply(body);
+        if (body.ended) {
+          panelChatStop("The customer ended the session");
+          return;
+        }
+        setTimeout(panelChatPoll, 50);
+      }, function () {
+        var aborted = !!(controller && controller.signal.aborted);
+        panelChat.abort = null;
+        if (panelChat.on) setTimeout(panelChatPoll, aborted ? 0 : Math.min(15000, 2000 * ++panelChat.fails));
+      });
+    }
+
+    function panelChatStart() {
+      if (panelChat.on || panelChat.stopped || !deviceId || !consoleOrigin) return;
+      panelChat.on = true;
+      panelChatPoll();
+    }
+
+    function panelChatStop(reason) {
+      panelChat.stopped = true;
+      panelChat.on = false;
+      if (panelChat.abort) panelChat.abort.abort();
+      if (chat.mode !== "panel") return;
+      chat.state = 0;
+      chatTyping(false);
+      chatState(reason, false);
+    }
+
+    document.addEventListener("visibilitychange", panelChatMarkRead);
+
     document.getElementById("c-chat").onclick = function () {
       closeFly();
       var win = meshNode();
@@ -2727,17 +2892,18 @@
         toast("The remote connection is not ready yet.");
         return;
       }
+      if (chat.mode === "panel" || (customer.panel === "ready" && !customer.ended && !(chat.wanted && chat.mode === "mesh"))) {
+        panelChatStart();
+        panelChatOpen(true);
+        return;
+      }
       var panel = document.getElementById("chat-win");
       if (!chat.wanted) {
+        chat.mode = "mesh";
         chat.wanted = true;
         chat.fails = 0;
         chat.lines = [];
-        chat.device = nodeName(win);
-        var who = chatWho();
-        document.getElementById("chat-name").textContent = person ? who : chat.device;
-        document.getElementById("chat-avatar").textContent = person
-          ? who.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map(function (part) { return part.charAt(0).toUpperCase(); }).join("")
-          : "DF";
+        chatHeader(win);
         document.getElementById("chat-text").value = "";
         chatEmpty();
         chatConnect();
@@ -2766,6 +2932,26 @@
       var box = document.getElementById("chat-text");
       var text = box.value.trim();
       if (!text || chat.state !== 2) return;
+      if (chat.mode === "panel") {
+        if (chat.sending) return;
+        chat.sending = true;
+        document.getElementById("chat-send").disabled = true;
+        panelChatPost({ text: text }).then(function (body) {
+          chat.sending = false;
+          chat.typing = false;
+          if (body.message) panelChatAdd(body.message);
+          panelChatSeen();
+          box.value = "";
+          box.style.height = "40px";
+          box.style.overflowY = "hidden";
+          box.focus();
+        }, function (error) {
+          chat.sending = false;
+          chatLine("note", "Not sent: " + (error.message || "try again."));
+          document.getElementById("chat-send").disabled = chat.state !== 2 || !box.value.trim();
+        });
+        return;
+      }
       if (!chatSend({ action: "chat", msg: text })) {
         chatLine("note", "Not sent. The chat is reconnecting.");
         return;
@@ -2794,8 +2980,15 @@
     };
     document.getElementById("chat-min").onclick = function () {
       document.getElementById("chat-win").classList.toggle("min");
+      panelChatMarkRead();
     };
     document.getElementById("chat-close").onclick = function () {
+      if (chat.mode === "panel") {
+        chatOutText(false);
+        document.getElementById("chat-win").hidden = true;
+        focusDesk();
+        return;
+      }
       var sure = chat.state === 2
         ? ask("End the chat?", chatWhoStart() + " will see that you left the conversation.", "End chat", true)
         : Promise.resolve(true);

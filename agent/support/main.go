@@ -14,7 +14,7 @@ import (
 	"os"
 )
 
-const appVersion = "1.0.8"
+const appVersion = "1.1.0"
 
 func main() {
 	mode := "tray"

@@ -70,6 +70,20 @@ func chromiumOf(view webview2.WebView) *edge.Chromium {
 	return chromium
 }
 
+// safeLink allows what the panel may open: phone and email links, and web links the technician sent in the chat.
+func safeLink(target string) bool {
+	if len(target) > 2048 || strings.ContainsAny(target, "\"\r\n\t ") {
+		return false
+	}
+	lower := strings.ToLower(target)
+	for _, prefix := range []string{"tel:", "mailto:", "https://", "http://"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func runPanel() error {
 	dpiAware()
 	link := &panelLink{out: json.NewEncoder(os.Stdout)}
@@ -101,6 +115,7 @@ func runPanel() error {
 	// Only touched on the window's thread: Bind callbacks, Dispatch and the window procedure.
 	height, collapsed, at := 360, false, loadPlace()
 	loaded, lastState := false, ""
+	var pendingChat []string
 	chromium := chromiumOf(view)
 	if chromium == nil {
 		panelLog("can't reach the WebView2 host; the page may stay hidden")
@@ -160,12 +175,16 @@ func runPanel() error {
 			if lastState != "" {
 				view.Eval("window.dfState(" + lastState + ")")
 			}
+			for _, chat := range pendingChat {
+				view.Eval("window.dfChat(" + chat + ")")
+			}
+			pendingChat = nil
 			link.send(map[string]any{"t": "opened", "hiddenFromCapture": hidden})
 		case "link":
-			if target, ok := message["href"].(string); ok && (strings.HasPrefix(target, "tel:") || strings.HasPrefix(target, "mailto:")) {
+			if target, ok := message["href"].(string); ok && safeLink(target) {
 				openLink(target)
 			}
-		case "event":
+		case "event", "chat", "chatTyping", "chatRead":
 			link.send(message)
 		}
 	})
@@ -216,6 +235,16 @@ func runPanel() error {
 				})
 			case "result":
 				view.Dispatch(func() { view.Eval("window.dfResult && window.dfResult(" + payload + ")") })
+			case "chat":
+				view.Dispatch(func() {
+					if loaded {
+						view.Eval("window.dfChat(" + payload + ")")
+					} else {
+						pendingChat = append(pendingChat, payload)
+					}
+				})
+			case "chatResult":
+				view.Dispatch(func() { view.Eval("window.dfChatResult && window.dfChatResult(" + payload + ")") })
 			}
 		}
 	}()

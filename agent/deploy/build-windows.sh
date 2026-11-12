@@ -3,7 +3,7 @@
 # windows.json and windows-support.json, which offers them to every outdated device. Run as root with the source
 # unpacked from /tmp/dfagent-src.tgz:
 #   tar czf /tmp/dfagent-src.tgz -C agent --exclude=support/assets/icon-source.png --exclude=support/assets/mark.png \
-#     go.mod go.sum main.go os_linux.go os_windows.go patch_helper_linux.go support_windows.go support
+#     go.mod go.sum main.go os_linux.go os_windows.go patch_helper_linux.go support_windows.go support_chat_windows.go support
 #   scp /tmp/dfagent-src.tgz agent/deploy/build-windows.sh df-a:/tmp/
 #   ssh df-a 'sudo bash /tmp/build-windows.sh'
 # Every build also publishes the remote support (Mesh) agent for the staging group as

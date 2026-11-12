@@ -119,6 +119,26 @@ type tray struct {
 	phone      string
 	email      string
 	technician string
+	unread     int
+	chat       trayChat
+}
+
+// trayChat is the session's conversation as this tray has it from the agent. read is how far the customer has
+// read in the panel; theirRead how far the technician has.
+type trayChat struct {
+	session   int64
+	on        bool
+	after     int64
+	messages  []json.RawMessage
+	fromTech  []int64
+	typing    bool
+	theirRead int64
+	read      int64
+}
+
+type chatHeader struct {
+	ID   int64  `json:"id"`
+	From string `json:"from"`
 }
 
 func runTray(key string) error {
@@ -258,7 +278,10 @@ func (app *tray) loop() {
 			pipe = next
 			trayLog("connected to the agent")
 		}
-		reply, err := pipe.call(map[string]any{"op": "state"})
+		app.mu.Lock()
+		after := app.chat.after
+		app.mu.Unlock()
+		reply, err := pipe.call(map[string]any{"op": "state", "chatAfter": after})
 		if err != nil {
 			trayLog("agent connection lost: %v", err)
 			pipe.close()
@@ -323,6 +346,7 @@ func (app *tray) apply(reply map[string]any) {
 	app.setContact(app.phoneItem, app.phone, "Call ")
 	app.setContact(app.emailItem, app.email, "Email ")
 
+	fresh, chatChanged := app.takeChat(keys.ID, reply["chat"])
 	if keys.ID == 0 {
 		if app.status != "idle" && app.status != "" {
 			trayLog("no live session")
@@ -347,11 +371,14 @@ func (app *tray) apply(reply map[string]any) {
 		app.panel.stop()
 		app.panel = nil
 	}
+	started := false
 	if app.panel == nil && app.failedFor != keys.ID {
 		if err := app.startPanel(keys.ID); err != nil {
 			trayLog("panel could not start: %v", err)
 			app.failedFor = keys.ID
 			go app.report("panel.failed", err.Error(), keys.ID)
+		} else {
+			started = true
 		}
 	}
 	if app.panel == nil {
@@ -359,6 +386,13 @@ func (app *tray) apply(reply map[string]any) {
 		return
 	}
 	app.showOpen(true)
+	if app.chat.on && (started || chatChanged) {
+		messages := fresh
+		if started {
+			messages = app.chat.messages
+		}
+		app.panel.send(map[string]any{"t": "chat", "messages": messages, "typing": app.chat.typing, "read": app.chat.theirRead})
+	}
 	state, _ := json.Marshal(map[string]any{"t": "state", "session": json.RawMessage(raw), "company": app.company, "phone": app.phone, "email": app.email})
 	if !bytes.Equal(state, app.panel.last) {
 		app.panel.last = state
@@ -389,24 +423,124 @@ func (app *tray) setContact(item *systray.MenuItem, value, label string) {
 	item.Show()
 }
 
+// setStatus updates the tray icon and tooltip, with the number of technician messages the customer hasn't read;
+// the caller holds app.mu.
 func (app *tray) setStatus(status, technician string) {
-	if status == app.status && technician == app.technician {
+	unread := app.unreadCount()
+	if status == app.status && technician == app.technician && unread == app.unread {
 		return
 	}
-	app.status, app.technician = status, technician
+	app.status, app.technician, app.unread = status, technician, unread
 	if !app.iconReady {
 		return
 	}
+	name, icon, tip := "idle", trayIdleIcon, "Digital Fingers Support: ready"
 	switch status {
 	case "live":
-		systray.SetIcon(trayLiveIcon)
-		systray.SetTooltip(clipTip("Digital Fingers Support: connected to " + technician))
+		name, icon, tip = "live", trayLiveIcon, "Digital Fingers Support: connected to "+technician
 	case "paused":
-		systray.SetIcon(trayPausedIcon)
-		systray.SetTooltip(clipTip("Digital Fingers Support: paused (" + technician + ")"))
+		name, icon, tip = "paused", trayPausedIcon, "Digital Fingers Support: paused ("+technician+")"
+	}
+	if unread == 1 {
+		tip = "1 new message · " + tip
+	} else if unread > 1 {
+		tip = fmt.Sprintf("%d new messages · %s", unread, tip)
+	}
+	systray.SetIcon(badgeIcon(name, icon, unread))
+	systray.SetTooltip(clipTip(tip))
+}
+
+func (app *tray) unreadCount() int {
+	count := 0
+	for _, id := range app.chat.fromTech {
+		if id > app.chat.read {
+			count++
+		}
+	}
+	return count
+}
+
+// takeChat adds what the agent sent since the last poll; the caller holds app.mu. It returns the new messages and
+// whether the panel needs an update.
+func (app *tray) takeChat(session int64, raw any) ([]json.RawMessage, bool) {
+	if session != app.chat.session {
+		app.chat = trayChat{session: session}
+	}
+	if session == 0 || raw == nil {
+		return nil, false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var view struct {
+		Messages []json.RawMessage `json:"messages"`
+		Typing   bool              `json:"typing"`
+		Read     int64             `json:"read"`
+	}
+	if json.Unmarshal(encoded, &view) != nil {
+		return nil, false
+	}
+	changed := !app.chat.on || view.Typing != app.chat.typing || view.Read != app.chat.theirRead
+	app.chat.on = true
+	app.chat.typing, app.chat.theirRead = view.Typing, view.Read
+	var fresh []json.RawMessage
+	for _, message := range view.Messages {
+		var head chatHeader
+		if json.Unmarshal(message, &head) != nil || head.ID <= app.chat.after {
+			continue
+		}
+		app.chat.after = head.ID
+		app.chat.messages = append(app.chat.messages, message)
+		if head.From == "technician" {
+			app.chat.fromTech = append(app.chat.fromTech, head.ID)
+		}
+		fresh = append(fresh, message)
+	}
+	if extra := len(app.chat.messages) - 500; extra > 0 {
+		app.chat.messages = append([]json.RawMessage(nil), app.chat.messages[extra:]...)
+	}
+	return fresh, changed || len(fresh) > 0
+}
+
+// chatFromPanel passes what the customer did in the chat to the agent: a message, typing, or reading up to an id.
+func (app *tray) chatFromPanel(child *panelChild, message map[string]any) {
+	request := map[string]any{"op": "chat", "sessionId": child.session}
+	switch message["t"] {
+	case "chat":
+		text, _ := message["text"].(string)
+		request["text"] = text
+	case "chatTyping":
+		request["typing"] = message["on"] == true
+	case "chatRead":
+		id, _ := message["id"].(float64)
+		if id <= 0 {
+			return
+		}
+		app.mu.Lock()
+		if app.chat.session == child.session && int64(id) > app.chat.read {
+			app.chat.read = int64(id)
+			app.setStatus(app.status, app.technician)
+		}
+		app.mu.Unlock()
+		request["read"] = int64(id)
 	default:
-		systray.SetIcon(trayIdleIcon)
-		systray.SetTooltip("Digital Fingers Support: ready")
+		return
+	}
+	app.mu.Lock()
+	pipe := app.pipe
+	app.mu.Unlock()
+	reply := map[string]any{"ok": false, "error": "The Digital Fingers agent is not running."}
+	if pipe != nil {
+		if answer, err := pipe.call(request); err == nil {
+			reply = answer
+		}
+	}
+	if message["t"] == "chat" {
+		if reply["ok"] != true {
+			trayLog("chat message not sent: %v", reply["error"])
+		}
+		child.send(map[string]any{"t": "chatResult", "ok": reply["ok"] == true, "error": reply["error"], "message": reply["message"]})
 	}
 }
 
@@ -501,6 +635,8 @@ func (app *tray) watchPanel(child *panelChild, out io.Reader) {
 			}
 		case "failed":
 			failure, _ = message["detail"].(string)
+		case "chat", "chatTyping", "chatRead":
+			go app.chatFromPanel(child, message)
 		case "event":
 			kind, _ := message["type"].(string)
 			if kind != "session.pause" && kind != "session.resume" && kind != "session.end" {

@@ -1671,3 +1671,22 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS mesh_consent integer;
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS panel_options jsonb NOT NULL DEFAULT '{}'::jsonb;
 -- The Mesh consent flags last set on the tenant's device group.
 ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_consent integer;
+
+-- Session Panel chat (Phase B): messages between the technician's session window and the customer's panel. They are
+-- kept with the session record. Read marks are the last message id each side has seen; chat_logged_at is set once
+-- the conversation is on the device and ticket timelines.
+CREATE TABLE IF NOT EXISTS remote_session_messages (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id) ON DELETE CASCADE,
+  session_id bigint NOT NULL REFERENCES remote_sessions (id) ON DELETE CASCADE,
+  sender text NOT NULL CHECK (sender IN ('technician', 'customer')),
+  user_id bigint REFERENCES users (id) ON DELETE SET NULL,
+  sender_name text NOT NULL DEFAULT '',
+  body text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 2000),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS remote_session_messages_session ON remote_session_messages (session_id, id);
+CREATE INDEX IF NOT EXISTS remote_session_messages_created ON remote_session_messages (created_at);
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS chat_read_technician bigint;
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS chat_read_customer bigint;
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS chat_logged_at timestamptz;

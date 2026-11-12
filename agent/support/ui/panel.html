@@ -56,11 +56,40 @@ button[disabled]{opacity:.55;cursor:default}
 .tab .chev{font-size:16px;color:#C7CBE6}
 body.collapsed .tab{display:flex}
 body.collapsed #panel{display:none}
+.badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#DC2626;color:#fff;font-size:11px;font-weight:700;line-height:1}
+.badge[hidden]{display:none}
+.tab .badge{position:absolute;top:6px;right:5px}
+.tab{position:relative}
+.chat[hidden]{display:none}
+.chat h4{margin:0}
+.chat-head{display:flex;align-items:center;gap:6px;width:100%;background:none;border:0;padding:0;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;text-align:left}
+.chat-head .chev{margin-left:auto;font-size:12px;transition:transform .15s}
+.chat.shut .chat-head .chev{transform:rotate(-90deg)}
+.chat.shut .chat-body{display:none}
+.chat-body{margin-top:8px}
+.log{max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:2px 2px 4px;user-select:text;-webkit-user-select:text;scrollbar-width:thin}
+.log .empty{margin:4px 0;text-align:center}
+.msg{max-width:84%;padding:6px 10px;border-radius:12px;font-size:12.5px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.them{align-self:flex-start;background:var(--soft);border:1px solid var(--line);border-bottom-left-radius:4px}
+.msg.mine{align-self:flex-end;background:#5B21B6;color:#fff;border-bottom-right-radius:4px}
+.msg a{color:inherit;text-decoration:underline;cursor:pointer}
+.msg .meta{display:block;margin-top:2px;font-size:10.5px;opacity:.7}
+.msg.mine .meta{text-align:right}
+.typing{min-height:16px;margin-top:2px}
+.compose{display:flex;gap:6px;align-items:flex-end;margin-top:4px}
+.compose textarea{flex:1;min-width:0;resize:none;height:32px;max-height:96px;padding:6px 9px;border:1px solid var(--chip);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;font-size:12.5px;line-height:1.4;user-select:text;-webkit-user-select:text}
+.compose textarea:focus{outline:2px solid #22D3EE;outline-offset:0;border-color:transparent}
+.compose button{border:0;border-radius:8px;background:#5B21B6;color:#fff;padding:7px 11px;font-size:12px}
+.chat-err{color:#dc2626;font-size:11.5px;margin-top:4px}
+.chat-err:empty{display:none}
+.count{text-align:right;margin-top:2px}
+.count:empty{display:none}
 </style>
 </head>
 <body>
 <button class="tab" id="tab" title="Show the Digital Fingers Remote Support panel" aria-label="Expand the support panel">
   <span class="chev">‹</span><img src="{{MARK}}" alt=""><span class="dot" id="tabDot"></span><span class="time" id="tabTime">00:00:00</span>
+  <span class="badge" id="tabBadge" hidden></span>
 </button>
 <div id="panel">
   <div class="hdr" id="hdr">
@@ -92,6 +121,19 @@ body.collapsed #panel{display:none}
         <div class="small" id="modeLine">Controlling your mouse and keyboard</div>
         <div class="small" id="startLine"></div>
       </div>
+    </div>
+  </div>
+  <div class="sec chat" id="chat" hidden>
+    <h4><button class="chat-head" id="chatHead" aria-expanded="true" aria-controls="chatBody">Chat <span class="badge" id="chatBadge" hidden></span><span class="chev">▾</span></button></h4>
+    <div class="chat-body" id="chatBody">
+      <div class="log" id="chatLog" aria-live="polite"></div>
+      <div class="small typing" id="chatTyping"></div>
+      <div class="compose">
+        <textarea id="chatText" rows="1" maxlength="2000" placeholder="Type a message…" aria-label="Message to your technician"></textarea>
+        <button id="chatSend" title="Send (Enter). Shift+Enter starts a new line.">Send</button>
+      </div>
+      <div class="chat-err" id="chatErr" role="alert"></div>
+      <div class="small count" id="chatCount"></div>
     </div>
   </div>
   <div class="ftr">
@@ -231,17 +273,165 @@ body.collapsed #panel{display:none}
     document.body.classList.toggle("collapsed", on);
     $("menu").classList.remove("on");
     send({ t: "collapse", on });
-    if (!on) setTimeout(fit, 0);
+    if (!on) setTimeout(() => { fit(); renderChat(); }, 0);
   }
   function expand() { if (document.body.classList.contains("collapsed")) collapse(false); }
+
+  // Chat with the technician. The tray sends new messages, whether the technician is typing and how far they have
+  // read; read marks go back once the messages are on screen.
+  const chat = { on: false, msgs: [], ids: new Set(), typing: false, theirRead: 0, myRead: 0, sending: false, typingSent: false, typedAt: 0 };
+  const LINK = /\bhttps?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]']/g;
+
+  function chatVisible() {
+    return chat.on && !document.body.classList.contains("collapsed") && !$("chat").classList.contains("shut");
+  }
+
+  function withLinks(node, text) {
+    let last = 0;
+    for (const match of text.matchAll(LINK)) {
+      if (match.index > last) node.append(text.slice(last, match.index));
+      const a = document.createElement("a");
+      a.textContent = match[0];
+      a.title = match[0];
+      a.href = "#";
+      a.onclick = (e) => { e.preventDefault(); send({ t: "link", href: match[0] }); };
+      node.append(a);
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) node.append(text.slice(last));
+  }
+
+  function unread() {
+    return chat.msgs.filter((m) => m.from === "technician" && m.id > chat.myRead).length;
+  }
+
+  function markRead() {
+    if (!chatVisible() || !chat.msgs.length) return;
+    const last = chat.msgs[chat.msgs.length - 1].id;
+    if (last <= chat.myRead) return;
+    chat.myRead = last;
+    send({ t: "chatRead", id: last });
+  }
+
+  function renderChat() {
+    $("chat").hidden = !chat.on;
+    if (!chat.on) return;
+    const log = $("chatLog");
+    const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    const lastSeen = chat.msgs.filter((m) => m.from === "customer" && m.id <= chat.theirRead).pop()?.id;
+    if (!chat.msgs.length) {
+      const p = document.createElement("p");
+      p.className = "small empty";
+      p.textContent = `Need to tell ${firstName(state?.session?.technician?.name)} something? Type it here.`;
+      log.replaceChildren(p);
+    } else {
+      log.replaceChildren(...chat.msgs.map((m) => {
+        const div = document.createElement("div");
+        div.className = "msg " + (m.from === "technician" ? "them" : "mine");
+        withLinks(div, m.text);
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = (m.from === "technician" ? `${m.name} · ` : "") + when(m.at) + (m.id === lastSeen ? " · Seen" : "");
+        div.append(meta);
+        return div;
+      }));
+    }
+    if (stick) log.scrollTop = log.scrollHeight;
+    $("chatTyping").textContent = chat.typing ? `${firstName(state?.session?.technician?.name)} is typing…` : "";
+    const ready = !!state?.session && !lost;
+    $("chatText").disabled = !ready;
+    $("chatSend").disabled = !ready || chat.sending || !$("chatText").value.trim();
+    markRead();
+    const count = unread();
+    for (const id of ["chatBadge", "tabBadge"]) {
+      $(id).hidden = count === 0;
+      $(id).textContent = count > 9 ? "9+" : String(count);
+    }
+    $("tab").title = count ? `${count} new message${count === 1 ? "" : "s"} from your technician` : "Show the Digital Fingers Remote Support panel";
+  }
+
+  function sendTyping(on) {
+    if (on && chat.typingSent && Date.now() - chat.typedAt < 4000) return;
+    if (!on && !chat.typingSent) return;
+    chat.typingSent = on;
+    chat.typedAt = Date.now();
+    send({ t: "chatTyping", on });
+  }
+
+  function sendChat() {
+    const box = $("chatText");
+    const text = box.value.trim();
+    if (!text || chat.sending || !state?.session || lost) return;
+    chat.sending = true;
+    $("chatErr").textContent = "";
+    send({ t: "chat", text });
+    renderChat();
+  }
+
+  function addMessages(list) {
+    for (const m of list || []) {
+      if (!m || typeof m.id !== "number" || chat.ids.has(m.id)) continue;
+      chat.ids.add(m.id);
+      chat.msgs.push(m);
+    }
+    chat.msgs.sort((a, b) => a.id - b.id);
+  }
+
+  window.dfChat = (message) => {
+    chat.on = true;
+    addMessages(message?.messages);
+    chat.typing = message?.typing === true;
+    chat.theirRead = Number(message?.read) || 0;
+    renderChat();
+  };
+  window.dfChatResult = (message) => {
+    chat.sending = false;
+    if (message?.ok) {
+      $("chatText").value = "";
+      chat.typingSent = false;
+      sizeBox();
+      if (message.message) addMessages([message.message]);
+    } else {
+      $("chatErr").textContent = message?.error || "Your message wasn't sent. Please try again.";
+    }
+    renderChat();
+  };
+
+  function sizeBox() {
+    const box = $("chatText");
+    box.style.height = "32px";
+    box.style.height = Math.min(box.scrollHeight + 2, 96) + "px";
+    const length = box.value.length;
+    $("chatCount").textContent = length > 1800 ? `${length} / 2000` : "";
+  }
+
+  $("chatText").addEventListener("input", () => {
+    sizeBox();
+    sendTyping(!!$("chatText").value.trim());
+    $("chatSend").disabled = !state?.session || lost || chat.sending || !$("chatText").value.trim();
+  });
+  $("chatText").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+  $("chatText").addEventListener("blur", () => sendTyping(false));
+  $("chatSend").onclick = sendChat;
+  $("chatHead").onclick = () => {
+    const shut = $("chat").classList.toggle("shut");
+    $("chatHead").setAttribute("aria-expanded", String(!shut));
+    renderChat();
+  };
 
   window.dfState = (message) => {
     lost = false;
     state = message;
     if (!message?.session) closeBox();
     render();
+    renderChat();
   };
-  window.dfLink = (up) => { lost = !up; render(); };
+  window.dfLink = (up) => { lost = !up; render(); renderChat(); };
   window.dfResult = (message) => {
     busy = false;
     if (message?.ok) {

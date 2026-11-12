@@ -7129,6 +7129,13 @@ html[data-theme="dark"] .token-copy code { background: rgba(124, 58, 237, 0.18);
 .tl-system { color: var(--muted); }
 .tl-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px !important; font-size: 12.5px !important; }
 .tl-links a { color: var(--blue); }
+.tl-chat-open { font-size: inherit; }
+.chat-transcript-list { display: grid; gap: 10px; max-height: min(60vh, 520px); margin: 12px 0 0; padding: 4px 2px; overflow-y: auto; list-style: none; }
+.chat-transcript-list li { max-width: 82%; padding: 8px 12px; border-radius: 12px; background: var(--panel-2, rgba(127, 127, 127, 0.1)); }
+.chat-transcript-list li.is-tech { justify-self: end; background: rgba(37, 99, 235, 0.12); }
+.chat-transcript-list p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.chat-transcript-who { color: var(--muted); font-size: 12px; }
+.chat-transcript-who time { margin-left: 6px; }
 .tl-kind { color: var(--muted); }
 .tl-more { display: flex; justify-content: center; padding: 8px 0; }
 .tl-empty { padding: 18px 0; }

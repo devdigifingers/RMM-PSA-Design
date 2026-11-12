@@ -27,7 +27,7 @@ const clip = (value, max = 160) => {
 
 // Ticket kinds that other events already record on the customer and device timeline (with the ticket linked).
 // They are stored for the ticket's own timeline and left out of the wider feeds.
-export const TICKET_ONLY_TYPES = ["ticket.command", "ticket.command_result", "ticket.remote_start", "ticket.remote_end"];
+export const TICKET_ONLY_TYPES = ["ticket.command", "ticket.command_result", "ticket.remote_start", "ticket.remote_end", "ticket.remote_chat"];
 
 const TICKET_LINES = {
   created: () => "created the ticket",
@@ -56,6 +56,7 @@ const TICKET_LINES = {
   time_removed: (d) => `removed ${minutes(d.minutes)} of logged time`,
   remote_start: (d) => `started a remote session${d.user ? ` as ${d.user}` : ""}`,
   remote_end: (d) => (d.minutes ? `remote session ended after ${minutes(d.minutes)}` : "remote session ended"),
+  remote_chat: (d) => `chatted with the customer during the remote session (${d.messages || 0} message${d.messages === 1 ? "" : "s"})`,
   command: (d) => `ran a command${d.command ? `: ${clip(d.command, 120)}` : ""}`,
   command_result: (d) => `command finished with exit code ${d.exitCode ?? "?"}`,
 };
@@ -108,6 +109,10 @@ const AUDIT_EVENTS = {
   "remote.customer_pause": { group: "remote", line: (d) => `${d.user || "The customer"} paused screen sharing from the Session Panel` },
   "remote.customer_resume": { group: "remote", line: (d) => `${d.user || "The customer"} resumed screen sharing from the Session Panel` },
   "remote.customer_end": { group: "remote", type: "remote.ended", line: (d) => `${d.user || "The customer"} ended the remote session from the Session Panel` },
+  "remote.chat": {
+    group: "remote",
+    line: (d) => `chatted with the customer during a remote session (${d.messages || 0} message${d.messages === 1 ? "" : "s"})`,
+  },
   "remote.panel_failed": {
     group: "remote",
     line: (d) => `could not show the Session Panel, so the connection strip is shown instead${d.detail ? ` (${d.detail})` : ""}`,
@@ -177,6 +182,7 @@ export function activityFromAudit({ action, targetType, targetId, detail = {}, a
   if (targetType === "job") event.payload.jobId = id;
   if (targetType === "alert") event.payload.alertId = id;
   if (action === "job.create" && d.kind) event.payload.kind = d.kind;
+  if (action === "remote.chat" && Number.isSafeInteger(Number(d.sessionId))) event.payload.chatSessionId = Number(d.sessionId);
   if (!Number.isInteger(id) && event.lookup) return null;
   return event;
 }

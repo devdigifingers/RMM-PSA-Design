@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadTimeline } from "../actions";
+import { ChatTranscript } from "./chat-transcript";
 
 const EMPTY = { type: [], device: "", actor: "", from: "", to: "", q: "" };
 
@@ -146,6 +147,7 @@ export function TimelineView({ scope, id, customerBase = null }) {
                     {item.ticket ? <a href={`/tickets/${item.ticket.id}`}>#{item.ticket.id}{item.ticket.subject ? ` ${item.ticket.subject}` : ""}</a> : null}
                     {item.device && scope === "accounts" ? <a href={`/devices/${item.device.id}/diagnostics?tool=timeline`}>{item.device.name || `Device ${item.device.id}`}</a> : null}
                     {item.customer && scope === "devices" && customerBase ? <a href={`${customerBase}/${item.customer.id}?tab=timeline`}>{item.customer.name || "Customer"}</a> : null}
+                    {item.payload?.chatSessionId ? <ChatTranscript sessionId={item.payload.chatSessionId} /> : null}
                     <span className="tl-kind">{groupLabel[item.group] || item.group}</span>
                   </p>
                 </div>

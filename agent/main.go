@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const agentVersion = "1.6.2"
+const agentVersion = "1.7.2"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -64,6 +64,7 @@ func run(ctx context.Context) error {
 	go installLoop(ctx, api, state)
 	go jobLoop(ctx, api, state)
 	go remoteAgentLoop(ctx, api, state)
+	go supportLoop(ctx, api, state)
 
 	for {
 		if err := heartbeat(api, state); err != nil {
@@ -171,6 +172,9 @@ func heartbeat(api string, state savedState) error {
 	if report := remoteReport.Load(); report != nil {
 		payload["remoteAgent"] = report
 	}
+	if report := supportReport(); report != nil {
+		payload["supportPanel"] = report
+	}
 	assetItem, assetCollected, includeAsset := pendingAsset()
 	if includeAsset {
 		payload["asset"] = assetItem
@@ -193,9 +197,13 @@ func heartbeat(api string, state savedState) error {
 		RemoteAgent *struct {
 			SHA256 string `json:"sha256"`
 		} `json:"remoteAgent"`
+		Support *supportInfo `json:"support"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return err
+	}
+	if parsed.Support != nil {
+		supportLatest.Store(parsed.Support)
 	}
 	if parsed.RemoteAgent != nil {
 		if sum := strings.ToLower(strings.TrimSpace(parsed.RemoteAgent.SHA256)); len(sum) == 64 {
@@ -258,6 +266,37 @@ type release struct {
 	Version string `json:"version"`
 	SHA256  string `json:"sha256"`
 }
+
+// supportInfo is what the server sends for the Digital Fingers Support app (tray icon and Session Panel).
+// Session is passed to the panel as it came; the agent only reads the fields it routes on.
+type supportInfo struct {
+	SHA256  string          `json:"sha256"`
+	Silent  bool            `json:"silent"`
+	Panel   bool            `json:"panel"`
+	Company string          `json:"company"`
+	Phone   string          `json:"phone"`
+	Email   string          `json:"email"`
+	Session json.RawMessage `json:"session"`
+}
+
+type supportSessionKeys struct {
+	ID     int64 `json:"id"`
+	TSID   *int  `json:"tsid"`
+	Paused bool  `json:"paused"`
+}
+
+func (info *supportInfo) liveSession() (supportSessionKeys, bool) {
+	var keys supportSessionKeys
+	if info == nil || len(info.Session) == 0 || string(info.Session) == "null" {
+		return keys, false
+	}
+	if err := json.Unmarshal(info.Session, &keys); err != nil || keys.ID <= 0 {
+		return keys, false
+	}
+	return keys, true
+}
+
+var supportLatest atomic.Pointer[supportInfo]
 
 var updating atomic.Bool
 

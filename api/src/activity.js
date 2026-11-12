@@ -105,6 +105,13 @@ const AUDIT_EVENTS = {
   "remote.end": { group: "remote", type: "remote.ended", line: () => "ended the remote session" },
   "remote.switch_user": { group: "remote", line: (d) => `switched the remote view to ${d.user ? `${d.user}'s session` : "another session"}${d.station ? ` (${d.station})` : ""}` },
   "remote.signin_screen": { group: "remote", line: () => "sent the computer to the Windows sign-in screen (Switch user)" },
+  "remote.customer_pause": { group: "remote", line: (d) => `${d.user || "The customer"} paused screen sharing from the Session Panel` },
+  "remote.customer_resume": { group: "remote", line: (d) => `${d.user || "The customer"} resumed screen sharing from the Session Panel` },
+  "remote.customer_end": { group: "remote", type: "remote.ended", line: (d) => `${d.user || "The customer"} ended the remote session from the Session Panel` },
+  "remote.panel_failed": {
+    group: "remote",
+    line: (d) => `could not show the Session Panel, so the connection strip is shown instead${d.detail ? ` (${d.detail})` : ""}`,
+  },
   "support.start": { group: "remote", line: () => "started a quick support session" },
   "support.join": { group: "remote", line: (d) => `joined a quick support session${d.hostname ? ` on ${d.hostname}` : ""}` },
   "support.end": { group: "remote", line: () => "ended the quick support session" },

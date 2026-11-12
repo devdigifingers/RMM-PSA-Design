@@ -90,6 +90,7 @@ export const SETTINGS_SECTIONS = {
       icon: "headset",
       items: [
         { label: "Quick Support", href: "/support", needs: "support" },
+        { label: "Session Panel", href: "/remote/settings/session-panel", manage: true },
         soon("Session confirmation", { manage: true }),
         soon("Session recording", { manage: true }),
         soon("Customer widget", { manage: true }),

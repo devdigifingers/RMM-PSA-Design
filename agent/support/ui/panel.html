@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Digital Fingers Remote Support</title>
+<style>
+:root{--ink:#1e2235;--muted:#5B6678;--line:#ececf3;--bg:#fff;--soft:#FAFAFD;--chip:#d9dbe6;--violet:#5B21B6;--menu:#fff;--shade:rgba(15,15,40,.45)}
+@media (prefers-color-scheme:dark){:root{--ink:#e8e9f3;--muted:#a3a9c2;--line:#2c2f44;--bg:#1b1d2b;--soft:#202336;--chip:#3a3e58;--violet:#c4b5fd;--menu:#25283b;--shade:rgba(0,0,0,.55)}}
+*{box-sizing:border-box;font-family:"Segoe UI Variable Text","Segoe UI",Arial,sans-serif}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-size:13px;overflow:hidden;user-select:none;-webkit-user-select:none}
+button{font:inherit;cursor:pointer}
+button:focus-visible{outline:2px solid #22D3EE;outline-offset:2px}
+.hdr{background:linear-gradient(110deg,#0B0B2E,#1A1450 55%,#2E1F6E);color:#fff;padding:12px 8px 10px 12px;display:flex;align-items:center;gap:10px;cursor:default}
+.hdr img{width:30px;height:30px;flex:none}
+.hdr .t{flex:1;min-width:0}
+.hdr .t b{display:block;font-size:14px;line-height:1.25}
+.hdr .t span{display:flex;align-items:center;gap:6px;font-size:11.5px;color:#D4D7EE;margin-top:2px}
+.dot{width:9px;height:9px;border-radius:50%;background:#22c55e;flex:none}
+.dot.paused{background:#f59e0b}.dot.lost{background:#ef4444}
+.hb{display:flex;gap:2px;align-self:flex-start}
+.hb button{background:none;border:0;color:#D4D6EA;width:28px;height:28px;border-radius:6px;font-size:16px;line-height:1}
+.hb button:hover{background:rgba(255,255,255,.12);color:#fff}
+.grad{height:3px;background:linear-gradient(90deg,#22D3EE,#7C3AED)}
+.sec{border-bottom:1px solid var(--line);padding:10px 12px}
+.sec h4{margin:0 0 8px;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.tech{display:flex;gap:10px;align-items:flex-start}
+.av{width:38px;height:38px;border-radius:50%;background:linear-gradient(45deg,#22D3EE,#7C3AED);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none}
+.tech b{display:block;font-size:13.5px}
+.small{color:var(--muted);font-size:11.5px;line-height:1.45}
+.note{margin:0;padding:8px 12px;background:#FEF3C7;color:#78350F;font-size:12px;display:none}
+.note.on{display:block}
+.ftr{display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--soft)}
+.ftr .who{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{border:1px solid var(--chip);border-radius:6px;padding:3px 7px;font-size:12px;color:var(--ink);background:none;white-space:nowrap}
+.pause{border:1px solid #f59e0b;color:#b45309;background:none;border-radius:6px;padding:4px 9px;font-size:12px}
+.pause.resume{background:#16a34a;border-color:#16a34a;color:#fff}
+.end{background:#DC2626;color:#fff;border:0;border-radius:6px;padding:5px 11px;font-size:12px}
+.end:hover{background:#b91c1c}
+button[disabled]{opacity:.55;cursor:default}
+.menu{position:absolute;right:8px;top:44px;background:var(--menu);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);padding:4px;min-width:190px;display:none;z-index:5}
+.menu.on{display:block}
+.menu button{display:block;width:100%;text-align:left;background:none;border:0;color:var(--ink);padding:7px 10px;border-radius:5px}
+.menu button:hover{background:rgba(124,58,237,.12)}
+.menu hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+.shade{position:fixed;inset:0;background:var(--shade);display:none;align-items:center;justify-content:center;z-index:9;padding:16px}
+.shade.on{display:flex}
+.box{background:var(--bg);border-radius:10px;padding:16px;width:100%;box-shadow:0 12px 32px rgba(0,0,0,.35)}
+.box h3{margin:0 0 8px;font-size:14.5px}
+.box p{margin:0 0 6px;font-size:12.5px;color:var(--muted);line-height:1.45}
+.box .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+.box .acts .chip{padding:5px 11px}
+.err{color:#dc2626;font-size:12px;min-height:0;margin-top:6px}
+.tab{display:none;height:100vh;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:linear-gradient(180deg,#0B0B2E,#1A1450);color:#fff;cursor:pointer;border:0;width:100%}
+.tab img{width:30px;height:30px}
+.tab .time{font-size:11px;font-variant-numeric:tabular-nums;color:#D4D7EE}
+.tab .chev{font-size:16px;color:#C7CBE6}
+body.collapsed .tab{display:flex}
+body.collapsed #panel{display:none}
+</style>
+</head>
+<body>
+<button class="tab" id="tab" title="Show the Digital Fingers Remote Support panel" aria-label="Expand the support panel">
+  <span class="chev">‹</span><img src="{{MARK}}" alt=""><span class="dot" id="tabDot"></span><span class="time" id="tabTime">00:00:00</span>
+</button>
+<div id="panel">
+  <div class="hdr" id="hdr">
+    <img src="{{MARK}}" alt="Digital Fingers">
+    <div class="t"><b>Digital Fingers Remote Support</b><span><i class="dot" id="dot"></i><em id="status" style="font-style:normal">Connected</em> · <em id="time" style="font-style:normal;font-variant-numeric:tabular-nums">00:00:00</em></span></div>
+    <div class="hb">
+      <button id="collapse" title="Collapse" aria-label="Collapse the panel">—</button>
+      <button id="more" title="More" aria-label="More options" aria-haspopup="menu">⋯</button>
+      <button id="close" title="End session" aria-label="End the support session">✕</button>
+    </div>
+  </div>
+  <div class="grad"></div>
+  <div class="menu" id="menu" role="menu">
+    <button role="menuitem" data-act="about">About Digital Fingers</button>
+    <button role="menuitem" data-act="details">Session details</button>
+    <hr>
+    <button role="menuitem" data-act="pause" id="menuPause">Pause sharing</button>
+    <button role="menuitem" data-act="end">End session</button>
+  </div>
+  <p class="note" id="note"></p>
+  <div class="sec">
+    <h4>Technician</h4>
+    <div class="tech">
+      <div class="av" id="avatar">?</div>
+      <div>
+        <b id="techName">Your technician</b>
+        <div class="small" id="techLine"></div>
+        <div class="small" id="ticketLine"></div>
+        <div class="small" id="modeLine">Controlling your mouse and keyboard</div>
+        <div class="small" id="startLine"></div>
+      </div>
+    </div>
+  </div>
+  <div class="ftr">
+    <span class="dot" id="ftrDot"></span>
+    <span class="who" id="ftrWho">Connected</span>
+    <span class="chip" id="mode" title="What the technician can do">🖥 Controlling</span>
+    <button class="pause" id="pause" title="Pause screen sharing and input">⏸ Pause</button>
+    <button class="end" id="end">End</button>
+  </div>
+</div>
+<div class="shade" id="shade" role="dialog" aria-modal="true" aria-labelledby="boxTitle">
+  <div class="box">
+    <h3 id="boxTitle"></h3>
+    <div id="boxBody"></div>
+    <div class="err" id="boxErr"></div>
+    <div class="acts" id="boxActs"></div>
+  </div>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const send = (message) => { try { window.dfSend(JSON.stringify(message)); } catch {} };
+  let state = null;
+  let busy = false;
+  let lost = false;
+
+  function firstName(name) { return String(name || "").split(/\s+/)[0] || "your technician"; }
+  function clock(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const two = (n) => String(n).padStart(2, "0");
+    return `${two(Math.floor(s / 3600))}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+  }
+  function when(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function tick() {
+    const started = state?.session?.startedAt ? Date.parse(state.session.startedAt) : NaN;
+    const text = isNaN(started) ? "00:00:00" : clock(Date.now() - started);
+    $("time").textContent = text;
+    $("tabTime").textContent = text;
+  }
+
+  function render() {
+    const session = state?.session;
+    if (!session) return;
+    const tech = session.technician || {};
+    const paused = !!session.paused;
+    const status = lost ? "Reconnecting" : paused ? "Paused" : "Connected";
+    for (const id of ["dot", "tabDot", "ftrDot"]) $(id).className = "dot" + (lost ? " lost" : paused ? " paused" : "");
+    $("status").textContent = status;
+    $("avatar").textContent = tech.initials || "?";
+    $("techName").textContent = tech.name || "Your technician";
+    $("techLine").textContent = [tech.role, session.company || state.company].filter(Boolean).join(" · ");
+    $("ticketLine").textContent = session.ticket ? `Ticket #${session.ticket.id}${session.ticket.subject ? `: ${session.ticket.subject}` : ""}` : "";
+    $("modeLine").textContent = paused ? "Paused: can't see your screen or use your mouse and keyboard" : "Controlling your mouse and keyboard";
+    $("startLine").textContent = session.startedAt ? `Started at ${when(session.startedAt)}` : "";
+    $("ftrWho").textContent = status;
+    $("ftrWho").title = `${tech.name || "Technician"} · ${status}`;
+    $("mode").textContent = paused ? "⏸ Paused" : "🖥 Controlling";
+    $("pause").textContent = paused ? "▶ Resume" : "⏸ Pause";
+    $("pause").title = paused ? "Let the technician see your screen and use your mouse and keyboard again" : "Pause screen sharing and input";
+    $("pause").classList.toggle("resume", paused);
+    $("menuPause").textContent = paused ? "Resume sharing" : "Pause sharing";
+    $("pause").disabled = busy;
+    $("end").disabled = busy;
+    const note = $("note");
+    note.textContent = paused ? `${firstName(tech.name)} can't see your screen or use your computer until you resume.` : "";
+    note.classList.toggle("on", paused);
+    document.title = "Digital Fingers Remote Support";
+    tick();
+    fit();
+  }
+
+  function fit() {
+    if (document.body.classList.contains("collapsed")) return;
+    let h = Math.ceil($("panel").getBoundingClientRect().height);
+    if ($("shade").classList.contains("on")) h = Math.max(h, Math.ceil($("shade").firstElementChild.getBoundingClientRect().height) + 32);
+    send({ t: "size", h });
+  }
+
+  function closeBox() { $("shade").classList.remove("on"); fit(); }
+  function box(title, body, actions) {
+    $("boxTitle").textContent = title;
+    const holder = $("boxBody");
+    holder.replaceChildren(...body.map((line) => { const p = document.createElement("p"); p.textContent = line; return p; }));
+    $("boxErr").textContent = "";
+    $("boxActs").replaceChildren(...actions.map(([label, cls, run]) => {
+      const b = document.createElement("button");
+      b.className = cls; b.textContent = label; b.onclick = run;
+      return b;
+    }));
+    $("shade").classList.add("on");
+    expand();
+    fit();
+    $("boxActs").lastChild?.focus();
+  }
+
+  function act(type) {
+    if (!state?.session || busy) return;
+    busy = true;
+    render();
+    send({ t: "event", type });
+  }
+
+  function askEnd() {
+    if (!state?.session) return;
+    box(`End the support session with ${firstName(state.session.technician?.name)}?`,
+      ["The technician will be disconnected straight away. You can ask for help again at any time."],
+      [["Keep session", "chip", closeBox], ["End session", "end", () => { act("session.end"); }]]);
+  }
+
+  function togglePause() { act(state?.session?.paused ? "session.resume" : "session.pause"); }
+
+  function about() {
+    const lines = ["This panel shows you when a technician is connected to your computer. You can pause or end the session at any time."];
+    if (state?.company) lines.push(`Support is provided by ${state.company}.`);
+    if (state?.phone) lines.push(`Phone: ${state.phone}`);
+    if (state?.email) lines.push(`Email: ${state.email}`);
+    box("Digital Fingers Remote Support", lines, [["Close", "chip", closeBox]]);
+  }
+
+  function details() {
+    const s = state?.session;
+    if (!s) return;
+    const lines = [`Technician: ${s.technician?.name || "Unknown"}${s.technician?.role ? ` (${s.technician.role})` : ""}`];
+    if (s.company) lines.push(`Company: ${s.company}`);
+    if (s.ticket) lines.push(`Ticket: #${s.ticket.id}${s.ticket.subject ? ` ${s.ticket.subject}` : ""}`);
+    lines.push(`Started: ${new Date(s.startedAt).toLocaleString()}`);
+    lines.push(`Session number: ${s.id}`);
+    lines.push(s.paused ? "Status: paused by you" : "Status: the technician is controlling your mouse and keyboard");
+    box("Session details", lines, [["Close", "chip", closeBox]]);
+  }
+
+  function collapse(on) {
+    document.body.classList.toggle("collapsed", on);
+    $("menu").classList.remove("on");
+    send({ t: "collapse", on });
+    if (!on) setTimeout(fit, 0);
+  }
+  function expand() { if (document.body.classList.contains("collapsed")) collapse(false); }
+
+  window.dfState = (message) => {
+    lost = false;
+    state = message;
+    if (!message?.session) closeBox();
+    render();
+  };
+  window.dfLink = (up) => { lost = !up; render(); };
+  window.dfResult = (message) => {
+    busy = false;
+    if (message?.ok) {
+      if (message.type === "session.end") {
+        box("Session ended", ["The technician has been disconnected."], [["Close", "chip", closeBox]]);
+      } else {
+        closeBox();
+        if (state?.session) state.session.paused = message.type === "session.pause";
+      }
+    } else {
+      const text = message?.error || "That didn't work. Please try again.";
+      if ($("shade").classList.contains("on")) $("boxErr").textContent = text;
+      else box("Something went wrong", [text], [["Close", "chip", closeBox]]);
+    }
+    render();
+  };
+  window.dfAskEnd = askEnd;
+  window.dfExpand = () => collapse(false);
+
+  $("collapse").onclick = () => collapse(true);
+  $("tab").onclick = () => collapse(false);
+  $("close").onclick = askEnd;
+  $("end").onclick = askEnd;
+  $("pause").onclick = togglePause;
+  $("more").onclick = (e) => { e.stopPropagation(); $("menu").classList.toggle("on"); };
+  $("menu").onclick = (e) => {
+    const action = e.target.closest("button")?.dataset.act;
+    $("menu").classList.remove("on");
+    if (action === "about") about();
+    if (action === "details") details();
+    if (action === "pause") togglePause();
+    if (action === "end") askEnd();
+  };
+  document.addEventListener("click", () => $("menu").classList.remove("on"));
+  $("hdr").addEventListener("mousedown", (e) => { if (e.button === 0 && !e.target.closest("button")) send({ t: "drag" }); });
+  $("tab").addEventListener("mousedown", (e) => { if (e.button === 0 && e.detail > 1) e.preventDefault(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { $("menu").classList.remove("on"); if ($("shade").classList.contains("on")) closeBox(); }
+  });
+  document.addEventListener("contextmenu", (e) => e.preventDefault());
+  new ResizeObserver(fit).observe($("panel"));
+  setInterval(tick, 1000);
+  render();
+  send({ t: "ready" });
+})();
+</script>
+</body>
+</html>

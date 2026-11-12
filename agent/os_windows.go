@@ -390,6 +390,7 @@ func uninstallInteractive() error {
 		return tell(err.Error())
 	}
 	removeMesh()
+	removeSupportApp()
 	_ = registry.DeleteKey(registry.LOCAL_MACHINE, uninstallRegistry)
 	removeProgramFile()
 	return tell("Digital Fingers Agent was removed. It no longer appears in Apps.")

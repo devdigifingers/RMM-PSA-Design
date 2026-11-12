@@ -28,6 +28,18 @@ import { handleCsat } from "./desk-csat.js";
 import { handleMigrations, migrationTick, platformWaiting, recoverMigrations, tenantWaiting } from "./migrations.js";
 import { customerInsights } from "./customer-insights.js";
 import { remoteAgentChange, remoteAgentFrom, remoteAgentOffer, remoteAgentView } from "./remote-agent.js";
+import {
+  groupConsentFor,
+  nodeConsentFor,
+  panelOptions,
+  panelOptionsInput,
+  panelReportFrom,
+  panelSessionView,
+  silentFor,
+  STRIP_FLAG,
+  supportEventFrom,
+} from "./session-panel.js";
+import { deviceSession, livePanelSession, pingSession } from "./session-panel-store.js";
 import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
 import { handleScripts } from "./scripts.js";
 import { handlePublicBilling } from "./billing/documents.js";
@@ -782,6 +794,72 @@ async function meshSessionsEnd(nodeId) {
     throw Object.assign(new Error(result?.error || "Remote service did not answer."), { status: 502 });
   }
   return result;
+}
+
+async function meshConsent(kind, id, flags) {
+  const result = meshJson(await meshScript("mesh-consent.cjs", [kind, id, String(flags)], 30000));
+  if (!result || result.error || result.consent !== flags) {
+    throw Object.assign(new Error(result?.error || "The remote service did not save the consent flags."), { status: 502 });
+  }
+  return result.consent;
+}
+
+const panelSyncWaiting = new Set();
+
+// Keeps the connection strip where the Session Panel can't run. With the panel on, the tenant group loses the strip
+// flag and each device without a ready panel gets it back on its own node. Devices are set before the group is
+// cleared, and the group is set before devices are cleared, so no device is ever left without either.
+async function syncPanelConsent(orgId) {
+  const lock = `panel-consent-lock:${orgId}`;
+  if ((await redis.set(lock, "1", "EX", 120, "NX")) !== "OK") {
+    panelSyncWaiting.add(String(orgId));
+    return;
+  }
+  try {
+    const org = (await pool.query("SELECT id, mesh_group_id, panel_options, mesh_consent FROM orgs WHERE id = $1", [orgId])).rows[0];
+    if (!org?.mesh_group_id) return;
+    const options = panelOptions(org.panel_options);
+    const groupWant = groupConsentFor(options, MESH_TENANT_CONSENT);
+    const groupHas = org.mesh_consent == null ? MESH_TENANT_CONSENT : Number(org.mesh_consent);
+    const setGroup = async () => {
+      if (groupHas === groupWant) return;
+      await meshConsent("group", org.mesh_group_id, groupWant);
+      await pool.query("UPDATE orgs SET mesh_consent = $2 WHERE id = $1", [org.id, groupWant]);
+      await writeAudit(org.id, null, "remote.strip_group", "org", String(org.id), { consent: groupWant, panel: options.enabled });
+    };
+    if (!options.enabled) await setGroup();
+    const devices = await pool.query(
+      "SELECT id, mesh_node_id, support_panel, mesh_consent FROM devices WHERE org_id = $1 AND COALESCE(mesh_node_id, '') <> ''",
+      [org.id],
+    );
+    let failed = 0;
+    for (const row of devices.rows) {
+      const want = nodeConsentFor(options, row.support_panel);
+      const has = row.mesh_consent == null ? 0 : Number(row.mesh_consent);
+      if (want === has) continue;
+      try {
+        await meshConsent("node", row.mesh_node_id, want);
+        await pool.query("UPDATE devices SET mesh_consent = $2 WHERE id = $1", [row.id, want]);
+      } catch (error) {
+        failed += 1;
+        console.error(`panel consent device ${row.id}: ${error.message}`);
+      }
+    }
+    if (options.enabled && !failed) await setGroup();
+  } finally {
+    await redis.del(lock);
+    if (panelSyncWaiting.delete(String(orgId))) setTimeout(() => syncPanelConsent(orgId).catch(() => {}), 2000);
+  }
+}
+
+async function syncAllPanelConsent() {
+  const orgs = await pool.query(
+    `SELECT id FROM orgs
+     WHERE mesh_group_id IS NOT NULL AND (COALESCE((panel_options->>'enabled')::boolean, false) OR mesh_consent IS NOT NULL)`,
+  );
+  for (const row of orgs.rows) {
+    await syncPanelConsent(row.id).catch((error) => console.error(`panel consent org ${row.id}: ${error.message}`));
+  }
 }
 
 async function meshAgentRestart(nodeId) {
@@ -2040,21 +2118,133 @@ function enrollTokenUsable(row) {
 }
 const AGENT_AUTO_UPDATE = process.env.AGENT_AUTO_UPDATE === "on";
 const AGENT_OFFER_GAP_MS = 30 * 60000;
-let agentReleaseCache = { at: 0, value: null };
+// Pilot devices (device ids, comma separated) are offered the staged test build (agent-bin/next) instead of the
+// published one, so a new agent can be tried on one machine through the normal self-update.
+const AGENT_PILOT_DEVICES = new Set(
+  String(process.env.AGENT_PILOT_DEVICES || "").split(",").map((value) => value.trim()).filter((value) => /^\d+$/.test(value)),
+);
+const releaseCache = new Map();
 
-async function agentRelease() {
-  if (Date.now() - agentReleaseCache.at < 60000) return agentReleaseCache.value;
+function pilotDevice(id) {
+  return AGENT_PILOT_DEVICES.has(String(id));
+}
+
+async function releaseFile(name, pilot) {
+  const key = `${pilot ? "next/" : ""}${name}`;
+  const cached = releaseCache.get(key);
+  if (cached && Date.now() - cached.at < 60000) return cached.value;
   let value = null;
   try {
-    const raw = JSON.parse(await readFile(join(AGENT_BIN_DIR, "windows.json"), "utf8"));
-    if (versionParts(raw.version) && /^[a-f0-9]{64}$/.test(String(raw.sha256))) {
-      value = { version: raw.version, sha256: raw.sha256 };
-    }
+    const raw = JSON.parse(await readFile(join(AGENT_BIN_DIR, pilot ? "next" : "", name), "utf8"));
+    if (/^[a-f0-9]{64}$/.test(String(raw.sha256))) value = { version: String(raw.version || ""), sha256: raw.sha256 };
   } catch {
     value = null;
   }
-  agentReleaseCache = { at: Date.now(), value };
+  releaseCache.set(key, { at: Date.now(), value });
   return value;
+}
+
+async function agentRelease(pilot = false) {
+  const staged = pilot ? await releaseFile("windows.json", true) : null;
+  const value = staged || await releaseFile("windows.json", false);
+  return value && versionParts(value.version) ? value : null;
+}
+
+// DFSupport.exe, the Session Panel and tray app that Windows agents 1.7+ install next to themselves.
+async function supportRelease(pilot = false) {
+  return (pilot ? await releaseFile("windows-support.json", true) : null) || releaseFile("windows-support.json", false);
+}
+
+
+// What a Windows agent 1.7+ needs for the tray and Session Panel: the app's hash, whether to stay silent, the
+// tenant's support contacts and the live session (only when the tenant uses the panel).
+async function deviceSupport(device, osName) {
+  const [org, session, release] = await Promise.all([
+    pool.query("SELECT name, panel_options FROM orgs WHERE id = $1", [device.org_id]),
+    livePanelSession(pool, device.id, device.org_id),
+    supportRelease(pilotDevice(device.id)),
+  ]);
+  const options = panelOptions(org.rows[0]?.panel_options);
+  return {
+    ...(release ? { sha256: release.sha256 } : {}),
+    silent: silentFor(options, osName),
+    panel: options.enabled,
+    company: org.rows[0]?.name || "",
+    phone: options.phone,
+    email: options.email,
+    session: options.enabled ? panelSessionView(session, options) : null,
+  };
+}
+
+const panelOptionCache = new Map();
+
+async function orgPanelOptions(orgId) {
+  const cached = panelOptionCache.get(String(orgId));
+  if (cached && Date.now() - cached.at < 60000) return cached.value;
+  const row = await pool.query("SELECT panel_options FROM orgs WHERE id = $1", [orgId]);
+  const value = panelOptions(row.rows[0]?.panel_options);
+  panelOptionCache.set(String(orgId), { at: Date.now(), value });
+  return value;
+}
+
+// Re-syncs the tenant's strip flags when this device's report means its node needs a different value.
+async function checkPanelConsent(device, report, meshConsent) {
+  const options = await orgPanelOptions(device.org_id);
+  const has = meshConsent == null ? 0 : Number(meshConsent);
+  if (nodeConsentFor(options, report) !== has) await syncPanelConsent(device.org_id);
+}
+
+// Ends the Mesh tunnels on a device; the session window reconnects on its own unless the session is paused or ended.
+async function dropMeshSession(deviceId, orgId) {
+  const row = await pool.query("SELECT mesh_node_id FROM devices WHERE id = $1 AND org_id = $2", [deviceId, orgId]);
+  if (row.rows[0]?.mesh_node_id) await meshSessionsEnd(row.rows[0].mesh_node_id);
+}
+
+// The session window checks in every 3 seconds; dropping a little later lets it show "paused" or "ended" first
+// instead of reconnecting straight away.
+function laterDropMeshSession(deviceId, orgId) {
+  setTimeout(() => {
+    dropMeshSession(deviceId, orgId).catch((error) => console.error(`panel drop: ${error.message}`));
+  }, 4000);
+}
+
+let pauseSweepRunning = false;
+
+// While the customer has paused, no desktop stream may stay open on the device, whatever the viewer does.
+async function enforcePauses() {
+  if (pauseSweepRunning) return;
+  pauseSweepRunning = true;
+  try {
+    const paused = await pool.query(
+      `SELECT DISTINCT d.id, d.org_id, d.mesh_node_id
+       FROM remote_sessions rs
+       JOIN devices d ON d.id = rs.device_id AND d.org_id = rs.org_id
+       WHERE rs.paused_at < now() - interval '10 seconds' AND rs.ended_by IS NULL
+         AND rs.shell_seen_at > now() - interval '45 seconds' AND COALESCE(d.mesh_node_id, '') <> ''`,
+    );
+    if (!paused.rows.length) return;
+    const live = await meshSessionList();
+    for (const row of paused.rows) {
+      if (live[row.mesh_node_id]?.desktop) await meshSessionsEnd(row.mesh_node_id).catch(() => {});
+    }
+  } catch (error) {
+    console.error(`pause sweep: ${error.message}`);
+  } finally {
+    pauseSweepRunning = false;
+  }
+}
+
+const PAUSED_TEXT = "The customer paused screen sharing. The session continues when they click Resume on their screen.";
+
+async function customerPaused(deviceId, orgId) {
+  const row = await pool.query(
+    `SELECT 1 FROM remote_sessions
+     WHERE device_id = $1 AND org_id = $2 AND paused_at IS NOT NULL AND ended_by IS NULL
+       AND shell_seen_at > now() - interval '45 seconds'
+     LIMIT 1`,
+    [deviceId, orgId],
+  );
+  return Boolean(row.rows[0]);
 }
 
 let remoteReleaseCache = { at: 0, value: null };
@@ -2109,7 +2299,7 @@ function legacyUpdateCommand(token, sha256) {
 
 async function offerAgentUpdate(device, row, idle) {
   if (!/windows/i.test(row.os_name || "")) return null;
-  const release = await agentRelease();
+  const release = await agentRelease(pilotDevice(device.id));
   if (!release) return null;
   if (!olderAgent(row.agent_version, release.version)) {
     if (row.agent_update_requested_at) {
@@ -4602,6 +4792,8 @@ const liveTicketSessions = new Set();
 async function trackRemoteSessions(rows, live) {
   const now = Date.now();
   for (const row of rows) {
+    // A session window that is still checking in keeps its session open while paused or reconnecting.
+    const shellOpen = row.shell_seen_at && now - new Date(row.shell_seen_at).getTime() < 45000;
     if (row.mesh_node_id && live[row.mesh_node_id]) {
       await pool.query(
         `UPDATE remote_sessions
@@ -4609,6 +4801,8 @@ async function trackRemoteSessions(rows, live) {
          WHERE id = $1 AND status IN ('launched', 'live')`,
         [row.id],
       );
+    } else if (shellOpen) {
+      continue;
     } else if (row.status === "live") {
       await pool.query("UPDATE remote_sessions SET status = 'ended', ended_at = now() WHERE id = $1 AND status = 'live'", [row.id]);
     } else if (now - new Date(row.started_at).getTime() >= 3 * 60000) {
@@ -4658,7 +4852,7 @@ async function sweepTicketSessions() {
          )`,
     );
     const tracked = await pool.query(
-      `SELECT rs.id, rs.status, rs.started_at, d.mesh_node_id
+      `SELECT rs.id, rs.status, rs.started_at, rs.shell_seen_at, d.mesh_node_id
        FROM remote_sessions rs
        LEFT JOIN devices d ON d.id = rs.device_id AND d.org_id = rs.org_id
        WHERE rs.status IN ('launched', 'live')`,
@@ -5711,6 +5905,34 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { ok: true, requireMfa, ipAllowlist: allowlist });
     }
 
+    if (url.pathname === "/v1/org/session-panel") {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 400, { error: "This login is not linked to an organisation." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "security.deny", "org", String(actor.org_id), { area: "session_panel" });
+        return send(res, 403, { error: "Only an owner or admin can change Session Panel settings." });
+      }
+      const current = await pool.query("SELECT panel_options FROM orgs WHERE id = $1", [actor.org_id]);
+      if (req.method === "GET") {
+        const counts = await pool.query(
+          `SELECT count(*) FILTER (WHERE support_panel->>'state' = 'ready'
+                                     AND (support_panel->>'at')::timestamptz > now() - interval '3 minutes')::int AS ready,
+                  count(*) FILTER (WHERE os_name ILIKE '%windows%')::int AS windows
+           FROM devices WHERE org_id = $1`,
+          [actor.org_id],
+        );
+        return send(res, 200, { options: panelOptions(current.rows[0]?.panel_options), ready: counts.rows[0].ready, windows: counts.rows[0].windows });
+      }
+      if (req.method !== "PUT") return send(res, 405, { error: "Method not allowed." });
+      const parsed = panelOptionsInput(await readJson(req), current.rows[0]?.panel_options);
+      if (parsed.error) return send(res, 400, { error: parsed.error });
+      await pool.query("UPDATE orgs SET panel_options = $2::jsonb WHERE id = $1", [actor.org_id, JSON.stringify(parsed.value)]);
+      panelOptionCache.delete(String(actor.org_id));
+      await writeAudit(actor.org_id, actor.id, "remote.panel_settings", "org", String(actor.org_id), parsed.value);
+      syncPanelConsent(actor.org_id).catch((error) => console.error(`panel consent: ${error.message}`));
+      return send(res, 200, { ok: true, options: parsed.value });
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/account/password") {
       if (!requireActor(actor, res)) return;
       const body = await readJson(req);
@@ -5948,7 +6170,8 @@ const server = createServer(async (req, res) => {
         deviceId = (await deviceFrom(req))?.id || null;
       }
       if (!deviceId) return send(res, 401, { error: "Device login required." });
-      const file = join(AGENT_BIN_DIR, "DigitalFingersAgent.exe");
+      const staged = pilotDevice(deviceId) && await releaseFile("windows.json", true);
+      const file = join(AGENT_BIN_DIR, staged ? "next" : "", "DigitalFingersAgent.exe");
       const info = await stat(file).catch(() => null);
       if (!info?.isFile()) return send(res, 404, { error: "No agent build is published." });
       res.writeHead(200, {
@@ -5973,6 +6196,102 @@ const server = createServer(async (req, res) => {
       });
       createReadStream(file).pipe(res);
       return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/agent/support/windows") {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const staged = pilotDevice(device.id) && await releaseFile("windows-support.json", true);
+      const file = join(AGENT_BIN_DIR, staged ? "next" : "", "DFSupport.exe");
+      const info = await stat(file).catch(() => null);
+      if (!info?.isFile()) return send(res, 404, { error: "No support app build is published." });
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(info.size),
+        "cache-control": "no-store",
+      });
+      createReadStream(file).pipe(res);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/v1/agent/support/state") {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const row = await pool.query("SELECT os_name FROM devices WHERE id = $1", [device.id]);
+      return send(res, 200, await deviceSupport(device, row.rows[0]?.os_name));
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/agent/support/event") {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const body = await readJson(req);
+      const event = supportEventFrom(body);
+      if (!event) return send(res, 400, { error: "Unknown support event." });
+      const user = typeof body.user === "string" ? body.user.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) : "";
+      if (event.type === "panel.opened" || event.type === "panel.failed") {
+        const report = event.type === "panel.opened"
+          ? { state: "ready", at: new Date().toISOString() }
+          : { state: "failed", ...(event.detail ? { detail: event.detail } : {}), at: new Date().toISOString() };
+        const saved = await pool.query(
+          `UPDATE devices SET support_panel = $2::jsonb
+           FROM (SELECT support_panel AS previous FROM devices WHERE id = $1) prior
+           WHERE devices.id = $1
+           RETURNING devices.mesh_consent, prior.previous`,
+          [device.id, JSON.stringify(report)],
+        );
+        if (event.type === "panel.opened") {
+          if (saved.rows[0]?.previous?.state === "failed") checkPanelConsent(device, report, saved.rows[0].mesh_consent).catch(() => {});
+          return send(res, 200, { ok: true });
+        }
+        await writeAudit(device.org_id, null, "remote.panel_failed", "device", String(device.id), {
+          ...(event.detail ? { detail: event.detail } : {}),
+          ...(user ? { user } : {}),
+        });
+        // The strip flag only reaches a session when its tunnel opens, so a live session is dropped once the flag is
+        // set; the session window reconnects and the customer sees the strip. A device that already had the flag
+        // (not ready for the panel) is showing the strip, so its session is left alone.
+        const stripShown = (Number(saved.rows[0]?.mesh_consent || 0) & STRIP_FLAG) !== 0;
+        (async () => {
+          await syncPanelConsent(device.org_id);
+          if (stripShown) return;
+          const live = await livePanelSession(pool, device.id, device.org_id);
+          if (live && !live.paused_at) await dropMeshSession(device.id, device.org_id);
+        })().catch((error) => console.error(`panel fallback: ${error.message}`));
+        return send(res, 200, { ok: true });
+      }
+      const row = await deviceSession(pool, event.sessionId, device.id, device.org_id);
+      if (!row) return send(res, 404, { error: "That session has ended." });
+      const detail = { ...(row.ticket_id == null ? {} : { ticketId: Number(row.ticket_id) }), ...(user ? { user } : {}) };
+      if (event.type === "session.pause") {
+        const paused = await pool.query(
+          "UPDATE remote_sessions SET paused_at = now() WHERE id = $1 AND paused_at IS NULL AND ended_by IS NULL RETURNING id",
+          [row.id],
+        );
+        if (paused.rows[0]) {
+          await writeAudit(device.org_id, null, "remote.customer_pause", "device", String(device.id), detail);
+          laterDropMeshSession(device.id, device.org_id);
+        }
+      } else if (event.type === "session.resume") {
+        const resumed = await pool.query(
+          "UPDATE remote_sessions SET paused_at = NULL WHERE id = $1 AND paused_at IS NOT NULL AND ended_by IS NULL RETURNING id",
+          [row.id],
+        );
+        if (resumed.rows[0]) await writeAudit(device.org_id, null, "remote.customer_resume", "device", String(device.id), detail);
+      } else {
+        const ended = await pool.query(
+          `UPDATE remote_sessions
+           SET ended_by = 'customer', paused_at = NULL, status = 'ended', ended_at = now()
+           WHERE id = $1 AND ended_by IS NULL
+           RETURNING id`,
+          [row.id],
+        );
+        if (ended.rows[0]) {
+          await writeAudit(device.org_id, null, "remote.customer_end", "device", String(device.id), detail);
+          laterDropMeshSession(device.id, device.org_id);
+        }
+      }
+      const os = await pool.query("SELECT os_name FROM devices WHERE id = $1", [device.id]);
+      return send(res, 200, await deviceSupport(device, os.rows[0]?.os_name));
     }
 
     if (req.method === "GET" && url.pathname === "/v1/agent/update/linux") {
@@ -6098,6 +6417,7 @@ const server = createServer(async (req, res) => {
       const agentVersion = versionParts(body.agentVersion) ? body.agentVersion : "";
       const remoteAgent = remoteAgentFrom(body);
       const restart = restartFrom(body);
+      const panelReport = panelReportFrom(body);
       const uptime = Number(metrics?.uptimeSeconds);
       const publicIp = publicIpFrom(req);
       const saved = await pool.query(
@@ -6131,11 +6451,16 @@ const server = createServer(async (req, res) => {
                                      WHEN lower(pending_hostname) = lower($2) THEN NULL
                                      ELSE pending_hostname END,
              agent_version = COALESCE(NULLIF($16, ''), agent_version),
-             remote_agent = COALESCE($21::jsonb, remote_agent)
+             remote_agent = COALESCE($21::jsonb, remote_agent),
+             support_panel = CASE WHEN $25::jsonb IS NULL THEN support_panel
+                                  WHEN support_panel->>'state' = 'failed' AND $25::jsonb->>'state' = 'ready'
+                                       AND (support_panel->>'at')::timestamptz > now() - interval '1 hour'
+                                    THEN support_panel
+                                  ELSE $25::jsonb END
          FROM (SELECT public_ip AS previous_ip, remote_agent AS previous_remote, agent_version AS previous_agent FROM devices WHERE id = $1) prior
          WHERE devices.id = $1
          RETURNING update_scan_requested_at, updates_checked_at, os_name, agent_version,
-                   agent_update_requested_at, agent_update_offered_at,
+                   agent_update_requested_at, agent_update_offered_at, support_panel, mesh_consent,
                    public_ip, geo_updated_at, isp_updated_at, prior.previous_ip, prior.previous_remote, prior.previous_agent`,
         [
           device.id,
@@ -6162,8 +6487,13 @@ const server = createServer(async (req, res) => {
           restart != null,
           JSON.stringify(restart?.reasons || []),
           restart?.newName || "",
+          panelReport ? JSON.stringify({ ...panelReport, at: new Date().toISOString() }) : null,
         ],
       );
+      if (panelReport && saved.rows[0]) {
+        checkPanelConsent(device, saved.rows[0].support_panel, saved.rows[0].mesh_consent)
+          .catch((error) => console.error(`panel consent: ${error.message}`));
+      }
       const remoteChange = remoteAgentChange(saved.rows[0]?.previous_remote, remoteAgent);
       if (remoteChange) {
         await writeAudit(device.org_id, null, remoteChange, "device", String(device.id), {
@@ -6238,12 +6568,16 @@ const server = createServer(async (req, res) => {
           [device.id],
         );
       const remoteOffer = remoteAgentOffer(remoteAgent, remoteAgent ? await remoteRelease() : null);
+      const support = panelReport && /windows/i.test(saved.rows[0]?.os_name || "")
+        ? await deviceSupport(device, saved.rows[0].os_name).catch(() => null)
+        : null;
       return send(res, 200, {
         jobs: jobs.rows.map((row) => ({ id: Number(row.id), command: row.command, kind: row.kind })),
         deploys: deploys.rows.map((row) => ({ id: Number(row.id), packageName: row.package_name })),
         scanUpdates,
         ...(agentUpdate ? { agentUpdate } : {}),
         ...(remoteOffer ? { remoteAgent: remoteOffer } : {}),
+        ...(support ? { support } : {}),
       });
     }
 
@@ -7253,6 +7587,19 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // The session window checks in every few seconds while it is open: the device's Session Panel shows while it
+    // does, and the reply tells the window when the customer paused or ended the session.
+    const sessionPingMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/session-ping$/);
+    if (req.method === "POST" && sessionPingMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const body = await readJson(req);
+      const tsid = Number.isInteger(body.tsid) && body.tsid >= 0 && body.tsid < 65536 ? body.tsid : null;
+      return send(res, 200, await pingSession(pool, {
+        deviceId: sessionPingMatch[1], orgId: actor.org_id, userId: actor.id, tsid, closed: body.closed === true,
+      }));
+    }
+
     const deviceSwitchMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/switch-user$/);
     if (req.method === "POST" && deviceSwitchMatch) {
       if (!requireActor(actor, res)) return;
@@ -7444,6 +7791,9 @@ const server = createServer(async (req, res) => {
         [deviceResumeMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      if (await customerPaused(device.rows[0].id, actor.org_id)) {
+        return send(res, 409, { error: PAUSED_TEXT, paused: true });
+      }
       const node = await resolveMeshNode(device.rows[0], actor.org_id);
       if (!node.nodeId || !node.online) return send(res, 200, { online: false });
       const link = await tenantDesktopUrl(actor.org_id, actor, node.nodeId, `df-${device.rows[0].id}-${Date.now()}`, device.rows[0].os_name);
@@ -7468,6 +7818,9 @@ const server = createServer(async (req, res) => {
         [deviceRemoteMatch[1], actor.org_id],
       );
       if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      if (await customerPaused(device.rows[0].id, actor.org_id)) {
+        return send(res, 409, { error: PAUSED_TEXT, paused: true });
+      }
       const node = await resolveMeshNode(device.rows[0], actor.org_id);
       device.rows[0].mesh_node_id = node.nodeId;
       if (!device.rows[0].mesh_node_id) {
@@ -10208,7 +10561,10 @@ server.listen(port, "127.0.0.1", () => {
     sweepOffline();
     sweepBreaches();
     sweepSupport();
+    enforcePauses();
   }, 15000);
+  setTimeout(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 60000);
+  setInterval(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 600000);
   runDueExports();
   sweepOffline();
   sweepBreaches();

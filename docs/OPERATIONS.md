@@ -104,7 +104,8 @@ platform (a Linux 1.5.1 device is outdated when Linux is on 1.5.2, even if Windo
 
 | Platform | Files on df-a (`/opt/df-console/agent-bin`) | Release record |
 |----------|---------------------------------------------|----------------|
-| Windows | `DigitalFingersAgent.exe`, test build in `next/` | `windows.json` (version + sha256) |
+| Windows | `DigitalFingersAgent.exe`, test build in `next/` | `windows.json` (version + sha256); `next/windows.json` for pilot devices |
+| Windows Support app | `DFSupport.exe` (Session Panel and tray, agent 1.7+), test build in `next/` | `windows-support.json` (version + sha256) |
 | Windows remote support | `DigitalFingersRemoteSupport.exe` (the branded Mesh agent for the "Digital Fingers" staging group) | `windows-remote.json` (sha256) |
 | Linux | `linux/df-agent-amd64`, `linux/df-agent-arm64`, `install.sh`, two service units | `linux/linux.json` |
 
@@ -127,17 +128,25 @@ remote support file, including `CHANNEL=next` builds; agents 1.5 and older ignor
 
 ### Windows: stage, test, publish
 
-1. Bump `agentVersion`, then build to the **test channel** only (no device is offered it):
+1. Bump `agentVersion` (and `appVersion` in `agent/support/main.go` when the Support app changed), then build to the
+   **test channel** only. Only test install commands and the **pilot devices** get it:
    ```bash
-   tar czf /tmp/dfagent-src.tgz -C agent go.mod go.sum main.go os_linux.go os_windows.go patch_helper_linux.go
+   tar czf /tmp/dfagent-src.tgz -C agent --exclude=support/assets/icon-source.png --exclude=support/assets/mark.png \
+     go.mod go.sum main.go os_linux.go os_windows.go patch_helper_linux.go support_windows.go support
    scp /tmp/dfagent-src.tgz agent/deploy/build-windows.sh df-a:/tmp/
    ssh df-a 'sudo CHANNEL=next bash /tmp/build-windows.sh'
    ```
+   The build also makes `DFSupport.exe` (`agent/support`, its own Go module; `-H windowsgui`) and adds the icon and
+   version details to both exes with go-winres (fetched by `go run`, so df-a needs internet).
+   **Pilot ring:** device ids in `AGENT_PILOT_DEVICES` (comma-separated, `/root/df-api.env`, restart df-api) are
+   offered `next/windows.json` and download the agent and Support app from `next/`. Now: `16` (POS-3316E-Setup).
+   Auto-update offers are 30 minutes apart; to update a pilot device sooner, set its `agent_update_requested_at`.
 2. Test on **FED-WIN-001** (the test VM). Create an install command under Downloads → Servers and command line, then
    in Terminal (Admin) on the VM run it with the test channel added, URL in single quotes:
    `irm 'https://rmm.digitalfingers.co.za/i/<code>/windows?channel=next' | iex`
    Pass: it prints without pop-ups, the device shows the new version, and its Windows version appears in the OS report.
-3. Publish the **same file** that was tested (no rebuild); the previous exe is kept as `.prev-<date>`:
+3. Publish the **same files** that were tested (no rebuild; agent and Support app); the previous exes are kept as
+   `.prev-<date>`:
    ```bash
    scp agent/deploy/build-windows.sh df-a:/tmp/ && ssh df-a 'sudo bash /tmp/build-windows.sh promote <version>'
    ```

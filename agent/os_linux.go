@@ -24,6 +24,11 @@ func updateFilePath() string { return "" }
 // The Linux remote agent is installed by install-linux.sh and runs under systemd.
 func remoteAgentLoop(context.Context, string, savedState) {}
 
+// The Session Panel and tray app are Windows only for now.
+func supportLoop(context.Context, string, savedState) {}
+
+func supportReport() map[string]string { return nil }
+
 func launchUpdate(string) error { return fmt.Errorf("self update is not supported on Linux") }
 
 func apiURL() string {

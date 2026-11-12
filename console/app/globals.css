@@ -5971,6 +5971,14 @@ html[data-theme="dark"] .tech-seats span, html[data-theme="dark"] .tech-state.on
 .tech-table form > button.link-button { height: auto; padding: 0; border: 0; background: none; color: var(--blue); box-shadow: none; font-size: 13px; text-decoration: underline; }
 .ip-form textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
 .ip-form > button[type="submit"] { width: auto; margin-top: 12px; align-self: flex-start; justify-self: start; }
+.panel-options { display: grid; gap: 14px; margin-top: 16px; }
+.panel-options label.check { display: flex; gap: 12px; align-items: flex-start; cursor: pointer; }
+.panel-options label.check input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--blue); }
+.panel-options label.check span { display: grid; gap: 2px; color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+.panel-options label.check strong { color: var(--text); font-size: 14.5px; font-weight: 600; }
+.panel-contact { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.panel-contact label { display: grid; gap: 6px; font-size: 13.5px; color: var(--muted); }
+.panel-options > button[type="submit"] { width: auto; justify-self: start; }
 .tech-table form > button.link-button.is-danger { color: var(--red); }
 
 /* Service desk */

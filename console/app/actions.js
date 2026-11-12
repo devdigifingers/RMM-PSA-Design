@@ -1427,6 +1427,22 @@ export async function saveIpAllowlist(formData) {
   redirect("/settings/org/ip-restriction?saved=1");
 }
 
+export async function saveSessionPanel(formData) {
+  const response = await callApi("/v1/org/session-panel", {
+    method: "PUT",
+    body: {
+      enabled: formData.get("enabled") === "1",
+      showToTechnician: formData.get("showToTechnician") === "1",
+      silentWorkstations: formData.get("silentWorkstations") === "1",
+      silentServers: formData.get("silentServers") === "1",
+      phone: String(formData.get("phone") || ""),
+      email: String(formData.get("email") || ""),
+    },
+  });
+  if (!response.ok) await securityError("/remote/settings/session-panel", response);
+  redirect("/remote/settings/session-panel?saved=1");
+}
+
 export async function createApiToken(_prev, formData) {
   const response = await callApi("/v1/org/api-tokens", {
     body: {

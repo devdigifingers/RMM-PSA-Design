@@ -9,6 +9,34 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-12 · Platform 1.9.0
+
+**Session Panel, Phase A (pilot: POS-3316E-Setup only)**
+- During a remote session the person at a Windows computer can see a Digital Fingers panel docked on the right in
+  place of MeshCentral's thin "connected" strip: logo, "Digital Fingers Remote Support", session timer, status dot
+  (green connected, amber paused, red reconnecting), the technician (initials, name, role, company, ticket, start
+  time, "Controlling your mouse and keyboard"), **Pause/Resume** and **End** (asks "End the support session with
+  …?"). The "…" menu has About, Session details, Pause and End; ✕ and Alt+F4 ask before ending. It collapses to a
+  slim tab with the logo and timer, can be dragged up and down the right edge (position remembered), follows light
+  or dark mode and has a taskbar button while the session is live. By default it is hidden from the technician's view
+  (`WDA_EXCLUDEFROMCAPTURE`, Windows 10 2004+).
+- Tray icon in every signed-in session (green dot in a session, amber when paused): Open support panel, the tenant's
+  support phone and email, About. Tooltip "Digital Fingers Support: connected to <technician>".
+- **Pause** blocks the technician: the session window shows "Paused by the customer", the server ends the Mesh
+  tunnels and refuses Connect until the customer resumes. **End** ends the session in the console too. Audited as
+  `remote.customer_pause`, `remote.customer_resume`, `remote.customer_end`, on the device and ticket timelines.
+- The strip only disappears on devices that can show the panel: the tenant's Mesh group drops the strip flag (64)
+  and every other device keeps it as a device-level flag, so the customer always knows a session is live. A device
+  whose panel can't start (no WebView2, old agent, crash) keeps or gets the strip back and the failure is logged
+  (`remote.panel_failed`).
+- Remote Desk → Settings → **Session Panel**: show the panel (default off), show it to the technician (off), silent
+  agent on workstations (off) and servers (on), support phone and email. `GET/PUT /v1/org/session-panel`, audit
+  `remote.panel_settings`. Turned on for Digital Fingers only; the Mesh consent of its other 14 devices is unchanged
+  in effect (71).
+- Session window checks in every 3 seconds (`POST /v1/devices/:id/session-ping`), which is how the panel knows the
+  session is live; closing the window hides the panel.
+- `DFSupport.exe` is not code-signed yet (separate purchase).
+
 ## 2026-11-10 · Platform 1.8.0
 
 **Province doughnut and a province you can set**
@@ -318,6 +346,35 @@ earlier sections have dates only. Agent versions are separate and listed under [
 
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.7.2 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
+- Includes 1.7.1. Sends a live session to the tray in the session it was opened on, or in the console session when
+  the session doesn't say, so the panel shows on kiosk sign-ins too.
+- Support app 1.0.8 (fixes found on POS-3316E-Setup; 1.0.7 tested there, 1.0.8 only changes the footer text):
+  - The tray could not reach the agent ("Access is denied"): it now opens the pipe with read and write-data rights
+    only, which the pipe allows signed-in users (1.0.4).
+  - Kiosk shells with no taskbar (HNA's SATerminal): the panel still shows, just without a tray icon (1.0.3).
+  - The panel stayed a blank white box because WebView2 left its windows hidden inside it; the panel now shows and
+    sizes them each time it is placed (1.0.7). It also renders without the GPU (1.0.5).
+  - `tray.log` and `panel.log` in `%LOCALAPPDATA%\DigitalFingers\Support` (256 KB, one old copy), including what the
+    panel window shows a few seconds after opening.
+  - The footer shows only the status; the technician's name is in the panel above it (1.0.8).
+- Tested: the panel shows on the machine and in the remote view (with *Show the Session Panel to the technician*
+  on), and Pause, Resume and End from the panel work.
+
+**1.7.1 (Windows), 12 Nov, pilot only (POS-3316E-Setup via `AGENT_PILOT_DEVICES`), not published**
+- Includes 1.6.2. Installs and updates `DFSupport.exe` (Session Panel and tray app, version 1.0.0) in
+  `C:\Program Files\Digital Fingers\Support` from `/v1/agent/support/windows` (sha256 from the heartbeat; never
+  replaced during a session) and starts its tray in every signed-in session as that user.
+- Local named pipe `\\.\pipe\DigitalFingersSupport` for the tray: only our exe from Program Files, in its own
+  session, holding the key the agent gave it. While a session is live the agent polls the server every 3 seconds.
+- Reports whether the panel can run (`silent`, `not-installed`, `no-webview2`, `failed`, `ready`) in the heartbeat.
+- When the tenant uses the Session Panel and WebView2 is missing, installs the Microsoft WebView2 runtime (Evergreen
+  bootstrapper, Microsoft signature checked first) outside sessions, at most every 6 hours.
+- Uninstall removes the Support app. The agent and `DFSupport.exe` carry the Digital Fingers icon and version details.
+- 1.7.0 (same day, pilot only) had no WebView2 install.
+- Support app 1.0.1: the tray waits for the taskbar after sign-in, and exits (so the agent starts a new one) if its
+  icon can't be added. 1.0.0 started too early after a sign-in on POS-3316E-Setup and idled with no icon or panel.
 
 **1.6.2 (Windows and Linux), staged 10 Nov, not published**
 - Every heartbeat reports pending-restart reasons from the registry (Windows Update `RebootRequired`, CBS

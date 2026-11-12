@@ -882,6 +882,10 @@
     }
 
     function tidy() {
+      if (customer.paused || customer.ended) {
+        paintFoot();
+        return;
+      }
       var connected = /^connected\b/i.test(statusText());
       if (connected) {
         if (reconnect || resuming) reconnected();
@@ -1011,7 +1015,7 @@
     // Mesh clears its desktop object when the stream closes; its Connect button then opens a new
     // stream to whatever is on the console, which after a sign-out is the Windows sign-in screen.
     function retryDesk() {
-      if (!reconnect) return;
+      if (!reconnect || customer.paused || customer.ended) return;
       if (deviceGone() && canResume()) {
         startAwait();
         return;
@@ -1311,6 +1315,8 @@
     }
 
     function poke() {
+      pingSession();
+      if (customer.paused || customer.ended) return;
       if (awaiting) {
         awaitDevice();
         return;
@@ -1603,8 +1609,84 @@
         });
       }, function () { throw new Error("Could not reach the console. Switch user was not sent."); });
     }
+
+    // Check-ins tell the device's Session Panel that this window is open; the reply says when the customer paused or
+    // ended the session from the panel.
+    var customer = { paused: false, ended: false, busy: false, next: 0, tsid: null };
+    var PING_EVERY = 3000;
+
+    function viewedTsid() {
+      var win = meshWindow();
+      var options = win && win.desktop && win.desktop.options;
+      if (options && typeof options.tsid === "number") customer.tsid = options.tsid;
+      return customer.tsid;
+    }
+
+    function pingSession() {
+      if (!deviceId || !consoleOrigin || customer.ended || customer.busy || Date.now() < customer.next) return;
+      customer.busy = true;
+      var tsid = viewedTsid();
+      fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-ping", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tsid: typeof tsid === "number" ? tsid : null })
+      }).then(function (response) {
+        return response.ok ? response.json() : null;
+      }).then(function (body) {
+        customer.busy = false;
+        customer.next = Date.now() + PING_EVERY;
+        if (!body) return;
+        if (body.endedBy === "customer") customerEnded();
+        else if (body.paused) customerPaused();
+        else if (customer.paused) customerResumed();
+      }, function () {
+        customer.busy = false;
+        customer.next = Date.now() + PING_EVERY;
+      });
+    }
+
+    function leaveDesk() {
+      var win = meshWindow();
+      if (win && win.desktop && typeof win.connectDesktop === "function") win.connectDesktop(null);
+    }
+
+    function customerPaused() {
+      leaveDesk();
+      if (customer.paused) return;
+      customer.paused = true;
+      reconnect = null;
+      resuming = null;
+      awaiting = null;
+      closeFly();
+      overlay("Paused by the customer", "The person at " + title + " paused screen sharing. You can't see or control the screen until they click Resume on their Session Panel.");
+    }
+
+    function customerResumed() {
+      customer.paused = false;
+      reconnectTo(viewedTsid(), "Resuming…", "The customer resumed screen sharing. Opening the desktop…", "The customer resumed screen sharing.");
+    }
+
+    function customerEnded() {
+      if (customer.ended) return;
+      customer.ended = true;
+      customer.paused = false;
+      reconnect = null;
+      resuming = null;
+      awaiting = null;
+      dropped = true;
+      leaveDesk();
+      document.getElementById("reconnect").hidden = true;
+      closeFly();
+      hideDesk();
+      ask("Session ended", "The person at " + title + " ended the session from their Session Panel.", "Close window").then(function (yes) {
+        if (yes) window.close();
+      });
+    }
+
     function reconnectTo(tsid, heading, text, done) {
       var win = meshWindow();
+      if (typeof tsid === "number") customer.tsid = tsid;
       reconnect = { since: Date.now(), next: Date.now() + 1200, tsid: tsid, done: done };
       overlay(heading, text);
       if (win && win.desktop && typeof win.connectDesktop === "function") win.connectDesktop(null);
@@ -2787,7 +2869,7 @@
     };
     document.getElementById("tool-terminal").onclick = function () { show("terminal"); };
     document.getElementById("reconnect-stop").onclick = function () {
-      var offline = Boolean(awaiting);
+      var offline = Boolean(awaiting) || customer.paused;
       stopReconnect();
       if (offline) {
         dropped = true;
@@ -2842,6 +2924,15 @@
     };
     window.addEventListener("pagehide", function () {
       if (display.original && !sameSize(display.original, display.current)) displayRestore().then(null, function () {});
+      if (deviceId && consoleOrigin && !customer.ended) {
+        fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-ping", {
+          method: "POST",
+          credentials: "include",
+          keepalive: true,
+          headers: { "content-type": "text/plain" },
+          body: JSON.stringify({ closed: true })
+        }).then(null, function () {});
+      }
     });
 
     function parseData(text) {

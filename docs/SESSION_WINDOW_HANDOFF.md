@@ -61,6 +61,16 @@ Actual Size, Full Screen, Show Remote Cursor, Color Quality (Best/High/Medium/Lo
 Invite Technician, Send Alt+Tab, Send Clipboard Keystrokes, Send Ctrl+Alt+Del, Screenshot, Short Keys (Win, Run, Explorer, Desktop, Task Manager, Alt+F4, Esc, Lock), Network Statistics, Disable Input Devices, Clipboard Sync, Start/Stop Recording, Switch Monitor, End session.
 - Deliberately left out (the engine can't do them): Remote Audio, Blacken Screen, Add Virtual Monitor.
 
+### Customer Session Panel (Phase A, 12 Nov, pilot)
+- The window checks in every 3 s (`pingSession()` → console `/devices/:id/session-ping` → API), sending the viewed
+  `tsid`. While it checks in, the device's Session Panel shows; closing the tab sends `{closed:true}` (text/plain,
+  keepalive) and the panel goes away. The sweep doesn't end a session whose window is still checking in.
+- The reply says when the customer paused (`customerPaused()`: "Paused by the customer" overlay; reconnects stop) or
+  resumed (`customerResumed()` reconnects to the same `tsid`) or ended it (`customerEnded()`: "Session ended").
+  The server also ends the Mesh tunnels 4 s after a pause or end and refuses Connect while paused (409 `paused`).
+- The panel itself is `DFSupport.exe` on the device (`agent/support`); the strip is hidden per device through Mesh
+  consent flag 64 (group drops it when the tenant turns the panel on; devices that can't show the panel keep it).
+
 ### Tools menu
 Search box, Diagnostics (opens console diagnostics), Execute Script (cmd / PowerShell / shell, as System or logged-on user, output shown), Terminal, Power Options (Lock, Log off, Restart, Restart in Safe Mode, Shut down), Quick Launch (about 20 programs, as System or logged-on user), Administrator Tasks (Disk Cleanup, Configure Cleanup, Task Scheduler, Update Group Policy), "Request a tool" link.
 - Scripts and launches go through Mesh `runcommands`. PowerShell is sent as one base64 line that decodes and runs itself.

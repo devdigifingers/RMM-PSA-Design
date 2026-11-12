@@ -1655,3 +1655,19 @@ VALUES
   ('INVOICING-PRO', 'Invoicing Pro', 'Invoicing with online payments, reminders and recurring invoices',
    ARRAY['invoicing', 'invoicing_pro'], 5, 0, 0, '{}'::jsonb)
 ON CONFLICT (code) DO NOTHING;
+
+-- Session Panel (DFSupport.exe). The session window checks in while it is open (shell_seen_at), so the panel on the
+-- device knows a technician is connected. The customer can pause (paused_at) or end (ended_by) from the panel.
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS shell_seen_at timestamptz;
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS tsid integer;
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS paused_at timestamptz;
+ALTER TABLE remote_sessions ADD COLUMN IF NOT EXISTS ended_by text CHECK (ended_by IN ('technician', 'customer'));
+CREATE INDEX IF NOT EXISTS remote_sessions_device_open_idx ON remote_sessions (device_id, id DESC) WHERE status IN ('launched', 'live');
+-- { state, detail, at } from the agent: ready, silent, not-installed, no-webview2 or failed.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS support_panel jsonb;
+-- The Mesh consent flags last set on this device's node (64 = connection strip), so they are only sent on change.
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS mesh_consent integer;
+-- { enabled, showToTechnician, silentWorkstations, silentServers, phone, email }; missing keys use the defaults.
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS panel_options jsonb NOT NULL DEFAULT '{}'::jsonb;
+-- The Mesh consent flags last set on the tenant's device group.
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS mesh_consent integer;

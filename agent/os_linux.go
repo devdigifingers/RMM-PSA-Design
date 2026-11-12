@@ -372,6 +372,13 @@ func parseDnfCheckUpdate(raw []byte) []updateItem {
 	return items
 }
 
+func pendingRestart() ([]string, string) {
+	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
+		return []string{"updates"}, ""
+	}
+	return nil, ""
+}
+
 func rebootRequired() bool {
 	if _, err := os.Stat("/var/run/reboot-required"); err == nil {
 		return true

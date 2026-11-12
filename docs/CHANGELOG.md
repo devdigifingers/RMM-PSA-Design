@@ -9,6 +9,21 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-10 · Platform 1.7.1
+
+**Hostname and "Reboot required" in the device Overview**
+- Device Specifications shows the real Windows computer name (Hostname) under Device Name, which stays the RMM label.
+  Owners and admins can **Change** it on online Windows PCs: the agent runs `Rename-Computer` without restarting
+  (`POST /v1/devices/:id/hostname`, audit `device.hostname`), and the tag shows the new name waiting for a restart.
+  Domain-joined PCs need domain rights to rename, so the job fails there and the tag clears on agent 1.6.2.
+- When the computer is waiting for a restart, an orange **Reboot required** tag sits next to the hostname. Clicking
+  it explains why (updates, Windows components, domain join or a new computer name waiting to apply), who is logged
+  on, and offers *Ask user to restart* or *Restart now* (5-minute warning when someone is logged on; servers say so
+  first). Owners and admins only; the restart runs through the same command as the Updates restart.
+- New `POST /v1/devices/:id/restart`; audit `device.restart` / `device.restart.ask`, shown on the device timeline.
+- Devices store `restart_reasons` and `pending_hostname` from agent 1.6.2. Older agents still show the tag when the
+  update scan reports a pending restart.
+
 ## 2026-11-09 · Platform 1.7.0
 
 **Invoicing Phase 1: quotes, invoices, credit notes and payments**
@@ -284,6 +299,12 @@ earlier sections have dates only. Agent versions are separate and listed under [
 
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.6.2 (Windows and Linux), staged 10 Nov, not published**
+- Every heartbeat reports pending-restart reasons from the registry (Windows Update `RebootRequired`, CBS
+  `RebootPending`, Netlogon `JoinDomain`) and a new computer name waiting for a restart (`ComputerName` differs from
+  `ActiveComputerName`). `PendingFileRenameOperations` is ignored because installers leave it set for weeks.
+  Linux reports `/var/run/reboot-required`.
 
 **1.6.1 (Windows), published 31 Oct**
 - Tested on FED-WIN-001: `powershell` by name, a 7,000-character command and a multi-line script all ran as SYSTEM;

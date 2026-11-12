@@ -1966,6 +1966,7 @@ function deviceOverview(device, info, raw) {
     ],
     device: [
       { label: "Device Name", value: device.display_name || device.hostname || "" },
+      { label: "Hostname", value: blank(device.hostname), restart: restartView(device) },
       { label: "Device ID", value: blank(board.Identifier) },
       { label: "Product ID", value: blank(osinfo.SerialNumber) },
       { label: "Model", value: blank(system["Product Name"] || board.Name || device.model) },
@@ -2210,6 +2211,44 @@ function usersFrom(body) {
   return names;
 }
 
+const RESTART_REASONS = {
+  updates: "Updates",
+  windows: "Windows components",
+  domain: "Domain join",
+  rename: "New computer name",
+};
+
+function restartFrom(body) {
+  const report = body?.restart;
+  if (!report || typeof report !== "object" || Array.isArray(report)) return null;
+  const reasons = Array.isArray(report.reasons)
+    ? [...new Set(report.reasons.filter((item) => Object.hasOwn(RESTART_REASONS, item)))]
+    : [];
+  const newName = cleanHostname(report.newName).slice(0, 63);
+  if (newName && !reasons.includes("rename")) reasons.push("rename");
+  return { reasons, newName };
+}
+
+function windowsNameError(name) {
+  if (!name) return "Enter a computer name.";
+  if (name.length > 15) return "Windows computer names are at most 15 characters.";
+  if (!/^[A-Za-z0-9-]+$/.test(name)) return "Use only letters, numbers and hyphens.";
+  if (name.startsWith("-") || name.endsWith("-")) return "The name cannot start or end with a hyphen.";
+  if (/^\d+$/.test(name)) return "The name cannot be only numbers.";
+  return "";
+}
+
+function restartView(device) {
+  const reasons = Array.isArray(device.restart_reasons) ? device.restart_reasons : [];
+  const labels = reasons.map((item) => RESTART_REASONS[item]).filter(Boolean);
+  if (device.reboot_pending === true && labels.length === 0) labels.push(RESTART_REASONS.updates);
+  return {
+    pending: device.reboot_pending === true,
+    reasons: labels,
+    newName: device.reboot_pending === true ? device.pending_hostname || "" : "",
+  };
+}
+
 function presenceFrom(lastSeenAt) {
   if (!lastSeenAt) return "offline";
   const age = Date.now() - new Date(lastSeenAt).getTime();
@@ -2430,27 +2469,31 @@ function pushNow(item) {
 
 const RESTART_WARNING = "Digital Fingers Support installed updates. This computer will restart in 5 minutes. Please save your work.";
 const RESTART_REQUEST = "Your remote administrator has applied updates to your computer. Please restart it at your earliest convenience.";
+const PENDING_RESTART_WARNING = "Digital Fingers Support needs to restart this computer to finish changes. It will restart in 5 minutes. Please save your work.";
+const PENDING_RESTART_REQUEST = "Your remote administrator needs this computer restarted to finish changes. Please restart it at your earliest convenience.";
 
 function isServerOs(osName) {
   return /server/i.test(osName || "");
 }
 
-function updateRestartCommand(device) {
+function updateRestartCommand(device, pending = false) {
   if (!/windows/i.test(device.os_name || "")) return powerCommand("restart", device.os_name, device.hostname);
   const name = String(device.hostname || "").replace(/[^A-Za-z0-9.-]/g, "") || "localhost";
   const wait = Array.isArray(device.users) && device.users.length > 0 ? 300 : 5;
-  return `set COMPUTERNAME=${name}& ${LEAVE_SAFE_MODE}shutdown /r /t ${wait} /f /d p:2:17 /c "${RESTART_WARNING}"`;
+  const reason = pending ? "p:0:0" : "p:2:17";
+  return `set COMPUTERNAME=${name}& ${LEAVE_SAFE_MODE}shutdown /r /t ${wait} /f /d ${reason} /c "${pending ? PENDING_RESTART_WARNING : RESTART_WARNING}"`;
 }
 
-async function restartAfterUpdates(device, mode, actorId) {
+async function restartAfterUpdates(device, mode, actorId, { pending = false } = {}) {
+  const audit = pending ? "device.restart" : "patch.restart";
   if (mode === "ask") {
     const { nodeId } = await resolveMeshNode(device, device.org_id);
     if (!nodeId) throw Object.assign(new Error("This computer is not linked to the remote service."), { status: 409 });
-    await meshControl(["DeviceMessage", "--id", nodeId, "--title", "Digital Fingers Support", "--msg", RESTART_REQUEST]);
-    await writeAudit(device.org_id, actorId, "patch.restart.ask", "device", String(device.id), {});
+    await meshControl(["DeviceMessage", "--id", nodeId, "--title", "Digital Fingers Support", "--msg", pending ? PENDING_RESTART_REQUEST : RESTART_REQUEST]);
+    await writeAudit(device.org_id, actorId, `${audit}.ask`, "device", String(device.id), {});
     return { asked: true };
   }
-  const command = updateRestartCommand(device);
+  const command = updateRestartCommand(device, pending);
   if (!command) throw Object.assign(new Error("This computer cannot be restarted from here."), { status: 400 });
   const job = await pool.query(
     `INSERT INTO jobs (org_id, device_id, command, created_by)
@@ -2458,7 +2501,7 @@ async function restartAfterUpdates(device, mode, actorId) {
      RETURNING id`,
     [device.org_id, device.id, command, actorId],
   );
-  await writeAudit(device.org_id, actorId, "patch.restart", "device", String(device.id), {
+  await writeAudit(device.org_id, actorId, audit, "device", String(device.id), {
     jobId: Number(job.rows[0].id),
     warned: Array.isArray(device.users) && device.users.length > 0,
   });
@@ -6027,6 +6070,7 @@ const server = createServer(async (req, res) => {
       const users = usersFrom(body);
       const agentVersion = versionParts(body.agentVersion) ? body.agentVersion : "";
       const remoteAgent = remoteAgentFrom(body);
+      const restart = restartFrom(body);
       const uptime = Number(metrics?.uptimeSeconds);
       const publicIp = publicIpFrom(req);
       const saved = await pool.query(
@@ -6049,7 +6093,16 @@ const server = createServer(async (req, res) => {
              ipv4 = CASE WHEN $12 = '' THEN ipv4 ELSE $12 END,
              users = CASE WHEN $13::boolean THEN $14::jsonb ELSE users END,
              updates_checked_at = CASE WHEN $5::boolean THEN now() ELSE updates_checked_at END,
-             reboot_pending = CASE WHEN $5::boolean THEN $15::boolean ELSE reboot_pending END,
+             reboot_pending = CASE WHEN $22::boolean THEN jsonb_array_length($23::jsonb) > 0
+                                   WHEN pending_hostname IS NOT NULL AND lower(pending_hostname) = lower($2) THEN $5::boolean AND $15::boolean
+                                   WHEN $5::boolean THEN $15::boolean OR pending_hostname IS NOT NULL
+                                   ELSE reboot_pending END,
+             restart_reasons = CASE WHEN $22::boolean THEN $23::jsonb
+                                    WHEN pending_hostname IS NOT NULL AND lower(pending_hostname) = lower($2) THEN NULL
+                                    ELSE restart_reasons END,
+             pending_hostname = CASE WHEN $22::boolean THEN NULLIF($24, '')
+                                     WHEN lower(pending_hostname) = lower($2) THEN NULL
+                                     ELSE pending_hostname END,
              agent_version = COALESCE(NULLIF($16, ''), agent_version),
              remote_agent = COALESCE($21::jsonb, remote_agent)
          FROM (SELECT public_ip AS previous_ip, remote_agent AS previous_remote, agent_version AS previous_agent FROM devices WHERE id = $1) prior
@@ -6079,6 +6132,9 @@ const server = createServer(async (req, res) => {
           Number.isFinite(uptime) && uptime >= 0 && uptime < 10 * 365 * 86400 ? Math.floor(uptime) : null,
           publicIp,
           remoteAgent ? JSON.stringify(remoteAgent) : null,
+          restart != null,
+          JSON.stringify(restart?.reasons || []),
+          restart?.newName || "",
         ],
       );
       const remoteChange = remoteAgentChange(saved.rows[0]?.previous_remote, remoteAgent);
@@ -6175,11 +6231,21 @@ const server = createServer(async (req, res) => {
         `UPDATE jobs
          SET status = 'finished', exit_code = $1, output = $2, finished_at = now()
          WHERE id = $3 AND device_id = $4 AND status = 'running'
-         RETURNING id, org_id, ticket_id, kind`,
+         RETURNING id, org_id, ticket_id, kind, command`,
         [exitCode, output, jobResultMatch[1], device.id],
       );
       if (!updated.rows[0]) return send(res, 404, { error: "Job not found." });
       const finished = updated.rows[0];
+      if (exitCode !== 0 && String(finished.command || "").includes("Rename-Computer -NewName '")) {
+        await pool.query(
+          `UPDATE devices
+           SET pending_hostname = NULL,
+               restart_reasons = NULLIF(COALESCE(restart_reasons, '[]'::jsonb) - 'rename', '[]'::jsonb),
+               reboot_pending = jsonb_array_length(COALESCE(restart_reasons, '[]'::jsonb) - 'rename') > 0
+           WHERE id = $1`,
+          [device.id],
+        );
+      }
       await recordActivitySafely(pool, finished.org_id, {
         type: finished.kind === "script" ? "script.finished" : "command.finished",
         group: "commands",
@@ -6293,7 +6359,8 @@ const server = createServer(async (req, res) => {
       const device = await pool.query(
         `SELECT d.id, d.hostname, d.display_name, d.os_name, d.last_seen_at, d.make, d.model,
                 d.serial, d.ipv4, d.users, d.mesh_node_id, d.agent_version, c.name AS customer_name,
-                d.public_ip, d.geo_city, d.geo_region, d.geo_country_name, d.geo_updated_at, d.site_override
+                d.public_ip, d.geo_city, d.geo_region, d.geo_country_name, d.geo_updated_at, d.site_override,
+                d.reboot_pending, d.restart_reasons, d.pending_hostname
          FROM devices d
          LEFT JOIN sites s ON s.id = d.site_id
          LEFT JOIN customers c ON c.id = s.customer_id
@@ -6343,6 +6410,12 @@ const server = createServer(async (req, res) => {
         canRemote: remoteAccess(license.rows[0]).canRemote,
         users: Array.isArray(row.users) ? row.users : [],
         siteOverride: row.site_override || "",
+        restart: {
+          canRestart: canOperate(actor),
+          canRename: canOperate(actor) && /windows/i.test(row.os_name || ""),
+          isServer: isServerOs(row.os_name),
+          online: presence === "online",
+        },
         note,
         overview: deviceOverview(row, meshInfo, rawInfo),
         left: sections.left,
@@ -7052,6 +7125,80 @@ const server = createServer(async (req, res) => {
         to: release.version,
       });
       return send(res, 202, { status: "queued", version: release.version });
+    }
+
+    const deviceHostnameMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/hostname$/);
+    if (req.method === "POST" && deviceHostnameMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "device.hostname.deny", "device", deviceHostnameMatch[1], { reason: "role" });
+        return send(res, 403, { error: "An admin changes computer names." });
+      }
+      const body = await readJson(req);
+      const name = typeof body.name === "string" ? body.name.trim().toUpperCase() : "";
+      const nameError = windowsNameError(name);
+      if (nameError) return send(res, 400, { error: nameError });
+      const found = await pool.query(
+        "SELECT id, hostname, os_name, last_seen_at, restart_reasons FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceHostnameMatch[1], actor.org_id],
+      );
+      const device = found.rows[0];
+      if (!device) return send(res, 404, { error: "Device not found." });
+      if (!/windows/i.test(device.os_name || "")) return send(res, 400, { error: "Only Windows computer names can be changed here." });
+      if (presenceFrom(device.last_seen_at) !== "online") return send(res, 409, { error: "This computer is offline." });
+      if (name.toLowerCase() === String(device.hostname || "").toLowerCase()) return send(res, 400, { error: "That is already the computer name." });
+      const command = `powershell -NoProfile -NonInteractive -Command "Rename-Computer -NewName '${name}' -Force -ErrorAction Stop"`;
+      const job = await pool.query(
+        `INSERT INTO jobs (org_id, device_id, command, created_by)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [actor.org_id, device.id, command, actor.id],
+      );
+      const reasons = Array.isArray(device.restart_reasons) ? device.restart_reasons.filter((item) => item !== "rename") : [];
+      await pool.query(
+        "UPDATE devices SET reboot_pending = true, restart_reasons = $2::jsonb, pending_hostname = $3 WHERE id = $1",
+        [device.id, JSON.stringify([...reasons, "rename"]), name],
+      );
+      await writeAudit(actor.org_id, actor.id, "device.hostname", "device", String(device.id), {
+        from: device.hostname,
+        to: name,
+        jobId: Number(job.rows[0].id),
+      });
+      return send(res, 201, { name, jobId: Number(job.rows[0].id) });
+    }
+
+    const deviceRestartMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/restart$/);
+    if (req.method === "POST" && deviceRestartMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!canOperate(actor)) {
+        await writeAudit(actor.org_id, actor.id, "power.deny", "device", deviceRestartMatch[1], { reason: "role" });
+        return send(res, 403, { error: "An admin restarts computers." });
+      }
+      const body = await readJson(req);
+      const found = await pool.query(
+        `SELECT id, org_id, hostname, display_name, mesh_node_id, os_name, users, reboot_pending, last_seen_at
+         FROM devices WHERE id = $1 AND org_id = $2`,
+        [deviceRestartMatch[1], actor.org_id],
+      );
+      const device = found.rows[0];
+      if (!device) return send(res, 404, { error: "Device not found." });
+      if (!device.reboot_pending) return send(res, 409, { error: "This computer is not waiting for a restart." });
+      if (presenceFrom(device.last_seen_at) !== "online") return send(res, 409, { error: "This computer is offline." });
+      const mode = body.mode === "ask" ? "ask" : "auto";
+      if (mode === "auto" && isServerOs(device.os_name) && body.confirmServer !== true) {
+        return send(res, 409, { error: "This is a server. Confirm the restart.", needsConfirm: true });
+      }
+      try {
+        const done = await restartAfterUpdates(device, mode, actor.id, { pending: true });
+        return send(res, mode === "ask" ? 200 : 201, {
+          ...done,
+          warned: mode === "auto" && Array.isArray(device.users) && device.users.length > 0,
+        });
+      } catch (error) {
+        return send(res, error.status || 502, { error: error.message || "The restart could not be sent." });
+      }
     }
 
     const devicePowerMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/power$/);

@@ -3837,6 +3837,57 @@ html[data-theme="dark"] .diag-link .diag-icon { color: #b49cfc; }
   color: var(--blue);
 }
 
+.overview-card .restart-tag {
+  border-color: #f3c78b;
+  background: #fff1dc;
+  color: #9a5b12;
+  font-weight: 600;
+}
+
+.overview-card .restart-tag:hover,
+.overview-card .restart-tag[aria-expanded="true"] {
+  border-color: #e07a1f;
+  background: #ffe6c2;
+  color: #8a4f0c;
+}
+
+.overview-card .restart-tag.is-sent { border-color: var(--line); background: var(--soft); color: var(--muted); }
+
+.host-value { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.overview-card .host-value .restart-tag { height: 22px; padding: 0 10px; font-size: 12px; }
+
+.restart-confirm,
+.restart-sent,
+.host-hint {
+  grid-column: 1 / -1;
+}
+
+.host-hint { margin: 0; color: var(--muted); font-size: 12px; }
+.host-hint .error { color: var(--red); }
+
+.restart-confirm {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid #f3c78b;
+  border-radius: 12px;
+  background: #fff7eb;
+}
+
+.restart-confirm strong { color: #9a5b12; }
+.restart-confirm p { margin: 0; color: var(--muted); font-size: 13px; }
+.restart-confirm .restart-server { color: var(--red); }
+.restart-confirm .error { color: var(--red); }
+.restart-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.overview-card .restart-actions .restart-now { border-color: var(--red); background: var(--red); color: #fff; }
+.overview-card .restart-actions .restart-now:hover:not(:disabled) { border-color: #b92e2e; background: #b92e2e; color: #fff; }
+.restart-sent { margin: 0; color: #1d7a3a; font-size: 13px; }
+
+html[data-theme="dark"] .overview-card .restart-tag { border-color: rgba(224, 122, 31, 0.5); background: rgba(224, 122, 31, 0.16); color: #f3b46b; }
+html[data-theme="dark"] .restart-confirm { border-color: rgba(224, 122, 31, 0.4); background: rgba(224, 122, 31, 0.1); }
+html[data-theme="dark"] .restart-confirm strong { color: #f3b46b; }
+html[data-theme="dark"] .restart-sent { color: #6fd58f; }
+
 .term-tabs, .term-run, .files-dock, .files-dock-bar { background: var(--card); border-color: var(--line); }
 
 .term-tabs button, .task-tabs button, .files-dock-bar button { color: var(--muted); }

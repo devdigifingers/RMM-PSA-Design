@@ -1084,6 +1084,46 @@ export async function powerDevice(deviceId, action) {
   return { ok: true, error: "" };
 }
 
+export async function changeHostname(deviceId, name) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  if (!/^\d+$/.test(String(deviceId))) return { ok: false, error: "Device not found." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/hostname`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ name: String(name || "").slice(0, 63) }),
+    cache: "no-store",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: result.error || "The new name was not sent." };
+  return { ok: true, name: result.name };
+}
+
+export async function restartPendingDevice(deviceId, mode, confirmServer = false) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  if (!/^\d+$/.test(String(deviceId))) return { ok: false, error: "Device not found." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/restart`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ mode: mode === "ask" ? "ask" : "auto", confirmServer: confirmServer === true }),
+    cache: "no-store",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, error: result.error || "The restart was not sent.", needsConfirm: result.needsConfirm === true };
+  }
+  return { ok: true, asked: result.asked === true, warned: result.warned === true };
+}
+
 export async function updateAgent(deviceId) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

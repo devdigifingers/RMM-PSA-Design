@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice, setDeviceSite } from "../actions";
+import { changeHostname, deviceDetails, deviceDiagnostics, deviceSoftware, renameDevice, restartPendingDevice, setDeviceSite } from "../actions";
 import { DiagnosticIcon, TileIcon } from "./diagnostic-icons";
 import { DIAGNOSTIC_TOOLS, diagnosticTool } from "./diagnostic-tools";
 import { DetailColumns } from "./details-window";
@@ -137,6 +137,8 @@ function ToolBody({ deviceId, osName, users, canRemote, selected, state, setStat
         <Overview
           deviceId={deviceId}
           overview={state.overview}
+          users={state.users || users || []}
+          restart={state.restart || {}}
           onRename={(name) => setState({ ...state, displayName: name, overview: { ...state.overview, device: state.overview.device.map((row) => row.label === "Device Name" ? { ...row, value: name } : row) } })}
           onSite={(site) => setState({ ...state, siteOverride: site, overview: { ...state.overview, device: state.overview.device.map((row) => row.label === "Site / Branch" ? { ...row, value: site } : row) } })}
         />
@@ -158,8 +160,158 @@ const EDITABLE = {
   "Site / Branch": { label: "Site or branch", action: "Change", empty: "Not set", placeholder: "e.g. Durban branch" },
 };
 
-function Overview({ deviceId, overview, onRename, onSite }) {
+function HostnameRow({ deviceId, row, users, access, busy, onBusy }) {
+  const hostname = row.value;
+  const [pending, setPending] = useState(row.restart || { pending: false, reasons: [], newName: "" });
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState("");
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState("");
+
+  function startEdit() {
+    setDraft(pending.newName || hostname);
+    setEditing(true);
+    setOpen(false);
+    setError("");
+    onBusy(true);
+  }
+
+  function stopEdit() {
+    setEditing(false);
+    setError("");
+    onBusy(false);
+  }
+
+  async function saveName() {
+    const name = draft.trim().toUpperCase();
+    if (!name) {
+      setError("Enter a computer name.");
+      return;
+    }
+    setSending("name");
+    setError("");
+    const result = await changeHostname(String(deviceId), name);
+    setSending("");
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    const reasons = pending.reasons.filter((reason) => reason !== "New computer name");
+    setPending({ pending: true, reasons: [...reasons, "New computer name"], newName: result.name });
+    setSent("");
+    stopEdit();
+    setOpen(true);
+  }
+
+  async function send(mode) {
+    setSending(mode);
+    setError("");
+    const result = await restartPendingDevice(String(deviceId), mode, access.isServer);
+    setSending("");
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setOpen(false);
+    setSent(mode === "ask"
+      ? `A restart request was shown on ${hostname}.`
+      : result.warned
+        ? `${hostname} restarts in 5 minutes. The logged-on user was warned.`
+        : `${hostname} is restarting.`);
+  }
+
+  const reasons = pending.reasons.map((reason) => reason === "New computer name" && pending.newName ? `new computer name (${pending.newName})` : reason.toLowerCase());
+  const who = users.length === 0
+    ? "No one is logged on, so it restarts within a few seconds."
+    : `${users.join(", ")} ${users.length === 1 ? "is" : "are"} logged on and will get a 5-minute warning to save their work.`;
+
+  return (
+    <div className="name-line host-line">
+      <dt>{row.label}</dt>
+      <dd>
+        {editing ? (
+          <input
+            value={draft}
+            aria-label="Computer name"
+            placeholder="e.g. CLUB-MALMESBURY"
+            maxLength={15}
+            onChange={(event) => setDraft(event.target.value.toUpperCase())}
+            onKeyDown={(event) => { if (event.key === "Enter") saveName(); }}
+          />
+        ) : (
+          <span className="host-value">
+            {hostname}
+            {pending.pending ? (
+              <button
+                type="button"
+                className={sent ? "restart-tag is-sent" : "restart-tag"}
+                aria-expanded={open}
+                onClick={() => { setOpen((value) => !value); setError(""); }}
+              >
+                {sent && !open ? "Restart sent" : "Reboot required"}
+              </button>
+            ) : null}
+          </span>
+        )}
+      </dd>
+      {access.canRename ? (
+        <span className="rename-actions">
+          {editing ? (
+            <>
+              <button type="button" onClick={stopEdit}>Cancel</button>
+              <button type="button" onClick={saveName} disabled={sending === "name"}>{sending === "name" ? "Sending…" : "Save"}</button>
+            </>
+          ) : (
+            <button type="button" disabled={busy || !access.online} title={access.online ? undefined : "This computer is offline."} onClick={startEdit}>Change</button>
+          )}
+        </span>
+      ) : null}
+      {editing ? (
+        <p className="host-hint">
+          Windows renames the computer when it restarts. Up to 15 letters, numbers or hyphens. Device Name (the RMM label) stays as it is.
+          {error ? <span className="error"> {error}</span> : null}
+        </p>
+      ) : null}
+      {open ? (
+        <section className="restart-confirm" role="alertdialog" aria-label={`Restart ${hostname}`}>
+          <strong>{hostname} is still running</strong>
+          <p>It needs a restart to finish: {reasons.join(", ")}.</p>
+          {!access.online ? (
+            <p>This computer is offline. Restart it when it is back online.</p>
+          ) : !access.canRestart ? (
+            <p>An admin can restart this computer.</p>
+          ) : (
+            <>
+              <p>Restart it now? {who} Any open remote session is closed.</p>
+              {access.isServer ? <p className="restart-server">{hostname} is a server. Restarting it disconnects everyone who uses it.</p> : null}
+            </>
+          )}
+          {error ? <p className="error">{error}</p> : null}
+          <span className="restart-actions">
+            <button type="button" onClick={() => setOpen(false)}>Cancel</button>
+            {access.online && access.canRestart ? (
+              <>
+                {users.length > 0 ? (
+                  <button type="button" disabled={Boolean(sending)} onClick={() => send("ask")}>{sending === "ask" ? "Sending…" : "Ask user to restart"}</button>
+                ) : null}
+                <button type="button" className="restart-now" disabled={Boolean(sending)} onClick={() => send("auto")}>
+                  {sending === "auto" ? "Sending…" : access.isServer ? "Restart server now" : "Restart now"}
+                </button>
+              </>
+            ) : null}
+          </span>
+        </section>
+      ) : null}
+      {sent && !open ? <p className="restart-sent">{sent}</p> : null}
+    </div>
+  );
+}
+
+function Overview({ deviceId, overview, users, restart, onRename, onSite }) {
   const [editing, setEditing] = useState("");
+  const [hostEditing, setHostEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -206,6 +358,19 @@ function Overview({ deviceId, overview, onRename, onSite }) {
             {overview.device.map((row) => {
               const edit = EDITABLE[row.label];
               const open = editing === row.label;
+              if (row.label === "Hostname") {
+                return (
+                  <HostnameRow
+                    key={row.label}
+                    deviceId={deviceId}
+                    row={row}
+                    users={users}
+                    access={restart}
+                    busy={Boolean(editing) || hostEditing}
+                    onBusy={setHostEditing}
+                  />
+                );
+              }
               return (
                 <div key={row.label} className={edit ? "name-line" : undefined}>
                   <dt>{row.label}</dt>
@@ -229,7 +394,7 @@ function Overview({ deviceId, overview, onRename, onSite }) {
                           <button type="button" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
                         </>
                       ) : (
-                        <button type="button" disabled={Boolean(editing)} onClick={() => { setDraft(row.value || ""); setEditing(row.label); setError(""); }}>{edit.action}</button>
+                        <button type="button" disabled={Boolean(editing) || hostEditing} onClick={() => { setDraft(row.value || ""); setEditing(row.label); setError(""); }}>{edit.action}</button>
                       )}
                     </span>
                   ) : null}

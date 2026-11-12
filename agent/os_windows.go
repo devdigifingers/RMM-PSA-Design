@@ -926,6 +926,47 @@ func osRelease() (string, string) {
 	return version, build
 }
 
+func registryKeyExists(path string) bool {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	key.Close()
+	return true
+}
+
+func registryString(path, name string) string {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, path, registry.QUERY_VALUE)
+	if err != nil {
+		return ""
+	}
+	defer key.Close()
+	value, _, _ := key.GetStringValue(name)
+	return strings.TrimSpace(value)
+}
+
+// PendingFileRenameOperations is left out: installers leave it set for weeks and it would keep the tag on.
+func pendingRestart() ([]string, string) {
+	var reasons []string
+	if registryKeyExists(`SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired`) {
+		reasons = append(reasons, "updates")
+	}
+	if registryKeyExists(`SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending`) {
+		reasons = append(reasons, "windows")
+	}
+	if registryKeyExists(`SYSTEM\CurrentControlSet\Services\Netlogon\JoinDomain`) {
+		reasons = append(reasons, "domain")
+	}
+	newName := registryString(`SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName`, "ComputerName")
+	active := registryString(`SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName`, "ComputerName")
+	if newName == "" || active == "" || strings.EqualFold(newName, active) {
+		newName = ""
+	} else {
+		reasons = append(reasons, "rename")
+	}
+	return reasons, newName
+}
+
 func runCommand(command string) (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

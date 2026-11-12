@@ -698,6 +698,8 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_lon numeric(5, 2);
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS geo_updated_at timestamptz;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS site_override text
   CHECK (site_override IS NULL OR length(site_override) BETWEEN 1 AND 80);
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS restart_reasons jsonb;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS pending_hostname text;
 
 CREATE TABLE IF NOT EXISTS device_daily_stats (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

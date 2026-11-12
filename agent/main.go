@@ -11,13 +11,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const agentVersion = "1.6.1"
+const agentVersion = "1.6.2"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`
@@ -165,6 +166,7 @@ func heartbeat(api string, state savedState) error {
 		payload["updates"] = updates
 		payload["rebootPending"] = rebootPending
 	}
+	payload["restart"] = restartReport()
 	payload["acceptDeploys"] = !installing.Load() && len(deployQueue) == 0
 	if report := remoteReport.Load(); report != nil {
 		payload["remoteAgent"] = report
@@ -467,6 +469,20 @@ func pendingUpdates() ([]updateItem, bool, time.Time, bool) {
 		items = []updateItem{}
 	}
 	return items, updateState.rebootPending, updateState.collected, true
+}
+
+func restartReport() map[string]any {
+	reasons, newName := pendingRestart()
+	updateState.mu.Lock()
+	scanned := updateState.rebootPending
+	updateState.mu.Unlock()
+	if scanned && !slices.Contains(reasons, "updates") {
+		reasons = append(reasons, "updates")
+	}
+	if reasons == nil {
+		reasons = []string{}
+	}
+	return map[string]any{"reasons": reasons, "newName": newName}
 }
 
 func installLoop(ctx context.Context, api string, state savedState) {

@@ -1,0 +1,43 @@
+/* 3. BOLD — spec §4.2.3 */
+.t-bold .sg{font-family:"Space Grotesk",sans-serif;}
+.t-bold .hdr{height:140px;background:linear-gradient(135deg in oklab,var(--primary),var(--secondary));color:#fff;
+  display:flex;justify-content:space-between;align-items:center;padding:0 48px;}
+.t-bold .hdr h1{font-family:"Space Grotesk";font-weight:700;font-size:44px;line-height:1;letter-spacing:-.005em;color:var(--on-primary);}
+.t-bold .hdr .no{font-size:14px;color:rgba(255,255,255,.9);margin-top:8px;letter-spacing:.02em;}
+.t-bold .hdr img.logo{height:44px;width:auto;}
+.t-bold .wrap{padding:0 48px;}
+.t-bold .hero{padding:22px 0 0;font-family:"Space Grotesk";font-size:36px;font-weight:700;line-height:1.15;letter-spacing:-.01em;}
+.t-bold .hero span{color:var(--slate-600);font-weight:500;}
+.t-bold .meta{font-size:12.5px;color:var(--slate-600);margin-top:6px;display:flex;gap:18px;}
+.t-bold .meta b{color:var(--ink);font-weight:600;}
+.t-bold .parties{display:grid;grid-template-columns:1.2fr 1fr;gap:32px;margin-top:20px;line-height:1.45;}
+.t-bold .cust{position:relative;padding-left:18px;}
+.t-bold .cust::before{content:"";position:absolute;left:0;top:2px;bottom:2px;width:4px;border-radius:2px;background:linear-gradient(180deg in oklab,var(--primary),var(--secondary));}
+.t-bold .cust .nm{font-family:"Space Grotesk";font-size:17px;font-weight:700;line-height:1.3;margin-bottom:2px;}
+.t-bold .from{font-size:12px;color:var(--slate-600);}
+.t-bold .from strong{color:var(--ink);font-weight:600;}
+.t-bold table.lines{margin-top:20px;}
+.t-bold table.lines th{font-family:"Space Grotesk";font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;text-align:left;
+  padding:0 10px 9px;border-bottom:2px solid var(--primary);}
+.t-bold table.lines th.r{text-align:right;}
+.t-bold table.lines td{padding:14px 10px;}
+@media print{.t-bold table.lines td{padding-top:12px;padding-bottom:12px;}}
+.t-bold table.lines td{border-bottom:1px solid var(--line);vertical-align:top;}
+.t-bold table.lines th:first-child,.t-bold table.lines td:first-child{padding-left:0;}
+.t-bold table.lines th:last-child,.t-bold table.lines td:last-child{padding-right:0;}
+.t-bold .totals{display:flex;justify-content:space-between;gap:32px;margin-top:12px;}
+.t-bold .notes{font-size:11.5px;color:var(--slate-600);max-width:320px;}
+.t-bold .tot .row{padding:4px 0;}
+.t-bold .tot .grand{border-top:2px solid var(--primary);margin-top:6px;padding-top:9px;font-family:"Space Grotesk";font-weight:700;font-size:20px;}
+.t-bold .tot .grand span:first-child{color:var(--ink);}
+.t-bold .tot .grand span:last-child{color:var(--primary-text);}
+.t-bold .band{position:absolute;left:0;right:0;bottom:0;background:var(--primary);color:var(--on-primary);padding:18px 48px 14px;}
+.t-bold .band .cols{display:grid;grid-template-columns:1.25fr 1fr 104px;gap:28px;align-items:start;font-size:11px;line-height:1.55;}
+.t-bold .band h4{font-family:"Space Grotesk";font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;color:#fff;}
+.t-bold .band .bank dt{color:rgba(255,255,255,.9);} .t-bold .band .bank dd{color:#fff;}
+.t-bold .band .ref{background:rgba(255,255,255,.16);color:#fff;} .t-bold .band .ref b{color:#fff;}
+.t-bold .band p{color:rgba(255,255,255,.9);}
+.t-bold .tile{background:#fff;border-radius:12px;padding:9px;width:104px;}
+.t-bold .tile .qr{width:84px;height:84px;margin:0 auto;}
+.t-bold .tile .cap{color:var(--ink);font-size:9.5px;text-align:center;margin-top:5px;font-weight:600;line-height:1.25;}
+.t-bold .band .pg{display:flex;justify-content:space-between;margin-top:10px;font-size:10px;color:rgba(255,255,255,.9);border-top:1px solid rgba(255,255,255,.22);padding-top:8px;}

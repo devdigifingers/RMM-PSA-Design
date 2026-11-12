@@ -34,6 +34,7 @@ function startingView(path, access, lastApp) {
   if (path === "/settings/org" || path.startsWith("/settings/org/")) return { area: areaForApp(lastApp, access), view: "org" };
   if (path.startsWith("/remote/settings") && access.remote) return { area: "remote", view: "app" };
   if (path.startsWith("/desk/settings") && access.service) return { area: "desk", view: "app" };
+  if (path.startsWith("/billing/settings") && access.billing) return { area: "billing", view: "app" };
   const area = areaForApp(appForPath(path)?.key || lastApp, access);
   return { area, view: area === "org" ? "org" : "app" };
 }

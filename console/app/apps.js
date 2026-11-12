@@ -15,7 +15,7 @@ export const APPS = [
   { id: "remote-desk", key: "remote", entitlementKey: "remote", name: "Remote Desk", description: "Remote monitoring and support", route: "/devices", paths: ["/support", "/devices", "/dashboard", "/alerts", "/patches", "/remote"], status: "live", ...assets("remote-desk", 447) },
   { id: "service-desk", key: "service", entitlementKey: "servicedesk", name: "Service Desk", description: "Tickets and customer support", route: "/tickets", paths: ["/tickets", "/desk"], status: "live", ...assets("service-desk", 432) },
   { id: "monitoring", key: "monitoring", entitlementKey: "remote", name: "Monitoring", description: "Alerts and health checks", route: null, paths: [], status: "soon", ...assets("monitoring", 392) },
-  { id: "billing", key: "billing", entitlementKey: null, name: "Billing", description: "Quotes and invoicing", route: null, paths: [], status: "soon", ...assets("billing", 323) },
+  { id: "billing", key: "billing", entitlementKey: "billing", name: "Invoicing", description: "Quotes, invoices and getting paid", route: "/billing", paths: ["/billing"], status: "live", ...assets("billing", 323) },
   { id: "reports", key: "reports", entitlementKey: "reporting", name: "Reports", description: "Fleet, session and Service Desk reports", route: "/reports", paths: ["/reports"], status: "live", ...assets("reports", 323) },
 ];
 

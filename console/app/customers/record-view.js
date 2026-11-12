@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { formatWhen } from "../account-data";
+import { accountFromSession, formatWhen, hasFeature } from "../account-data";
+import { CustomerInvoices } from "../billing/documents/customer-invoices";
 import {
   addContact,
   assignAsset,
@@ -86,12 +87,15 @@ export async function CustomerRecord({ app, params, searchParams }) {
       ["attachments", "Attachments", insights ? insights.attachments.length : null],
       ["notes", "Notes", null],
     ];
+  const billing = hasFeature(await accountFromSession(), "invoicing");
+  if (billing) tabs.splice(tabs.length - 1, 0, ["invoices", "Invoices", null]);
   const asked = query?.tab === "history" ? "timeline" : query?.tab;
   const tab = tabs.some(([key]) => key === asked) ? asked : "overview";
   const primary = contacts.find((contact) => contact.primary);
   const online = devices.filter((device) => device.presence === "online").length;
   const connectable = devices.filter((device) => device.hasRemote);
   const href = (key) => `${base}/${account.id}?tab=${key}`;
+  const invoices = tab === "invoices" ? await apiGet(`/v1/billing/documents?customer=${account.id}`).then((r) => (r.ok ? r.json() : null)) : null;
 
   return (
     <div className="console">
@@ -436,6 +440,13 @@ export async function CustomerRecord({ app, params, searchParams }) {
 
           {tab === "sla" && !remote && sla ? (
             <SlaTab account={account} sla={sla} report={report} readOnly={readOnly} />
+          ) : null}
+
+          {tab === "invoices" && invoices ? (
+            <>
+              <p className="org-name">Quotes, invoices and credit notes for this customer. <a href={`/billing/customers/${account.id}`}>Open in Invoicing</a></p>
+              <CustomerInvoices docs={invoices} customerId={account.id} canManage={invoices.canManage} />
+            </>
           ) : null}
         </section>
       </main>

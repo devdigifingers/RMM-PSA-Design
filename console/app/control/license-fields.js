@@ -3,6 +3,10 @@
 import { AppIcon } from "../mark";
 import { FEATURE_GROUPS, FEATURE_KEYS, LICENSE_TYPES, packageLabel } from "./catalog";
 
+export function limitText(value) {
+  return value == null ? "Unlimited" : String(value);
+}
+
 export function licenseValue(license) {
   return {
     packageId: license?.packageId ? String(license.packageId) : "",
@@ -10,6 +14,9 @@ export function licenseValue(license) {
     seatsOverride: license?.seatsOverride ?? "",
     devicesOverride: license?.devicesOverride ?? "",
     sessionsOverride: license?.sessionsOverride ?? "",
+    invoicesPerMonth: license?.limitsOverride?.invoicesPerMonth ?? "",
+    emailsPerMonth: license?.limitsOverride?.emailsPerMonth ?? "",
+    issuingCompanies: license?.limitsOverride?.issuingCompanies ?? "",
     featuresAdded: license?.featuresAdded || [],
     featuresRemoved: license?.featuresRemoved || [],
     noExpiry: license ? license.noExpiry === true || !license.expiresAt : true,
@@ -28,6 +35,9 @@ export function effectiveOf(pkg, value) {
     seats: pick(value.seatsOverride, pkg?.defaultSeats),
     devices: pick(value.devicesOverride, pkg?.defaultDevices),
     sessions: pick(value.sessionsOverride, pkg?.defaultSessions),
+    invoicesPerMonth: pick(value.invoicesPerMonth, pkg?.limits?.invoicesPerMonth ?? null),
+    emailsPerMonth: pick(value.emailsPerMonth, pkg?.limits?.emailsPerMonth ?? null),
+    issuingCompanies: pick(value.issuingCompanies, pkg?.limits?.issuingCompanies ?? null),
   };
 }
 
@@ -98,6 +108,21 @@ export function LicenseFields({ value, onChange, packages, showStatus = true }) 
           <input name="sessionsOverride" type="number" min="0" max="100" step="1" value={value.sessionsOverride} placeholder={pkg ? `${pkg.defaultSessions} (package)` : ""} onChange={(event) => set({ sessionsOverride: event.target.value })} />
         </label>
       </div>
+      <div className="license-grid">
+        <label>
+          Invoices a month
+          <input name="invoicesPerMonth" type="number" min="0" step="1" value={value.invoicesPerMonth} placeholder={pkg ? `${limitText(pkg.limits?.invoicesPerMonth)} (package)` : ""} onChange={(event) => set({ invoicesPerMonth: event.target.value })} />
+        </label>
+        <label>
+          Emails a month
+          <input name="emailsPerMonth" type="number" min="0" step="1" value={value.emailsPerMonth} placeholder={pkg ? `${limitText(pkg.limits?.emailsPerMonth)} (package)` : ""} onChange={(event) => set({ emailsPerMonth: event.target.value })} />
+        </label>
+        <label>
+          Issuing companies
+          <input name="issuingCompanies" type="number" min="0" step="1" value={value.issuingCompanies} placeholder={pkg ? `${limitText(pkg.limits?.issuingCompanies)} (package)` : ""} onChange={(event) => set({ issuingCompanies: event.target.value })} />
+        </label>
+      </div>
+      <p className="org-name">Invoicing Pro and MSP Billing remove the invoice, email and issuing company limits.</p>
       <p className="org-name">Leave a limit blank to use the package default.</p>
       <div className="admin-features">
         {FEATURE_GROUPS.map((group) => (

@@ -18,19 +18,20 @@ function customersHref(app, customers) {
   return customers.remote ? "/remote/customers" : "/desk/customers";
 }
 
-export function NavLinks({ links, serviceLinks, reportLinks, customers = null, lastApp, label }) {
+export function NavLinks({ links, serviceLinks, reportLinks, billingLinks, customers = null, lastApp, label }) {
   const path = usePathname() || "";
   const fromPath = appForPath(path);
   const app = fromPath || lastApp;
 
-  // Reports is opened from the other apps, so it does not replace the remembered home app.
+  // Reports and Invoicing are opened from the other apps, so they do not replace the remembered home app.
   useEffect(() => {
-    if (fromPath && fromPath !== "reports") document.cookie = `df_app=${fromPath}; path=/; max-age=31536000; samesite=lax`;
+    if (fromPath && fromPath !== "reports" && fromPath !== "billing") document.cookie = `df_app=${fromPath}; path=/; max-age=31536000; samesite=lax`;
   }, [fromPath]);
 
   const inReports = app === "reports" && reportLinks?.length;
-  const shown = inReports ? reportLinks : app === "service" && serviceLinks ? serviceLinks : links;
-  const customersLink = inReports ? null : customersHref(app, customers);
+  const inBilling = app === "billing" && billingLinks?.length;
+  const shown = inReports ? reportLinks : inBilling ? billingLinks : app === "service" && serviceLinks ? serviceLinks : links;
+  const customersLink = inReports || inBilling ? null : customersHref(app, customers);
   const shared = customersLink ? [[customersLink, "Customers", "/customers"]] : [];
   const item = ([href, text, icon, exact, badge]) => {
     const on = path === href || (!exact && path.startsWith(`${href}/`));
@@ -43,7 +44,7 @@ export function NavLinks({ links, serviceLinks, reportLinks, customers = null, l
     );
   };
   return (
-    <nav className="app-rail" aria-label={label || (inReports ? "Reports" : app === "service" ? "Service Desk" : "Remote Desk")}>
+    <nav className="app-rail" aria-label={label || (inReports ? "Reports" : inBilling ? "Invoicing" : app === "service" ? "Service Desk" : "Remote Desk")}>
       {shown.map(item)}
       {shown.length && shared.length ? <span className="app-rail-sep" aria-hidden="true" /> : null}
       {shared.map(item)}
@@ -59,6 +60,7 @@ export function BrandLink({ platform, allowed, lastApp, children }) {
   else if (app === "service" && allowed.service) href = "/tickets";
   else if (allowed.remote) href = "/devices";
   else if (allowed.service) href = "/tickets";
+  else if (allowed.billing) href = "/billing";
   return (
     <Link className="brand-plate" href={href} aria-label="Digital Fingers home">
       {children}
@@ -192,7 +194,39 @@ const ICONS = {
       <path d="M16 2v4M8 2v4M3 10h18M9 15l2 2 4-4" />
     </svg>
   ),
+  "/billing/invoices": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" />
+      <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8M12 17.5v-11" />
+    </svg>
+  ),
+  "/billing/quotes": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8" />
+    </svg>
+  ),
+  "/billing/credit-notes": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4M9 15h6" />
+    </svg>
+  ),
+  "/billing/payments": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect className="solid" x="2" y="5" width="20" height="14" rx="2" />
+      <path d="M2 10h20M6 15h4" />
+    </svg>
+  ),
+  "/billing/items": (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path className="solid" d="M11 21.7a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7z" />
+      <path d="M12 22V12M3.3 7 12 12l8.7-5" />
+    </svg>
+  ),
 };
+ICONS["/billing"] = ICONS["/dashboard"];
+ICONS["/billing/customers"] = ICONS["/customers"];
 ICONS["/control/audit"] = ICONS["/audit"];
 ICONS["/reports/patches"] = ICONS["/patches"];
 ICONS["/reports/service-desk"] = ICONS["/tickets"];

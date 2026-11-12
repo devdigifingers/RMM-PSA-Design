@@ -50,6 +50,37 @@ describe("resolve", () => {
     assert.deepEqual(result.apps, ["remote", "reporting"]);
   });
 
+  it("derives the billing app from the invoicing feature", () => {
+    const result = resolve(SERVICE, lic({ featuresAdded: ["invoicing"] }), NOW);
+    assert.deepEqual(result.features, ["ticketing", "invoicing"]);
+    assert.deepEqual(result.apps, ["servicedesk", "billing"]);
+  });
+
+  it("treats missing limits as unlimited", () => {
+    const result = resolve(REMOTE, lic(), NOW);
+    assert.deepEqual(result.limits, { invoicesPerMonth: null, emailsPerMonth: null, issuingCompanies: null });
+  });
+
+  it("takes package limits, and lets a licence override them, including zero", () => {
+    const pkg = { ...SERVICE, limits: { invoicesPerMonth: 100, emailsPerMonth: 300, issuingCompanies: 1 } };
+    assert.deepEqual(resolve(pkg, lic(), NOW).limits, { invoicesPerMonth: 100, emailsPerMonth: 300, issuingCompanies: 1 });
+    const result = resolve(pkg, lic({ limitsOverride: { invoicesPerMonth: 0 } }), NOW);
+    assert.deepEqual(result.limits, { invoicesPerMonth: 0, emailsPerMonth: 300, issuingCompanies: 1 });
+  });
+
+  it("lets a licence override make a limit unlimited, and ignores bad values", () => {
+    const pkg = { ...SERVICE, limits: { invoicesPerMonth: 20, emailsPerMonth: -3 } };
+    const result = resolve(pkg, lic({ limitsOverride: { invoicesPerMonth: null, junk: 4 } }), NOW);
+    assert.deepEqual(result.limits, { invoicesPerMonth: null, emailsPerMonth: null, issuingCompanies: null });
+  });
+
+  it("lifts every Invoicing cap with Invoicing Pro or MSP Billing", () => {
+    const pkg = { ...SERVICE, features: ["invoicing"], limits: { invoicesPerMonth: 100, emailsPerMonth: 300, issuingCompanies: 1 } };
+    const uncapped = { invoicesPerMonth: null, emailsPerMonth: null, issuingCompanies: null };
+    assert.deepEqual(resolve(pkg, lic({ featuresAdded: ["invoicing_pro"] }), NOW).limits, uncapped);
+    assert.deepEqual(resolve(pkg, lic({ featuresAdded: ["invoicing_msp"] }), NOW).limits, uncapped);
+  });
+
   it("lets a removal win over an addition of the same feature", () => {
     const result = resolve(REMOTE, lic({ featuresAdded: ["ticketing"], featuresRemoved: ["ticketing"] }), NOW);
     assert.equal(result.features.includes("ticketing"), false);

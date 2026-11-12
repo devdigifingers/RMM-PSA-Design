@@ -1,0 +1,66 @@
+/* 1. MODERN (default) — spec §4.2.1 */
+.t-modern .bar{height:6px;background:linear-gradient(90deg in oklab,var(--primary),var(--secondary));}
+.t-modern .wrap{padding:32px 48px 0;}
+.t-modern .head{display:flex;justify-content:space-between;align-items:flex-start;}
+.t-modern .head img.logo{height:56px;width:auto;}
+.t-modern .title{text-align:right;}
+.t-modern .title h1{font-size:28px;font-weight:600;letter-spacing:.04em;color:var(--primary-text);line-height:1.1;}
+.t-modern .title .no{font-size:14px;color:var(--slate);margin-top:6px;}
+.t-modern .info{display:grid;grid-template-columns:1.12fr 1fr 1fr;gap:24px;margin-top:30px;font-size:13px;}
+.t-modern .info .v{line-height:1.5;}
+.t-modern .info strong{font-weight:600;}
+.t-modern .info .muted{color:var(--slate-600);}
+.t-modern .sumrow{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-top:24px;}
+.t-modern .subject .s1{font-size:16px;font-weight:600;}
+.t-modern .subject .s2{font-size:12.5px;color:var(--slate-600);margin-top:3px;}
+.t-modern .due{width:268px;border-radius:12px;background:var(--tint4);padding:14px 20px;border:1px solid var(--tint12);}
+.t-modern .due .lbl{margin-bottom:2px;color:var(--slate-600);}
+.t-modern .due .amt{font-size:32px;font-weight:700;letter-spacing:-.01em;line-height:1.15;font-variant-numeric:tabular-nums;}
+.t-modern .due .dd{font-size:12.5px;color:var(--slate-600);margin-top:2px;display:flex;justify-content:space-between;align-items:center;}
+
+.t-modern table.lines thead th{background:var(--tint6);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-600);font-weight:600;padding:9px 12px;text-align:left;}
+.t-modern table.lines thead th:first-child{border-radius:8px 0 0 8px;} .t-modern table.lines thead th:last-child{border-radius:0 8px 8px 0;}
+.t-modern table.lines td{padding:7px 12px;vertical-align:top;border-bottom:1px solid #F1F5F9;}
+.t-modern table.lines tbody tr:nth-child(even) td{background:var(--zebra);}
+.t-modern table.lines th.r,.t-modern table.lines td.r{text-align:right;}
+
+.t-modern .totals{display:flex;justify-content:space-between;margin-top:18px;gap:32px;}
+.t-modern .notes{font-size:11.5px;color:var(--slate-600);max-width:330px;padding-top:4px;}
+.t-modern .notes p+p{margin-top:6px;}
+.t-modern .tot .grand{background:linear-gradient(90deg in oklab,var(--primary),var(--grad-text-end));color:var(--on-primary);border-radius:8px;padding:10px 12px;margin-top:6px;font-weight:700;font-size:15px;}
+.t-modern .tot .grand span:first-child{color:inherit;}
+.t-modern .tot .bal{font-weight:600;border-top:1px solid var(--line);margin-top:4px;padding-top:7px;}
+.t-modern .tot .bal span:first-child{color:var(--ink);}
+
+.t-modern .foot{position:absolute;left:48px;right:48px;bottom:24px;}
+.t-modern .foot .cols{border-top:1px solid var(--line);padding-top:16px;display:grid;grid-template-columns:1.35fr .95fr 196px;gap:24px;font-size:11px;line-height:1.55;}
+.t-modern .foot .cols .lbl{margin-bottom:5px;}
+.t-modern .foot .thanks{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:10.5px;color:var(--slate);}
+.t-modern .foot .thanks .ty{color:var(--primary-text);font-weight:600;font-size:13px;}
+
+/* ---- screen (hosted page) mode: same markup, flowing instead of fixed A4 ---- */
+.doc-card .t-modern{position:relative;}
+.doc-card .t-modern .wrap{padding:36px 48px 0;}
+.doc-card .t-modern .foot{position:static;padding:28px 48px 32px;}
+/* ---- mobile web view (< 600px) ---- */
+@media screen and (max-width:600px){
+  .doc-card .t-modern .wrap{padding:22px 18px 0;}
+  .doc-card .t-modern .head{flex-direction:row;align-items:center;}
+  .doc-card .t-modern .head img.logo{height:34px;}
+  .doc-card .t-modern .title h1{font-size:17px;}
+  .doc-card .t-modern .title .no{font-size:12px;margin-top:2px;}
+  .doc-card .t-modern .info{grid-template-columns:1fr;gap:16px;margin-top:22px;}
+  .doc-card .t-modern .sumrow{flex-direction:column;align-items:stretch;gap:14px;}
+  .doc-card .t-modern .due{display:none;} /* the page hero already shows amount due + Pay now */
+  .doc-card .t-modern table.lines thead{display:none;}
+  .doc-card .t-modern table.lines tr{display:grid;grid-template-columns:1fr auto;}
+  .doc-card .t-modern table.lines td{display:none;padding:10px 4px;}
+  .doc-card .t-modern table.lines td:first-child,.doc-card .t-modern table.lines td:last-child{display:block;}
+  .doc-card .t-modern table.lines td:last-child{font-weight:600;}
+  .doc-card .mq{display:block;font-size:11.5px;color:var(--slate-600);margin-top:3px;font-variant-numeric:tabular-nums;}
+  .doc-card .t-modern .totals{flex-direction:column-reverse;gap:16px;}
+  .doc-card .tot{width:100%;}
+  .doc-card .t-modern .foot{padding:22px 18px 24px;}
+  .doc-card .t-modern .foot .cols{grid-template-columns:1fr;gap:18px;}
+  .doc-card .t-modern .foot .thanks{flex-direction:column;gap:4px;}
+}

@@ -25,7 +25,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
     <>
       <header className="topbar">
         <div className="brand-nav">
-          <BrandLink platform={Boolean(platform)} allowed={{ remote: allowed.remote, service: allowed.service }} lastApp={lastApp}>
+          <BrandLink platform={Boolean(platform)} allowed={{ remote: allowed.remote, service: allowed.service, billing: allowed.billing }} lastApp={lastApp}>
             <Wordmark />
             <BrandMark className="brand-mark" />
           </BrandLink>
@@ -33,7 +33,7 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
         {!platform && allowed.remote ? <SearchConnect /> : <span className="topbar-spacer" />}
         {account?.user ? (
           <div className="top-tools">
-            {account.user.isPlatformAdmin ? null : (
+            {account.user.isPlatformAdmin || !(allowed.remote || allowed.service) ? null : (
               <a className="settings-btn downloads-btn" href="/downloads" aria-label="Downloads" title="Downloads">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -90,6 +90,15 @@ export async function ConsoleBar({ showAlerts, showPatches, showDashboard, platf
             allowed.ticketing ? ["/reports/service-desk", "Service Desk"] : null,
             ["/reports/exports", "Scheduled"],
           ].filter(Boolean) : []}
+          billingLinks={allowed.billing ? [
+            ["/billing", "Overview", "/billing", true],
+            ["/billing/invoices", "Invoices"],
+            ["/billing/quotes", "Quotes"],
+            ["/billing/credit-notes", "Credit notes"],
+            ["/billing/payments", "Payments"],
+            ["/billing/customers", "Customers"],
+            ["/billing/items", "Items"],
+          ] : []}
           customers={account?.user ? customerApps(account) : null}
         />
       )}
@@ -134,6 +143,7 @@ function appsAllowed(account) {
     support: features.includes("remote_support"),
     reports: features.includes("reporting"),
     ticketing: features.includes("ticketing"),
+    billing: features.includes("invoicing"),
     apps,
   };
 }

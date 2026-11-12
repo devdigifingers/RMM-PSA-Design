@@ -59,6 +59,7 @@ export function settingsAccess(account) {
     alerts: features.includes("monitoring"),
     patches: features.includes("patching"),
     reports: features.includes("reporting"),
+    billing: features.includes("invoicing"),
   };
 }
 
@@ -66,6 +67,7 @@ export function homeFor(account) {
   if (account?.user?.isPlatformAdmin) return "/control";
   if (hasApp(account, "remote")) return "/devices";
   if (hasApp(account, "servicedesk")) return "/tickets";
+  if (hasFeature(account, "invoicing")) return "/billing";
   return "/customers";
 }
 

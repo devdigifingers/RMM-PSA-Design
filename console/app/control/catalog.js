@@ -13,6 +13,18 @@ export const FEATURE_GROUPS = [
   },
   { app: "servicedesk", appId: "service-desk", title: "Service Desk", features: [["ticketing", "Ticketing"]] },
   { app: "reporting", appId: "reports", title: "Reporting (add-on)", features: [["reporting", "Reporting"]] },
+  {
+    app: "billing",
+    appId: "billing",
+    title: "Invoicing",
+    features: [
+      ["invoicing", "Invoicing"],
+      ["invoicing_pro", "Invoicing Pro"],
+      ["invoicing_msp", "MSP billing"],
+      ["invoicing_sync", "Accounting sync"],
+      ["invoicing_whatsapp", "WhatsApp sending"],
+    ],
+  },
 ];
 
 export const FEATURE_KEYS = FEATURE_GROUPS.flatMap((group) => group.features.map(([key]) => key));

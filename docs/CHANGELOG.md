@@ -9,6 +9,56 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-09 · Platform 1.7.0
+
+**Invoicing Phase 1: quotes, invoices, credit notes and payments**
+- Company and tax settings: registered and trading name, addresses, logo, colours, bank details (stored encrypted)
+  and defaults. VAT registration is a dated record ("VAT registered from …"), so the VAT status on any date is known
+  and a switch can be scheduled. Every VAT difference on a document follows the status on its issue date.
+- Numbering per document type (prefix, padding, optional year and yearly reset), with gapless numbers given only
+  when a document is issued. Tax rates (15% with its effective dates, zero-rated, exempt, no VAT). Items with price,
+  unit and tax type.
+- Customers have VAT status, VAT number, billing contact, email, CC, address, payment terms and template. Invoicing
+  has its own customer list and can add customers, so Invoicing-only tenants need no other app. Desk and Remote
+  customer pages get an Invoices tab when Invoicing is on.
+- Quotes, invoices and credit notes: editor with headings and subtotals, live preview and a Modern / Classic /
+  Minimal switch matching the design mockups. Issuing runs the SARS checks (blocks and warnings to confirm) and
+  freezes the document: the issuer and customer details are copied onto it and it can no longer change. Not VAT
+  registered issuers get "INVOICE", no VAT column, no VAT number, and "Total / Not registered for VAT / Balance due".
+- Lifecycle: void (only if never sent or viewed), credit in full and re-issue, partial credit notes, quote accept,
+  decline and convert to invoice. A fully credited unpaid invoice shows as Credited.
+- PDF: printed by headless Chrome on the server, without network or scripts. The original PDF is stored when the
+  document is issued and never changes; "Copy PDF" makes a fresh copy with the PAID / PARTIALLY PAID / VOID stamp.
+- Private online links: `/pay/<token>` for invoices and credit notes, `/q/<token>` for quotes, `/link-expired` when
+  a link has expired or was replaced. The page shows the document, amount due, EFT details with copy buttons and
+  payments; quotes can be accepted or declined there. Views by signed-in staff are not counted.
+- Email: sends the document with a button to the link, EFT details and (optionally) the PDF, from the tenant's
+  trading name with replies going to their billing email.
+- Payments: record EFT, cash, card or other payments, split across invoices or paid oldest first; any amount left
+  over is kept as credit for the customer.
+- Free tier (INVOICING-FREE): 100 invoices and 300 emails a month, warning at 80% and blocked at 100% (drafts and
+  payments keep working); Free emails and pages carry "Sent with Digital Fingers Invoicing". Pro and MSP have no
+  limits. Invoicing-only tenants see only Invoicing in the console (no device or desk links, no Downloads).
+- Organisations without Invoicing now get a real 403 "Not included" page on every `/billing` page.
+- Money is rounded half away from zero (spec v1.3 onwards).
+
+## 2026-10-31 · Platform 1.6.0
+
+**Invoicing app, groundwork (Invoicing Phase 0)**
+- New app, Invoicing ("Quotes, invoices and getting paid"), at `/billing`, using the reserved billing icon and
+  colours. It shows in the app launcher under Business only for organisations whose license includes the new
+  `invoicing` feature. Everyone else gets the "Not included" page on every `/billing` page and a 403 from every
+  `/v1/billing` API call.
+- New feature keys in the package model: Invoicing, Invoicing Pro, MSP billing, Accounting sync and WhatsApp
+  sending. They are not in any package yet; for now Invoicing is turned on per tenant from Control.
+- Packages and licenses have two new limits, invoices a month and emails a month (blank means unlimited). They are
+  set on the package and can be overridden on a tenant's license.
+- Invoicing settings at `/billing/settings` list the sections still to come (company and tax, numbering, tax rates,
+  templates, sending, payment methods and connections).
+- Behind the scenes: money is handled in whole cents with VAT worked out per line, rounding half up. The SARS rules
+  (VAT number check, Tax Invoice or Invoice title, the R 5 000 full tax invoice threshold, the 15% rate with its
+  effective dates, and the checks before an invoice is issued) live in one module, with tests.
+
 ## 2026-10-31 · Platform 1.5.0
 
 **Script library (roadmap Phase 2, part 1)**

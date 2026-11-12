@@ -1,14 +1,14 @@
-import { licenseFromRow, MODULE_FEATURES, resolve } from "./licensing.js";
+import { licenseFromRow, MODULE_FEATURES, resolve, setLimits } from "./licensing.js";
 
 const LICENSE_SQL = `
   SELECT l.*, p.code AS package_code, p.name AS package_name, p.features AS package_features,
          p.default_seats AS package_default_seats, p.default_devices AS package_default_devices,
-         p.default_sessions AS package_default_sessions, p.is_custom AS package_is_custom
+         p.default_sessions AS package_default_sessions, p.is_custom AS package_is_custom, p.limits AS package_limits
   FROM licenses l
   LEFT JOIN packages p ON p.id = l.package_id
   WHERE l.org_id = $1`;
 
-const NO_PACKAGE = { id: null, code: null, name: null, features: [], defaultSeats: 0, defaultDevices: 0, defaultSessions: 0, isCustom: false };
+const NO_PACKAGE = { id: null, code: null, name: null, features: [], defaultSeats: 0, defaultDevices: 0, defaultSessions: 0, limits: {}, isCustom: false };
 
 export function modulesFromFeatures(features) {
   const modules = {};
@@ -26,6 +26,7 @@ function packageOf(row) {
     defaultSeats: row.package_default_seats,
     defaultDevices: row.package_default_devices,
     defaultSessions: row.package_default_sessions,
+    limits: row.package_limits || {},
     isCustom: row.package_is_custom === true,
   };
 }
@@ -65,6 +66,7 @@ export function licenseSnapshot(row) {
     seatsOverride: row.seats_override,
     devicesOverride: row.devices_override,
     sessionsOverride: row.sessions_override,
+    limitsOverride: setLimits(row.limits_override),
     featuresAdded: [...(row.features_added || [])].sort(),
     featuresRemoved: [...(row.features_removed || [])].sort(),
     noExpiry: row.no_expiry === true,

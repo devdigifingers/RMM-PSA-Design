@@ -15,6 +15,10 @@ const SECTIONS = [
     apps: SERVICE_ORDER.map((id) => APPS.find((app) => app.id === id)).filter((app) => app.status === "live"),
   },
   {
+    title: "Business",
+    apps: APPS.filter((app) => app.id === "billing" && app.status === "live"),
+  },
+  {
     title: "Insights",
     apps: APPS.filter((app) => app.id === "reports" && app.status === "live"),
   },

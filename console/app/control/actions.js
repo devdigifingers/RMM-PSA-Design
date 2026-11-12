@@ -34,6 +34,14 @@ const listField = (formData, name) => {
 };
 const failed = (result, fallback) => ({ error: result.data?.error || fallback, affected: result.data?.affected });
 
+function limitFields(formData) {
+  return {
+    invoicesPerMonth: field(formData, "invoicesPerMonth"),
+    emailsPerMonth: field(formData, "emailsPerMonth"),
+    issuingCompanies: field(formData, "issuingCompanies"),
+  };
+}
+
 function licenseFields(formData) {
   return {
     packageId: field(formData, "packageId"),
@@ -41,6 +49,7 @@ function licenseFields(formData) {
     seatsOverride: field(formData, "seatsOverride"),
     devicesOverride: field(formData, "devicesOverride"),
     sessionsOverride: field(formData, "sessionsOverride"),
+    limitsOverride: limitFields(formData),
     featuresAdded: listField(formData, "featuresAdded"),
     featuresRemoved: listField(formData, "featuresRemoved"),
     noExpiry: formData.get("noExpiry") === "on",
@@ -127,6 +136,7 @@ export async function savePackage(_prev, formData) {
     defaultSeats: field(formData, "defaultSeats"),
     defaultDevices: field(formData, "defaultDevices"),
     defaultSessions: field(formData, "defaultSessions"),
+    limits: limitFields(formData),
     priceMonthly: field(formData, "priceMonthly"),
     active: formData.get("active") === "on",
     confirm: formData.get("confirm") === "1",

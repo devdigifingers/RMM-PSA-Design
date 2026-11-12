@@ -1,0 +1,33 @@
+/* 4. MINIMAL — spec §4.2.4 */
+.t-min{color:#111;font-size:12.5px;}
+.t-min .wrap{padding:48px;}
+.t-min .muted{color:#6B7280;}
+.t-min .head{display:flex;justify-content:space-between;align-items:center;}
+.t-min .head img.logo{height:32px;width:auto;}
+.t-min .head .no{font-size:12px;color:#6B7280;}
+.t-min .ttl{display:flex;align-items:center;gap:10px;margin-top:56px;}
+.t-min .ttl i{width:8px;height:8px;border-radius:50%;background:var(--primary);display:block;}
+.t-min .ttl h1{font-size:20px;font-weight:400;letter-spacing:-.005em;}
+.t-min hr{border:0;border-top:.5px solid #D1D5DB;margin:28px 0;}
+.t-min .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:24px 28px;margin-top:28px;line-height:1.55;}
+.t-min .grid .k{font-size:11px;color:#6B7280;margin-bottom:3px;}
+.t-min .grid .span2{grid-column:span 2;}
+.t-min table.lines{margin-top:0;}
+.t-min table.lines th{font-size:11px;font-weight:400;text-transform:uppercase;letter-spacing:.08em;color:#6B7280;text-align:left;padding:0 0 12px;}
+.t-min table.lines th.r{text-align:right;}
+.t-min table.lines td{padding:10px 0;vertical-align:top;}
+.t-min table.lines td+td,.t-min table.lines th+th{padding-left:16px;}
+.t-min .d1{font-weight:400;} .t-min .d2{color:#6B7280;font-size:11px;}
+.t-min .sum{display:flex;justify-content:space-between;align-items:flex-end;}
+.t-min .tot{width:280px;}
+.t-min .tot .row{padding:4px 0;} .t-min .tot .row span:first-child{color:#6B7280;}
+.t-min .big{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;padding-top:12px;border-top:.5px solid #D1D5DB;}
+.t-min .big .v{font-size:28px;font-weight:300;letter-spacing:-.01em;font-variant-numeric:tabular-nums;}
+.t-min .big .k{color:#6B7280;}
+.t-min .note{max-width:300px;color:#6B7280;font-size:11.5px;line-height:1.6;}
+.t-min .foot{position:absolute;left:48px;right:48px;bottom:40px;}
+.t-min .foot .line{display:flex;align-items:center;gap:16px;border-top:.5px solid #D1D5DB;padding-top:14px;font-size:10.5px;color:#6B7280;line-height:1.5;}
+.t-min .foot .line b{color:#111;font-weight:500;}
+.t-min .foot .qr{width:44px;height:44px;flex:none;}
+.t-min .foot .pg{margin-left:auto;white-space:nowrap;}
+.t-min strong{font-weight:500;}

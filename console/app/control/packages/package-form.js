@@ -91,6 +91,18 @@ export function PackageForm({ pkg }) {
           <input name="defaultSessions" type="number" min="0" max="100" step="1" defaultValue={pkg?.defaultSessions ?? 1} required />
         </label>
         <label>
+          Invoices a month
+          <input name="invoicesPerMonth" type="number" min="0" step="1" defaultValue={pkg?.limits?.invoicesPerMonth ?? ""} placeholder="Unlimited" />
+        </label>
+        <label>
+          Emails a month
+          <input name="emailsPerMonth" type="number" min="0" step="1" defaultValue={pkg?.limits?.emailsPerMonth ?? ""} placeholder="Unlimited" />
+        </label>
+        <label>
+          Issuing companies
+          <input name="issuingCompanies" type="number" min="0" step="1" defaultValue={pkg?.limits?.issuingCompanies ?? ""} placeholder="Unlimited" />
+        </label>
+        <label>
           Price per month (ZAR)
           <input name="priceMonthly" type="number" min="0" step="0.01" defaultValue={pkg?.priceMonthly ?? ""} placeholder="Not set" />
         </label>

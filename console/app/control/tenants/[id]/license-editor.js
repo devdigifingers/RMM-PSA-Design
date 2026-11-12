@@ -3,7 +3,7 @@
 import { useActionState, useEffect, useRef, useState } from "react";
 import { saveTenantLicense } from "../../actions";
 import { FEATURE_LABEL, LICENSE_TYPES, STATUS_LABEL, dateInput, formatDate, packageLabel } from "../../catalog";
-import { LicenseFields, effectiveOf, licenseValue } from "../../license-fields";
+import { LicenseFields, effectiveOf, licenseValue, limitText } from "../../license-fields";
 
 const TYPE_LABEL = Object.fromEntries(LICENSE_TYPES);
 const features = (list) => list.map((key) => FEATURE_LABEL[key]).join(", ") || "none";
@@ -24,6 +24,9 @@ function changesBetween(before, after, packages) {
   add("Seats", limit(before.seatsOverride, oldPkg?.defaultSeats), limit(after.seatsOverride, newPkg?.defaultSeats));
   add("Devices", limit(before.devicesOverride, oldPkg?.defaultDevices), limit(after.devicesOverride, newPkg?.defaultDevices));
   add("Support sessions", limit(before.sessionsOverride, oldPkg?.defaultSessions), limit(after.sessionsOverride, newPkg?.defaultSessions));
+  add("Invoices a month", limit(before.invoicesPerMonth, limitText(oldPkg?.limits?.invoicesPerMonth)), limit(after.invoicesPerMonth, limitText(newPkg?.limits?.invoicesPerMonth)));
+  add("Emails a month", limit(before.emailsPerMonth, limitText(oldPkg?.limits?.emailsPerMonth)), limit(after.emailsPerMonth, limitText(newPkg?.limits?.emailsPerMonth)));
+  add("Issuing companies", limit(before.issuingCompanies, limitText(oldPkg?.limits?.issuingCompanies)), limit(after.issuingCompanies, limitText(newPkg?.limits?.issuingCompanies)));
   add("Features", features(oldEff.features), features(newEff.features));
   add("Expiry", before.noExpiry ? "No expiry" : before.expiresAt, after.noExpiry ? "No expiry" : after.expiresAt || "—");
   add("Status", STATUS_LABEL[before.status], STATUS_LABEL[after.status]);
@@ -84,6 +87,13 @@ export function LicenseEditor({ tenant, license, usage, packages }) {
           <dt>Seats</dt><dd>{effective.seats} {license.seatsOverride == null ? "(package default)" : "(override)"}</dd>
           <dt>Devices</dt><dd>{effective.devices} {license.devicesOverride == null ? "(package default)" : "(override)"}</dd>
           <dt>Support sessions</dt><dd>{effective.sessions} {license.sessionsOverride == null ? "(package default)" : "(override)"}</dd>
+          {effective.features.includes("invoicing") ? (
+            <>
+              <dt>Invoices a month</dt><dd>{limitText(effective.limits?.invoicesPerMonth)} {license.limitsOverride?.invoicesPerMonth == null ? "(package default)" : "(override)"}</dd>
+              <dt>Emails a month</dt><dd>{limitText(effective.limits?.emailsPerMonth)} {license.limitsOverride?.emailsPerMonth == null ? "(package default)" : "(override)"}</dd>
+              <dt>Issuing companies</dt><dd>{limitText(effective.limits?.issuingCompanies)} {license.limitsOverride?.issuingCompanies == null ? "(package default)" : "(override)"}</dd>
+            </>
+          ) : null}
           <dt>Features</dt>
           <dd>
             {features(effective.features)}

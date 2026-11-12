@@ -4,6 +4,7 @@
 export const SETTINGS_AREAS = {
   remote: { key: "remote", label: "Remote Desk", title: "Remote Desk settings", root: "/remote/settings", app: "remote-desk", needs: "remote" },
   desk: { key: "desk", label: "Service Desk", title: "Service Desk settings", root: "/desk/settings", app: "service-desk", needs: "service" },
+  billing: { key: "billing", label: "Invoicing", title: "Invoicing settings", root: "/billing/settings", app: "billing", needs: "billing" },
   org: { key: "org", label: "Organisation", title: "Organisation settings", root: "/settings/org", app: null, needs: null },
 };
 
@@ -213,9 +214,54 @@ export const SETTINGS_SECTIONS = {
       ],
     },
   ],
+  billing: [
+    {
+      title: "Company and tax",
+      icon: "org",
+      items: [
+        { label: "Company and tax", href: "/billing/settings/company" },
+        { label: "Numbering", href: "/billing/settings/numbering" },
+        { label: "Tax rates", href: "/billing/settings/tax-rates" },
+        { label: "Items", href: "/billing/items" },
+      ],
+    },
+    {
+      title: "Documents",
+      icon: "billing",
+      items: [
+        soon("Templates and branding", { manage: true }),
+        soon("Online links and tracking", { manage: true }),
+        soon("Approval rules", { manage: true }),
+        soon("Recurring defaults", { manage: true }),
+      ],
+    },
+    {
+      title: "Sending",
+      icon: "mail",
+      items: [
+        soon("Emails and sending domain", { manage: true }),
+        soon("Reminders", { manage: true }),
+        soon("WhatsApp", { manage: true }),
+      ],
+    },
+    {
+      title: "Getting paid",
+      icon: "clock",
+      items: [{ label: "Payment methods and bank details", href: "/billing/settings/company#bank" }],
+    },
+    {
+      title: "Connections",
+      icon: "data",
+      items: [
+        soon("Customer portal", { manage: true }),
+        soon("Accounting sync", { manage: true }),
+        soon("Import", { manage: true }),
+      ],
+    },
+  ],
 };
 
-// access: { manage, remote, service, support, alerts, patches, reports }
+// access: { manage, remote, service, support, alerts, patches, reports, billing }
 export function areasFor(access) {
   return Object.values(SETTINGS_AREAS).filter((area) => !area.needs || access[area.needs]);
 }
@@ -246,6 +292,7 @@ export function searchSections(sections, term) {
 export function areaForApp(appKey, access) {
   if (appKey === "service" && access.service) return "desk";
   if (appKey === "remote" && access.remote) return "remote";
+  if (appKey === "billing" && access.billing) return "billing";
   if (access.remote) return "remote";
   if (access.service) return "desk";
   return "org";

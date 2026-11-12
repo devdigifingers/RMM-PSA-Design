@@ -517,6 +517,25 @@ BEGIN
   END IF;
 END $$;
 
+-- Invoicing feature keys. The known-feature lists are rebuilt here so new keys need one edit.
+ALTER TABLE packages DROP CONSTRAINT IF EXISTS packages_features_known;
+ALTER TABLE packages ADD CONSTRAINT packages_features_known CHECK (
+  features <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting',
+                    'invoicing', 'invoicing_pro', 'invoicing_msp', 'invoicing_sync', 'invoicing_whatsapp']::text[]
+);
+ALTER TABLE licenses DROP CONSTRAINT IF EXISTS licenses_features_known;
+ALTER TABLE licenses ADD CONSTRAINT licenses_features_known CHECK (
+  features_added <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting',
+                          'invoicing', 'invoicing_pro', 'invoicing_msp', 'invoicing_sync', 'invoicing_whatsapp']::text[]
+  AND features_removed <@ ARRAY['enrollment', 'remote_sessions', 'remote_support', 'monitoring', 'patching', 'ticketing', 'reporting',
+                                'invoicing', 'invoicing_pro', 'invoicing_msp', 'invoicing_sync', 'invoicing_whatsapp']::text[]
+);
+
+-- Usage limits: { "invoicesPerMonth": n, "emailsPerMonth": n }. A missing or null value is unlimited; a licence
+-- override wins when its key is present.
+ALTER TABLE packages ADD COLUMN IF NOT EXISTS limits jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS limits_override jsonb NOT NULL DEFAULT '{}'::jsonb;
+
 -- The package model replaced these; limits and module flags are now derived from the package.
 ALTER TABLE licenses DROP CONSTRAINT IF EXISTS licenses_modules_object;
 ALTER TABLE licenses DROP COLUMN IF EXISTS modules;
@@ -1295,3 +1314,336 @@ DROP TRIGGER IF EXISTS activity_events_migration_guard ON activity_events;
 CREATE TRIGGER activity_events_migration_guard BEFORE INSERT ON activity_events
   FOR EACH ROW EXECUTE FUNCTION df_migration_ticket_child_guard();
 CREATE INDEX IF NOT EXISTS activity_events_type_idx ON activity_events (type, created_at);
+
+-- Invoicing (billing app), Phase 1. Amounts are integer cents; quantities are thousandths.
+ALTER TABLE activity_events DROP CONSTRAINT IF EXISTS activity_events_app_check;
+ALTER TABLE activity_events ADD CONSTRAINT activity_events_app_check CHECK (app IN ('core', 'remote', 'servicedesk', 'billing'));
+
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS vat_status text NOT NULL DEFAULT 'unknown';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_vat_status_check') THEN
+    ALTER TABLE customers ADD CONSTRAINT customers_vat_status_check CHECK (vat_status IN ('registered', 'not_registered', 'unknown'));
+  END IF;
+END $$;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_email text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_cc text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_contact text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS registered_name text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_address text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS payment_terms_days integer CHECK (payment_terms_days BETWEEN 0 AND 365);
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_template text;
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS billing_reminders boolean NOT NULL DEFAULT true;
+
+CREATE TABLE IF NOT EXISTS billing_settings (
+  org_id bigint PRIMARY KEY REFERENCES orgs (id),
+  legal_name text NOT NULL DEFAULT '',
+  trading_name text NOT NULL DEFAULT '',
+  company_reg_no text NOT NULL DEFAULT '',
+  physical_address text NOT NULL DEFAULT '',
+  postal_address text NOT NULL DEFAULT '',
+  email text NOT NULL DEFAULT '',
+  phone text NOT NULL DEFAULT '',
+  website text NOT NULL DEFAULT '',
+  bbbee_level text NOT NULL DEFAULT '',
+  csd_number text NOT NULL DEFAULT '',
+  default_terms_days integer NOT NULL DEFAULT 30 CHECK (default_terms_days BETWEEN 0 AND 365),
+  default_notes text NOT NULL DEFAULT '',
+  default_terms_text text NOT NULL DEFAULT '',
+  price_mode text NOT NULL DEFAULT 'excl' CHECK (price_mode IN ('excl', 'incl')),
+  base_currency text NOT NULL DEFAULT 'ZAR',
+  link_expiry_days integer NOT NULL DEFAULT 90 CHECK (link_expiry_days BETWEEN 1 AND 3650),
+  attach_pdf boolean NOT NULL DEFAULT true,
+  bank_details_enc text,
+  default_template text NOT NULL DEFAULT 'modern',
+  primary_colour text NOT NULL DEFAULT '#6D28D9',
+  secondary_colour text NOT NULL DEFAULT '#0891B2',
+  logo_file_id bigint,
+  updated_by bigint REFERENCES users (id),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- "Agree" is per record: registered needs a number, not registered has none. Status for a date = latest effective_from <= date.
+CREATE TABLE IF NOT EXISTS billing_vat_registrations (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  vat_registered boolean NOT NULL,
+  vat_number text,
+  effective_from date NOT NULL,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, effective_from),
+  CONSTRAINT billing_vat_registrations_agree CHECK (
+    (vat_registered AND vat_number IS NOT NULL AND vat_number ~ '^4[0-9]{9}$') OR (NOT vat_registered AND vat_number IS NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS billing_sequences (
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  kind text NOT NULL CHECK (kind IN ('invoice', 'quote', 'credit_note')),
+  prefix text NOT NULL,
+  padding integer NOT NULL DEFAULT 6 CHECK (padding BETWEEN 1 AND 10),
+  next_number bigint NOT NULL DEFAULT 1 CHECK (next_number > 0),
+  include_year boolean NOT NULL DEFAULT false,
+  reset_yearly boolean NOT NULL DEFAULT false,
+  current_year integer,
+  PRIMARY KEY (org_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS billing_tax_rates (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL,
+  type text NOT NULL CHECK (type IN ('standard', 'zero_rated', 'exempt', 'no_vat')),
+  rate_bp integer NOT NULL CHECK (rate_bp BETWEEN 0 AND 10000),
+  effective_from date NOT NULL DEFAULT '1993-04-07',
+  effective_to date,
+  sars_code text NOT NULL DEFAULT '',
+  account_code text NOT NULL DEFAULT '',
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_tax_rates_org_idx ON billing_tax_rates (org_id, type);
+
+CREATE TABLE IF NOT EXISTS billing_items (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  name text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  sku text NOT NULL DEFAULT '',
+  type text NOT NULL DEFAULT 'service' CHECK (type IN ('service', 'product', 'labour', 'device_plan', 'user_plan')),
+  unit text NOT NULL DEFAULT 'each',
+  unit_price_cents bigint NOT NULL DEFAULT 0 CHECK (unit_price_cents >= 0),
+  tax_type text NOT NULL DEFAULT 'standard' CHECK (tax_type IN ('standard', 'zero_rated', 'exempt', 'no_vat')),
+  account_code text NOT NULL DEFAULT '',
+  cost_cents bigint CHECK (cost_cents >= 0),
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_items_org_idx ON billing_items (org_id, active, lower(name));
+
+CREATE TABLE IF NOT EXISTS billing_templates (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  base_template text NOT NULL CHECK (base_template IN ('modern', 'classic', 'bold', 'minimal', 'msp_summary')),
+  name text NOT NULL,
+  version integer NOT NULL DEFAULT 1,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  is_default_for text[] NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Stored files (logos, issued PDFs, proof of payment). Small, so the bytes live in the row and go out with the database backup.
+CREATE TABLE IF NOT EXISTS billing_files (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  purpose text NOT NULL CHECK (purpose IN ('logo', 'pdf', 'proof')),
+  file_name text NOT NULL,
+  content_type text NOT NULL,
+  size_bytes integer NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 10485760),
+  sha256 text NOT NULL,
+  data bytea NOT NULL,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS billing_documents (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint NOT NULL REFERENCES customers (id),
+  kind text NOT NULL CHECK (kind IN ('quote', 'invoice', 'credit_note')),
+  number text,
+  status text NOT NULL DEFAULT 'draft' CHECK (status IN (
+    'draft', 'sent', 'accepted', 'declined', 'expired', 'converted',
+    'pending_approval', 'issued', 'partially_paid', 'paid', 'credited', 'void', 'written_off',
+    'applied', 'refunded')),
+  issue_date date,
+  due_date date,
+  valid_until date,
+  currency text NOT NULL DEFAULT 'ZAR',
+  price_mode text NOT NULL DEFAULT 'excl' CHECK (price_mode IN ('excl', 'incl')),
+  subtotal_cents bigint NOT NULL DEFAULT 0,
+  discount_cents bigint NOT NULL DEFAULT 0,
+  tax_cents bigint NOT NULL DEFAULT 0,
+  total_cents bigint NOT NULL DEFAULT 0,
+  paid_cents bigint NOT NULL DEFAULT 0,
+  credited_cents bigint NOT NULL DEFAULT 0,
+  balance_cents bigint NOT NULL DEFAULT 0,
+  po_number text NOT NULL DEFAULT '',
+  reference text NOT NULL DEFAULT '',
+  notes text NOT NULL DEFAULT '',
+  terms text NOT NULL DEFAULT '',
+  template text NOT NULL DEFAULT 'modern',
+  is_deposit boolean NOT NULL DEFAULT false,
+  source_quote_id bigint REFERENCES billing_documents (id),
+  credits_document_id bigint REFERENCES billing_documents (id),
+  credit_reason text,
+  credit_context jsonb,
+  recipient_snapshot jsonb,
+  supplier_snapshot jsonb,
+  pdf_file_id bigint REFERENCES billing_files (id),
+  pdf_sha256 text,
+  issued_at timestamptz,
+  issued_by bigint REFERENCES users (id),
+  sent_at timestamptz,
+  voided_at timestamptz,
+  void_reason text,
+  first_viewed_at timestamptz,
+  last_viewed_at timestamptz,
+  view_count integer NOT NULL DEFAULT 0,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT billing_documents_number_when_issued CHECK (status IN ('draft', 'pending_approval') OR number IS NOT NULL OR kind = 'quote')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS billing_documents_number_idx ON billing_documents (org_id, kind, number) WHERE number IS NOT NULL;
+CREATE INDEX IF NOT EXISTS billing_documents_customer_idx ON billing_documents (org_id, customer_id, status, due_date);
+CREATE INDEX IF NOT EXISTS billing_documents_kind_idx ON billing_documents (org_id, kind, issue_date DESC);
+
+CREATE TABLE IF NOT EXISTS billing_document_lines (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  document_id bigint NOT NULL REFERENCES billing_documents (id) ON DELETE CASCADE,
+  position integer NOT NULL,
+  line_type text NOT NULL DEFAULT 'item' CHECK (line_type IN ('item', 'heading', 'subtotal')),
+  item_id bigint REFERENCES billing_items (id),
+  description text NOT NULL DEFAULT '',
+  quantity_milli bigint NOT NULL DEFAULT 1000,
+  unit text NOT NULL DEFAULT '',
+  unit_price_cents bigint NOT NULL DEFAULT 0,
+  discount_bp integer NOT NULL DEFAULT 0 CHECK (discount_bp BETWEEN 0 AND 10000),
+  discount_cents bigint NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
+  tax_type text NOT NULL DEFAULT 'no_vat' CHECK (tax_type IN ('standard', 'zero_rated', 'exempt', 'no_vat')),
+  rate_bp integer NOT NULL DEFAULT 0,
+  net_cents bigint NOT NULL DEFAULT 0,
+  tax_cents bigint NOT NULL DEFAULT 0,
+  total_cents bigint NOT NULL DEFAULT 0,
+  source_type text,
+  source_ids jsonb
+);
+CREATE INDEX IF NOT EXISTS billing_document_lines_doc_idx ON billing_document_lines (document_id, position);
+
+-- Issued documents are immutable: content can't change once a number is allocated.
+CREATE OR REPLACE FUNCTION billing_documents_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.kind <> 'quote' AND OLD.status NOT IN ('draft', 'pending_approval') THEN
+    IF NEW.customer_id IS DISTINCT FROM OLD.customer_id OR NEW.number IS DISTINCT FROM OLD.number
+       OR NEW.issue_date IS DISTINCT FROM OLD.issue_date OR NEW.due_date IS DISTINCT FROM OLD.due_date
+       OR NEW.total_cents IS DISTINCT FROM OLD.total_cents OR NEW.tax_cents IS DISTINCT FROM OLD.tax_cents
+       OR NEW.subtotal_cents IS DISTINCT FROM OLD.subtotal_cents OR NEW.supplier_snapshot IS DISTINCT FROM OLD.supplier_snapshot
+       OR NEW.recipient_snapshot IS DISTINCT FROM OLD.recipient_snapshot OR NEW.notes IS DISTINCT FROM OLD.notes
+       OR NEW.terms IS DISTINCT FROM OLD.terms OR NEW.kind IS DISTINCT FROM OLD.kind THEN
+      RAISE EXCEPTION 'An issued document cannot be changed';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS billing_documents_frozen ON billing_documents;
+CREATE TRIGGER billing_documents_frozen BEFORE UPDATE ON billing_documents FOR EACH ROW EXECUTE FUNCTION billing_documents_frozen();
+
+CREATE OR REPLACE FUNCTION billing_lines_frozen() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  doc record;
+BEGIN
+  SELECT kind, status INTO doc FROM billing_documents WHERE id = COALESCE(NEW.document_id, OLD.document_id);
+  IF FOUND AND doc.kind <> 'quote' AND doc.status NOT IN ('draft', 'pending_approval') THEN
+    RAISE EXCEPTION 'An issued document cannot be changed';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END $$;
+DROP TRIGGER IF EXISTS billing_lines_frozen ON billing_document_lines;
+CREATE TRIGGER billing_lines_frozen BEFORE INSERT OR UPDATE OR DELETE ON billing_document_lines
+  FOR EACH ROW EXECUTE FUNCTION billing_lines_frozen();
+
+CREATE TABLE IF NOT EXISTS billing_document_links (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  document_id bigint NOT NULL REFERENCES billing_documents (id),
+  token_hash text NOT NULL UNIQUE,
+  token_enc text NOT NULL,
+  recipient text,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_document_links_doc_idx ON billing_document_links (document_id);
+
+CREATE TABLE IF NOT EXISTS billing_document_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  document_id bigint NOT NULL REFERENCES billing_documents (id),
+  type text NOT NULL,
+  channel text,
+  actor_type text NOT NULL CHECK (actor_type IN ('user', 'customer', 'system', 'gateway')),
+  actor_id bigint,
+  ip text,
+  user_agent text,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_document_events_doc_idx ON billing_document_events (document_id, created_at);
+
+CREATE TABLE IF NOT EXISTS billing_payments (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint NOT NULL REFERENCES customers (id),
+  date date NOT NULL,
+  amount_cents bigint NOT NULL CHECK (amount_cents > 0),
+  currency text NOT NULL DEFAULT 'ZAR',
+  method text NOT NULL CHECK (method IN ('eft', 'cash', 'card', 'other', 'credit')),
+  reference text NOT NULL DEFAULT '',
+  gateway text,
+  gateway_txn_id text,
+  fee_cents bigint NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'confirmed' CHECK (status IN ('pending', 'confirmed', 'rejected')),
+  notes text NOT NULL DEFAULT '',
+  proof_file_id bigint REFERENCES billing_files (id),
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gateway, gateway_txn_id)
+);
+CREATE INDEX IF NOT EXISTS billing_payments_customer_idx ON billing_payments (org_id, customer_id, date DESC);
+
+CREATE TABLE IF NOT EXISTS billing_payment_allocations (
+  payment_id bigint NOT NULL REFERENCES billing_payments (id),
+  document_id bigint NOT NULL REFERENCES billing_documents (id),
+  amount_cents bigint NOT NULL CHECK (amount_cents > 0),
+  PRIMARY KEY (payment_id, document_id)
+);
+
+CREATE TABLE IF NOT EXISTS billing_customer_credits (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  customer_id bigint NOT NULL REFERENCES customers (id),
+  source text NOT NULL CHECK (source IN ('payment', 'credit_note')),
+  source_id bigint NOT NULL,
+  amount_cents bigint NOT NULL CHECK (amount_cents > 0),
+  remaining_cents bigint NOT NULL CHECK (remaining_cents >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (source, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS billing_messages (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  org_id bigint NOT NULL REFERENCES orgs (id),
+  document_id bigint REFERENCES billing_documents (id),
+  channel text NOT NULL DEFAULT 'email' CHECK (channel IN ('email', 'whatsapp')),
+  to_address text NOT NULL,
+  cc text,
+  provider_message_id text,
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'delivered', 'bounced', 'failed')),
+  error text,
+  created_by bigint REFERENCES users (id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_messages_org_month_idx ON billing_messages (org_id, created_at);
+
+-- Standalone Invoicing packages (billing app only). Free starting figures are owner-approved and editable.
+INSERT INTO packages (code, name, description, features, default_seats, default_devices, default_sessions, limits)
+VALUES
+  ('INVOICING-FREE', 'Invoicing Free', 'Quotes, invoices and getting paid',
+   ARRAY['invoicing'], 2, 0, 0, '{"invoicesPerMonth": 100, "emailsPerMonth": 300, "issuingCompanies": 1}'::jsonb),
+  ('INVOICING-PRO', 'Invoicing Pro', 'Invoicing with online payments, reminders and recurring invoices',
+   ARRAY['invoicing', 'invoicing_pro'], 5, 0, 0, '{}'::jsonb)
+ON CONFLICT (code) DO NOTHING;

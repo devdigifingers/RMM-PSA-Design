@@ -1,0 +1,25 @@
+/* Live documents: pieces the fixed mockups did not need (text logo, headings and subtotals on every template, continuation footers). */
+.logo-text{font:700 22px/1.15 "Inter";color:var(--primary-text);letter-spacing:-.01em;max-width:360px;}
+.t-classic .logo-text{font-family:"Source Serif 4",Georgia,serif;font-weight:600;text-align:center;margin:0 auto 4px;max-width:none;}
+.t-min .logo-text{font-size:16px;font-weight:600;}
+.d2{white-space:pre-line;}
+.notes p,.t-classic .lower .left p,.t-min .note{white-space:pre-line;}
+table.lines tr.sub td{font-weight:600;border-top:1px solid var(--line);}
+.t-classic table.lines .grp td{background:#F9FAFB;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;}
+.t-min table.lines .grp td{padding-top:16px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#6B7280;}
+.t-classic table.lines tr.cf td,.t-min table.lines tr.cf td{font-weight:600;font-size:12px;}
+.t-min table.lines tr.cf td{border-top:.5px solid #D1D5DB;border-bottom:.5px solid #D1D5DB;}
+.t-classic .foot.slim,.t-min .foot.slim{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:#4B5563;padding-top:10px;}
+.t-classic .foot.slim{border-top:1px solid #111827;}
+.t-min .foot.slim{border-top:.5px solid #D1D5DB;color:#6B7280;}
+.foot.slim .cont{font-weight:600;}
+.t-classic .chead,.t-min .chead{margin:8px 56px 0;}
+.t-classic .wrap.w2,.t-min .wrap.w2{padding-top:0;}
+.t-classic .chead .ct b{font-family:"Source Serif 4",Georgia,serif;}
+.foot .cols.c2{grid-template-columns:1.35fr 1fr;}
+.foot .cols.c1{grid-template-columns:1fr;}
+.t-classic .reason,.t-min .reason{max-width:none;margin-bottom:10px;}
+.t-min .applied,.t-classic .applied{border-radius:0;}
+.t-min .tot .grand-row{font-weight:500;}
+.t-modern .sumrow .subject{min-width:0;}
+.doc-card .t-modern .foot .cols.c2{grid-template-columns:1.35fr 1fr;}

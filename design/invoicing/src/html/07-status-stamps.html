@@ -1,0 +1,32 @@
+<!doctype html><html lang="en-ZA"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status stamps</title><link rel="stylesheet" href="../css/base.css"><link rel="stylesheet" href="../css/shared.css"><link rel="stylesheet" href="../css/modern.css"><link rel="stylesheet" href="../css/docs2.css"><style>:root{--primary:#6D28D9;--secondary:#0891B2;--grad-text-end:#4975C1;--on-primary:#FFFFFF;--primary-text:#6D28D9;--tint4:color-mix(in srgb,#6D28D9 4%,#fff);--tint6:color-mix(in srgb,#6D28D9 7%,#fff);--tint12:color-mix(in srgb,#6D28D9 14%,#fff);--tint20:color-mix(in srgb,#6D28D9 22%,#fff);}</style></head><body class="a4"><div class="page"><div class="t-modern doc"><div class="bar"></div><div class="wrap"><header class="head"><img class="logo" src="../assets/logos/logo-horizontal-light.svg" alt="Compu-Extravaganza"><div class="title"><h1>STATUS STAMPS</h1><div class="no">Design system · all templates</div></div></header>
+  <p class="intro">A diagonal watermark sits behind the content in the status colour at <b>10% opacity</b>. A small solid status pill under the
+  document title says the same thing at full contrast, so the status still reads in greyscale print and for screen-reader users (the watermark is <code>aria-hidden</code>).</p>
+  <div class="sgrid"><div class="stile"><div class="mini"><i></i><i></i><i class="s"></i><i></i><i></i><i class="s"></i><i></i><i></i>
+          <div class="stamp" style="--stamp:#15803D;font-size:44px">PAID</div></div>
+          <div class="sp"><div class="row1"><span class="spill" style="background:#DCFCE7;color:#166534">Paid</span><span class="hex"><span class="sw" style="background:#15803D"></span>#15803D</span></div>
+          <dl class="kv"><dt>Shows when</dt><dd>Balance is R 0,00.</dd><dt>Where</dt><dd>PDF “Copy” + hosted page</dd>
+          <dt>Pill</dt><dd>#DCFCE7 / text #166534</dd></dl></div></div><div class="stile"><div class="mini"><i></i><i></i><i class="s"></i><i></i><i></i><i class="s"></i><i></i><i></i>
+          <div class="stamp" style="--stamp:#B45309;font-size:26px">PARTIALLY PAID</div></div>
+          <div class="sp"><div class="row1"><span class="spill" style="background:#FEF3C7;color:#8A4508">Partially Paid</span><span class="hex"><span class="sw" style="background:#B45309"></span>#B45309</span></div>
+          <dl class="kv"><dt>Shows when</dt><dd>0 &lt; paid &lt; total.</dd><dt>Where</dt><dd>PDF “Copy” + hosted page</dd>
+          <dt>Pill</dt><dd>#FEF3C7 / text #8A4508</dd></dl></div></div><div class="stile"><div class="mini"><i></i><i></i><i class="s"></i><i></i><i></i><i class="s"></i><i></i><i></i>
+          <div class="stamp" style="--stamp:#B91C1C;font-size:44px">OVERDUE</div></div>
+          <div class="sp"><div class="row1"><span class="spill" style="background:#FEE2E2;color:#991B1B">Overdue</span><span class="hex"><span class="sw" style="background:#B91C1C"></span>#B91C1C</span></div>
+          <dl class="kv"><dt>Shows when</dt><dd>Unpaid after due date.</dd><dt>Where</dt><dd>Hosted page only — never printed in a PDF</dd>
+          <dt>Pill</dt><dd>#FEE2E2 / text #991B1B</dd></dl></div></div><div class="stile"><div class="mini"><i></i><i></i><i class="s"></i><i></i><i></i><i class="s"></i><i></i><i></i>
+          <div class="stamp" style="--stamp:#475569;font-size:44px">DRAFT</div></div>
+          <div class="sp"><div class="row1"><span class="spill" style="background:#F1F5F9;color:#334155">Draft</span><span class="hex"><span class="sw" style="background:#475569"></span>#475569</span></div>
+          <dl class="kv"><dt>Shows when</dt><dd>Not yet issued.</dd><dt>Where</dt><dd>Always, on every output (PDF, preview, hosted)</dd>
+          <dt>Pill</dt><dd>#F1F5F9 / text #334155</dd></dl></div></div><div class="stile"><div class="mini"><i></i><i></i><i class="s"></i><i></i><i></i><i class="s"></i><i></i><i></i>
+          <div class="stamp" style="--stamp:#111827;font-size:44px">VOID</div></div>
+          <div class="sp"><div class="row1"><span class="spill" style="background:#E5E7EB;color:#111827">Void</span><span class="hex"><span class="sw" style="background:#111827"></span>#111827</span></div>
+          <dl class="kv"><dt>Shows when</dt><dd>Cancelled after issue.</dd><dt>Where</dt><dd>PDF “Copy” + hosted page</dd>
+          <dt>Pill</dt><dd>#E5E7EB / text #111827</dd></dl></div></div>
+    <div class="stile spec"><div class="lbl">Stamp spec</div>
+      <dl class="kv"><dt>Font</dt><dd>Inter 800, uppercase, +0.08em</dd><dt>Size (A4)</dt><dd>120px one word · 76px two words</dd>
+      <dt>Frame</dt><dd>0.06em border, 0.14em radius</dd><dt>Rotation</dt><dd>−24°, centred at 50% / 46%</dd>
+      <dt>Opacity</dt><dd>10% (text + frame)</dd><dt>Layer</dt><dd>above content, pointer-events none</dd>
+      <dt>Pill</dt><dd>Inter 700 11px, +0.08em, 999px radius</dd></dl>
+      <p class="note">The original issued PDF is never stamped. Stamps go only on the regenerated <b>“Copy”</b> (§5.3 L408), whose footer starts with <b>COPY</b>.</p></div>
+  </div></div>
+  <footer class="foot slim"><span>Compu-Extravaganza Technology cc · status colours are UI-only (never tenant brand colours)</span><span>Page 1 of 1</span></footer></div></div></body></html>

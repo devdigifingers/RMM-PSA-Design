@@ -1,0 +1,96 @@
+/* 5. MSP SERVICE SUMMARY — spec §4.2.5. Page 1 = compact Modern (reuses modern.css tokens). */
+.t-msp{font-size:12px;}
+.t-msp .bar{height:6px;background:linear-gradient(90deg in oklab,var(--primary),var(--secondary));}
+.t-msp .wrap{padding:26px 44px 0;}
+.t-msp .head{display:flex;justify-content:space-between;align-items:flex-start;}
+.t-msp .head img.logo{height:44px;width:auto;}
+.t-msp .title{text-align:right;}
+.t-msp .title h1{font-size:24px;font-weight:600;letter-spacing:.04em;color:var(--primary-text);line-height:1.1;}
+.t-msp .title .no{font-size:13px;color:var(--slate);margin-top:4px;}
+.t-msp .strip{margin-top:14px;border-radius:10px;background:var(--tint4);border:1px solid var(--tint12);display:grid;grid-template-columns:28px 2fr 1fr 1fr .8fr;align-items:center;gap:14px;padding:8px 14px;}
+.t-msp .strip img{width:28px;height:28px;}
+.t-msp .strip .lbl{margin-bottom:1px;font-size:10px;}
+.t-msp .strip .v{font-weight:600;font-size:12px;}
+.t-msp .info{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:20px;margin-top:14px;line-height:1.4;font-size:11.5px;}
+.t-msp .info .lbl{font-size:10px;margin-bottom:4px;}
+.t-msp .info strong{font-weight:600;}
+.t-msp table.lines{margin-top:12px;}
+.t-msp table.lines thead th{background:var(--tint6);font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-600);font-weight:600;padding:7px 10px;text-align:left;}
+.t-msp table.lines thead th:first-child{border-radius:7px 0 0 7px;} .t-msp table.lines thead th:last-child{border-radius:0 7px 7px 0;}
+.t-msp table.lines th.r{text-align:right;}
+.t-msp table.lines td{padding:4px 10px;vertical-align:top;}
+.t-msp .grp td{padding-top:8px;padding-bottom:4px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text);border-bottom:1px solid var(--tint12);}
+.t-msp .item td{border-bottom:1px solid #F1F5F9;}
+.t-msp .d2{font-size:10.5px;margin-top:0;line-height:1.35;}
+.t-msp .sub td{font-size:11.5px;font-weight:600;padding-top:4px;padding-bottom:2px;}
+.t-msp .sub td:first-child{color:var(--slate-600);font-weight:500;}
+.t-msp .incl{color:var(--ok);font-weight:600;}
+.t-msp .totals{display:flex;justify-content:space-between;align-items:flex-start;margin-top:10px;gap:24px;}
+.t-msp .due{flex:1;max-width:300px;border-radius:12px;background:var(--tint4);border:1px solid var(--tint12);padding:10px 16px;}
+.t-msp .due .lbl{font-size:10px;margin-bottom:0;color:var(--slate-600);}
+.t-msp .due .amt{font-size:26px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums;}
+.t-msp .due .dd{font-size:11.5px;color:var(--slate-600);display:flex;justify-content:space-between;align-items:center;}
+.t-msp .due .see{margin-top:8px;padding-top:8px;border-top:1px solid var(--tint12);font-size:11px;color:var(--slate-600);}
+.t-msp .due .see b{color:var(--primary-text);}
+.t-msp .tot{width:290px;}
+.t-msp .tot .row{padding:3px 10px;}
+.t-msp .tot .grand{background:linear-gradient(90deg in oklab,var(--primary),var(--grad-text-end));color:var(--on-primary);border-radius:8px;padding:8px 10px;margin-top:4px;font-weight:700;font-size:14px;}
+.t-msp .tot .grand span:first-child{color:inherit;}
+.t-msp .foot{position:absolute;left:44px;right:44px;bottom:22px;}
+.t-msp .foot .cols{border-top:1px solid var(--line);padding-top:10px;display:grid;grid-template-columns:1.35fr 1fr 190px;gap:22px;font-size:10.5px;line-height:1.5;}
+.t-msp .foot .lbl{font-size:10px;margin-bottom:4px;}
+.t-msp .foot .qrbox .qr{width:64px;height:64px;}
+.t-msp .foot .pg{display:flex;justify-content:space-between;margin-top:8px;font-size:10px;color:var(--slate);}
+.t-msp .foot .pg .ty{color:var(--primary-text);font-weight:600;font-size:12px;}
+
+/* page 2 — What we did for you this month */
+.t-msp .h2row{display:flex;justify-content:space-between;align-items:center;}
+.t-msp .h2row img.logo{height:32px;}
+.t-msp .h2row .ctx{font-size:11px;color:var(--slate-600);text-align:right;line-height:1.4;}
+.t-msp .h2row .ctx b{color:var(--ink);}
+.t-msp h2{font-size:24px;font-weight:700;letter-spacing:-.01em;margin-top:22px;}
+.t-msp .h2sub{color:var(--slate-600);font-size:12.5px;margin-top:2px;}
+.t-msp .ai{margin-top:20px;border-radius:10px;border:1px solid var(--line);padding:12px 14px 12px 16px;position:relative;font-size:12px;line-height:1.6;color:#1E293B;}
+.t-msp .ai::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:2px;background:linear-gradient(180deg in oklab,var(--primary),var(--secondary));}
+.t-msp .ai .by{font-size:10.5px;color:var(--slate);margin-top:5px;}
+.t-msp .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px;}
+.t-msp .kpi{border-radius:12px;background:var(--tint4);border:1px solid var(--tint12);padding:14px 14px 16px;}
+.t-msp .kpi .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;}
+.t-msp .kpi img{width:20px;height:20px;}
+.t-msp .kpi .k{font-size:11px;color:var(--slate-600);font-weight:500;min-height:32px;line-height:1.4;}
+.t-msp .kpi .v{font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin-top:2px;font-variant-numeric:tabular-nums;}
+.t-msp .kpi .dlt{font-size:10.5px;color:var(--slate-600);}
+.t-msp .sec{margin-top:32px;}
+.t-msp .sec h3{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-600);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;}
+.t-msp .sec h3 small{font-size:10.5px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--slate);display:flex;align-items:center;gap:5px;}
+.t-msp .sec h3 small img{width:14px;height:14px;}
+.t-msp .usage{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.t-msp .u{border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+.t-msp .u .t1{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;}
+.t-msp .u .t1 b{font-size:15px;font-variant-numeric:tabular-nums;}
+.t-msp .track{height:8px;border-radius:99px;background:#EEF2F6;margin-top:8px;position:relative;overflow:visible;}
+.t-msp .track i{position:absolute;left:0;top:0;bottom:0;border-radius:99px;}
+.t-msp .track .mark{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--ink);border-radius:1px;}
+.t-msp .ok i{background:#16A34A;} .t-msp .near i{background:#D97706;} .t-msp .over i{background:#DC2626;}
+.t-msp .u .t2{display:flex;justify-content:space-between;font-size:10.5px;color:var(--slate-600);margin-top:7px;}
+.t-msp .chip{display:inline-block;font-size:10px;font-weight:600;padding:1px 7px;border-radius:99px;}
+.t-msp .chip.over{background:#FEE2E2;color:#991B1B;} .t-msp .chip.ok{background:#DCFCE7;color:#166534;}
+.t-msp table.tk{width:100%;border-collapse:collapse;font-size:11.5px;}
+.t-msp table.tk th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-600);font-weight:600;text-align:left;padding:6px 8px;background:var(--tint6);}
+.t-msp table.tk th:first-child{border-radius:7px 0 0 7px;} .t-msp table.tk th:last-child{border-radius:0 7px 7px 0;}
+.t-msp table.tk td{padding:7px 8px;border-bottom:1px solid #F1F5F9;font-variant-numeric:tabular-nums;}
+.t-msp table.tk td.id{color:var(--primary-text);font-weight:600;white-space:nowrap;}
+.t-msp .two{display:grid;grid-template-columns:1fr 1.7fr;gap:16px;}
+.t-msp .two>div{display:flex;flex-direction:column;} .t-msp .two .card{flex:1;}
+.t-msp .card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;}
+.t-msp .card .big{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2;}
+.t-msp .card .big small{font-size:12px;font-weight:500;color:var(--slate-600);}
+.t-msp .dev{display:grid;grid-template-columns:repeat(3,.7fr) 1.6fr;gap:10px;align-items:center;}
+.t-msp .dev .n{font-size:20px;font-weight:700;line-height:1.2;}
+.t-msp .dev .k{font-size:11px;color:var(--slate-600);}
+.t-msp .dev .chg{font-size:11px;color:var(--slate-600);border-left:1px solid var(--line);padding-left:12px;line-height:1.5;}
+.t-msp .dev .chg b{color:var(--ink);}
+.t-msp .foot2{position:absolute;left:44px;right:44px;bottom:22px;border-top:1px solid var(--line);padding-top:10px;display:flex;justify-content:space-between;font-size:10px;color:var(--slate);}
+.t-msp .strip .v{white-space:nowrap;}
+.t-msp table.tk th.r{text-align:right;}
+.t-msp .strip .lbl{color:var(--slate-600);}

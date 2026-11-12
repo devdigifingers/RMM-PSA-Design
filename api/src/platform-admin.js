@@ -1,7 +1,7 @@
 import { pool } from "./db.js";
 import { insertAudit } from "./audit.js";
 import { createInvite, listInvites, parseInvite } from "./invites.js";
-import { FEATURE_KEYS, appsFor } from "./licensing.js";
+import { FEATURE_KEYS, LIMIT_KEYS, appsFor, setLimits } from "./licensing.js";
 import {
   licenseSnapshot,
   loadAllLicenses,
@@ -68,6 +68,19 @@ function featureList(value) {
   return FEATURE_KEYS.filter((key) => set.has(key));
 }
 
+const LIMIT_LABELS = { invoicesPerMonth: "invoices per month", emailsPerMonth: "emails per month", issuingCompanies: "issuing companies" };
+
+// Blank fields are left out: unlimited on a package, the package value on a licence.
+function limitsInput(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const limits = {};
+  for (const key of LIMIT_KEYS) {
+    const number = wholeNumber(source[key], LIMIT_LABELS[key], 0, 10000000, { optional: true });
+    if (number != null) limits[key] = number;
+  }
+  return limits;
+}
+
 function packageView(row) {
   const features = row.features || [];
   return {
@@ -80,6 +93,7 @@ function packageView(row) {
     defaultSeats: row.default_seats,
     defaultDevices: row.default_devices,
     defaultSessions: row.default_sessions,
+    limits: setLimits(row.limits),
     priceMonthly: row.price_monthly == null ? null : Number(row.price_monthly),
     currency: row.currency,
     active: row.active === true,
@@ -108,6 +122,7 @@ function parsePackage(body) {
     defaultSeats: wholeNumber(body.defaultSeats, "default seats", 1, 100000),
     defaultDevices: wholeNumber(body.defaultDevices, "default devices", 0, 1000000),
     defaultSessions: wholeNumber(body.defaultSessions, "default sessions", 0, 100),
+    limits: limitsInput(body.limits),
     priceMonthly,
     active: body.active !== false,
   };
@@ -133,6 +148,7 @@ function parseLicenseEdit(body, expiryFrom) {
     seatsOverride: wholeNumber(body.seatsOverride, "seats", 1, 100000, { optional: true }),
     devicesOverride: wholeNumber(body.devicesOverride, "devices", 0, 1000000, { optional: true }),
     sessionsOverride: wholeNumber(body.sessionsOverride, "sessions", 0, 100, { optional: true }),
+    limitsOverride: limitsInput(body.limitsOverride),
     featuresAdded: featureList(body.featuresAdded),
     featuresRemoved: featureList(body.featuresRemoved),
     ...parseExpiry(body, expiryFrom),
@@ -265,11 +281,11 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
     try {
       const id = await tx(async (client) => {
         const created = await client.query(
-          `INSERT INTO packages (code, name, description, features, default_seats, default_devices, default_sessions, price_monthly, active, is_custom)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `INSERT INTO packages (code, name, description, features, default_seats, default_devices, default_sessions, price_monthly, active, is_custom, limits)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
            RETURNING *`,
           [code, input.name, input.description, input.features, input.defaultSeats, input.defaultDevices, input.defaultSessions,
-            input.priceMonthly, input.active, code.startsWith("CUSTOM-")],
+            input.priceMonthly, input.active, code.startsWith("CUSTOM-"), JSON.stringify(input.limits)],
         );
         const pkg = packageView(created.rows[0]);
         await audit(client, null, actor.id, "package.create", "package", pkg.id, { after: pkg });
@@ -294,7 +310,8 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
       const pending = snapshotChanges(
         {
           name: before.name, description: before.description, features: before.features, defaultSeats: before.defaultSeats,
-          defaultDevices: before.defaultDevices, defaultSessions: before.defaultSessions, priceMonthly: before.priceMonthly, active: before.active,
+          defaultDevices: before.defaultDevices, defaultSessions: before.defaultSessions, limits: before.limits,
+          priceMonthly: before.priceMonthly, active: before.active,
         },
         input,
       );
@@ -305,11 +322,11 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
       const updated = await client.query(
         `UPDATE packages
          SET name = $2, description = $3, features = $4, default_seats = $5, default_devices = $6,
-             default_sessions = $7, price_monthly = $8, active = $9, updated_at = now()
+             default_sessions = $7, price_monthly = $8, active = $9, limits = $10::jsonb, updated_at = now()
          WHERE id = $1
          RETURNING *`,
         [id, input.name, input.description, input.features, input.defaultSeats, input.defaultDevices,
-          input.defaultSessions, input.priceMonthly, input.active],
+          input.defaultSessions, input.priceMonthly, input.active, JSON.stringify(input.limits)],
       );
       const after = packageView(updated.rows[0]);
       const changes = snapshotChanges(
@@ -397,10 +414,11 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
         `UPDATE licenses
          SET package_id = $2, plan = $3, seats_override = $4, devices_override = $5, sessions_override = $6,
              features_added = $7, features_removed = $8, no_expiry = $9, expires_at = $10, status = $11,
-             updated_by = $12, updated_at = now()
+             updated_by = $12, limits_override = $13::jsonb, updated_at = now()
          WHERE org_id = $1`,
         [id, input.packageId, input.licenseType, input.seatsOverride, input.devicesOverride, input.sessionsOverride,
-          input.featuresAdded, input.featuresRemoved, input.noExpiry, input.expiresAt, input.status, actor.id],
+          input.featuresAdded, input.featuresRemoved, input.noExpiry, input.expiresAt, input.status, actor.id,
+          JSON.stringify(input.limitsOverride)],
       );
       const after = licenseSnapshot(await lockedLicenseRow(client, id));
       const changes = snapshotChanges(before, after);
@@ -442,12 +460,12 @@ export async function handlePlatformAdmin(req, res, url, actor, h) {
         const id = Number(org.rows[0].id);
         const created = await client.query(
           `INSERT INTO licenses (org_id, plan, expires_at, package_id, seats_override, devices_override, sessions_override,
-                                 features_added, features_removed, no_expiry, status, updated_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11)
+                                 features_added, features_removed, no_expiry, status, updated_by, limits_override)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', $11, $12::jsonb)
            RETURNING *`,
           [id, license.licenseType, license.expiresAt, license.packageId,
             license.seatsOverride, license.devicesOverride, license.sessionsOverride, license.featuresAdded,
-            license.featuresRemoved, license.noExpiry, actor.id],
+            license.featuresRemoved, license.noExpiry, actor.id, JSON.stringify(license.limitsOverride)],
         );
         await client.query("INSERT INTO roles (org_id, name) VALUES ($1, 'owner'), ($1, 'admin'), ($1, 'tech')", [id]);
         if (inviteAdmin) {

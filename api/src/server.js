@@ -30,6 +30,8 @@ import { customerInsights } from "./customer-insights.js";
 import { remoteAgentChange, remoteAgentFrom, remoteAgentOffer, remoteAgentView } from "./remote-agent.js";
 import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
 import { handleScripts } from "./scripts.js";
+import { handlePublicBilling } from "./billing/documents.js";
+import { handleBilling } from "./billing/routes.js";
 import { COMMAND_MAX, scriptProblem } from "./job-input.js";
 import {
   ACTIVITY_GROUPS,
@@ -2632,6 +2634,21 @@ async function requireReporting(actor, res, options = {}) {
   return true;
 }
 
+async function requireInvoicing(actor, res) {
+  if (!requireActor(actor, res)) return null;
+  if (!actor.org_id) {
+    send(res, 403, { error: "This account is not in an org." });
+    return null;
+  }
+  const row = (await licenseQuery(actor.org_id)).rows[0];
+  const reason = licenseExpired(row) ? "expired" : hasFeature(row?.entitlements, "invoicing") ? null : "module";
+  if (reason) {
+    licenseDenied(res, row, reason, "invoicing", "Invoicing");
+    return null;
+  }
+  return row;
+}
+
 function patchState(updates, software, succeededNames) {
   const patched = [...succeededNames];
   const installed = new Set(patched);
@@ -4949,6 +4966,13 @@ function sweepSupport() {
   return supportRefreshing;
 }
 
+async function billingLinkLimited(req) {
+  const key = `billing-link:${clientAddress(req)}`;
+  const count = await redis.incr(key);
+  if (count === 1) await redis.expire(key, 600);
+  return count > 300;
+}
+
 async function supportJoinLimited(req) {
   const key = `support-join:${clientAddress(req)}`;
   const count = await redis.incr(key);
@@ -5085,6 +5109,8 @@ const server = createServer(async (req, res) => {
       stream.pipe(res);
       return;
     }
+
+    if (await handlePublicBilling(req, res, url, { send, readJson, sealSecret, openSecret, loadLicense, clientAddress, limited: billingLinkLimited })) return;
 
     if (await handleTokenApi(req, res, url, tokenHelpers())) return;
 
@@ -5294,6 +5320,7 @@ const server = createServer(async (req, res) => {
             active: effective.entitlements.active,
             apps: effective.entitlements.apps,
             features: effective.entitlements.features,
+            limits: effective.entitlements.limits,
             seats: effective.seats,
             seatsUsed: row.seats_used,
             deviceCap: effective.device_cap,
@@ -8288,6 +8315,8 @@ const server = createServer(async (req, res) => {
         throw error;
       }
     }
+
+    if (await handleBilling(req, res, url, actor, { send, readJson, canOperate, requireInvoicing, sealSecret, openSecret })) return;
 
     if (req.method === "GET" && url.pathname === "/v1/reports") {
       if (!(await requireReporting(actor, res))) return;

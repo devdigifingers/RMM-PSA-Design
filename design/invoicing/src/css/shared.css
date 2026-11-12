@@ -1,0 +1,20 @@
+/* Shared building blocks used by every template */
+.lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-500);font-weight:600;margin-bottom:6px;}
+.kv{display:grid;grid-template-columns:auto 1fr;column-gap:12px;row-gap:2px;}
+.kv dt{color:var(--slate-600);white-space:nowrap;} .kv dd{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;}
+.pill{align-items:center;gap:6px;background:var(--primary);color:var(--on-primary);font-weight:600;font-size:12px;padding:6px 14px;border-radius:999px;text-decoration:none;}
+table.lines{width:100%;border-collapse:collapse;margin-top:20px;}
+.d1{font-weight:500;} .d2{font-size:11.5px;color:var(--slate);margin-top:1px;}
+.tot{flex:none;width:300px;font-variant-numeric:tabular-nums;}
+.tot .row{display:flex;justify-content:space-between;padding:5px 12px;}
+.tot .row span:first-child{color:var(--slate-600);}
+.bank{display:grid;grid-template-columns:auto 1fr;column-gap:10px;}
+.bank dt{color:var(--slate-600);white-space:nowrap;} .bank dd{white-space:nowrap;font-weight:500;font-variant-numeric:tabular-nums;}
+.ref{margin-top:6px;padding:4px 8px;border-radius:6px;background:var(--tint6);display:inline-block;font-size:11px;}
+.ref b{color:var(--primary-text);}
+.qrbox{display:flex;gap:10px;align-items:flex-start;}
+.qrbox .qr{width:72px;height:72px;flex:none;}
+.qrbox .t{min-width:0;overflow-wrap:anywhere;font-size:10.5px;color:var(--slate-600);line-height:1.45;}
+.qrbox .t b{color:var(--ink);display:block;font-size:11px;}
+.mq{display:none;}
+.tot .novat{padding-top:4px;padding-bottom:0;font-size:10.5px;} .tot .novat span:first-child{color:var(--slate);}

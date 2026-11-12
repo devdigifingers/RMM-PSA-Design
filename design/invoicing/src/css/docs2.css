@@ -1,0 +1,64 @@
+/* Round 2: stamps, statement, credit note, continuation pages (Modern design system) */
+.copy{color:var(--ink);letter-spacing:.08em;font-weight:700;}
+.spill.cn{background:var(--tint6);color:var(--primary-text);}
+.t-modern .foot.slim{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:10px;font-size:10.5px;color:var(--slate);}
+.t-modern .foot.slim .cont{color:var(--primary-text);font-weight:600;font-size:11.5px;}
+.t-modern table.lines .grp td{background:none!important;padding:12px 12px 5px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text);border-bottom:1px solid var(--tint12);}
+.t-modern table.lines .d2:empty{display:none;}
+
+/* stamp sheet */
+.intro{margin-top:22px;font-size:12.5px;line-height:1.6;color:var(--slate-600);max-width:640px;}
+.intro code{font-size:11.5px;background:#F1F5F9;padding:1px 4px;border-radius:4px;}
+.sgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px;}
+.stile{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;}
+.stile .mini{position:relative;height:132px;background:#fff;padding:16px 18px;border-bottom:1px solid var(--line);overflow:hidden;}
+.stile .mini i{display:block;height:6px;border-radius:3px;background:#E9EDF2;margin-bottom:9px;width:88%;}
+.stile .mini i.s{width:52%;}
+.stile .mini .stamp{top:50%;}
+.stile .sp{padding:12px 16px 14px;font-size:11.5px;}
+.stile .row1{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.stile .hex{display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;color:var(--slate-600);font-weight:600;}
+.stile .sw{width:14px;height:14px;border-radius:4px;display:inline-block;}
+.stile .kv{row-gap:3px;} .stile .kv dd{white-space:normal;}
+.stile.spec{padding:14px 16px;background:var(--tint4);border-color:var(--tint12);font-size:11.5px;}
+.stile.spec .kv dt{color:var(--slate-600);} .stile.spec .lbl{color:var(--slate-600);}
+.stile .note{margin-top:10px;color:var(--slate-600);line-height:1.5;}
+
+/* statement */
+.ageing{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) minmax(0,1.35fr);gap:10px;margin-top:26px;}
+.age{border:1px solid var(--line);border-radius:10px;padding:10px 12px;}
+.age .lbl{margin-bottom:2px;color:var(--slate-600);}
+.age .a{font-size:16px;white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums;}
+.age .s{font-size:10.5px;color:var(--slate);}
+.age.warn{border-color:#FCD34D;background:#FFFBEB;} .age.warn .a{color:#8A4508;}
+.age.bad{border-color:#FCA5A5;background:#FEF2F2;} .age.bad .a{color:#991B1B;}
+.age.total{background:var(--primary);border-color:var(--primary);color:var(--on-primary);}
+.age.total .lbl,.age.total .s{color:rgba(255,255,255,.9);}
+.t-modern table.stmt td{font-size:12px;}
+.t-modern table.stmt td.ref{color:var(--primary-text);font-weight:600;}
+.t-modern table.stmt td.b{font-weight:600;}
+.t-modern table.stmt tr.open td{background:var(--tint4)!important;font-style:normal;color:var(--slate-600);}
+.t-modern table.stmt tr.close td{background:none!important;border-top:2px solid var(--primary);border-bottom:0;font-weight:700;font-size:13px;padding-top:10px;}
+.stnote{margin-top:14px;font-size:11.5px;color:var(--slate-600);line-height:1.55;}
+
+/* credit note */
+.reason{flex:1;max-width:390px;border-left:3px solid var(--primary);padding:2px 0 2px 14px;}
+.reason p{font-size:12.5px;line-height:1.55;color:#1E293B;}
+.t-modern .due.cnd .amt{color:var(--primary-text);}
+.applied{margin-top:12px;border:1px solid var(--line);border-radius:10px;padding:4px 0;}
+.applied .bal{border-top:1px solid var(--line);margin-top:4px;padding-top:7px;font-weight:600;}
+.applied .bal span:first-child{color:var(--ink);}
+
+/* continuation header (page 2+) */
+.chead{display:flex;align-items:center;gap:16px;height:52px;margin:8px 48px 0;border-bottom:1px solid var(--line);}
+.chead img{height:28px;}
+.chead .ct{font-size:13px;color:var(--ink);} .chead .ct b{font-weight:700;letter-spacing:.04em;color:var(--primary-text);} .chead .ct span{color:var(--slate-600);}
+.chead .cr{margin-left:auto;text-align:right;font-size:11px;color:var(--slate-600);line-height:1.4;} .chead .cr b{color:var(--ink);}
+.t-modern .wrap.w2{padding-top:0;}
+.age.total .a{font-size:20px;}
+.age .lbl{white-space:nowrap;}
+.t-modern table.stmt td.rf{color:var(--primary-text);font-weight:600;}
+.stile .mini .stamp{transform:translate(-50%,-50%) rotate(-18deg);}
+.t-modern table.lines.dense td{padding:5px 12px;} .t-modern table.lines.dense .d2{font-size:10.5px;margin-top:0;} .t-modern table.lines.dense .grp td{padding:9px 12px 4px;}
+.t-modern table.lines tr.cf td{background:var(--tint4)!important;font-weight:600;font-size:12px;color:var(--slate-600);border-top:1px solid var(--tint12);border-bottom:1px solid var(--tint12);padding:7px 12px;}
+.t-modern table.lines tr.cf td.r{color:var(--ink);}

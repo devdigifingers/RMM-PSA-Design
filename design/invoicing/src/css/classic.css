@@ -1,0 +1,41 @@
+/* 2. CLASSIC — spec §4.2.2 */
+.t-classic{font-family:"Source Serif 4",Georgia,serif;font-size:12.5px;color:#111827;}
+.t-classic .wrap{padding:40px 56px 0;}
+.t-classic .head{text-align:center;}
+.t-classic .head img.mark{height:44px;margin:0 auto 8px;}
+.t-classic .head img.logo{height:44px;margin:0 auto 8px;}
+.t-classic .head .co{font-family:"DM Serif Display",serif;font-size:22px;line-height:1.2;letter-spacing:.01em;}
+.t-classic .head .addr{font-size:11px;color:#374151;margin-top:4px;}
+.t-classic .dbl{height:6px;border-top:2px solid #111827;border-bottom:1px solid #111827;margin-top:14px;}
+.t-classic .ttl{display:flex;align-items:center;justify-content:center;gap:16px;margin:22px 0 20px;}
+.t-classic .ttl i{display:block;width:64px;height:1.5px;background:var(--primary);}
+.t-classic .ttl h1{font-weight:600;font-size:22px;font-variant-caps:all-small-caps;letter-spacing:.14em;line-height:1;}
+.t-classic .boxes{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.t-classic .box{border:1px solid var(--slate-300);padding:12px 14px;line-height:1.55;}
+.t-classic .box h3{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#374151;border-bottom:1px solid var(--slate-300);padding-bottom:6px;margin-bottom:8px;}
+.t-classic .box .kv dt{color:#374151;}
+.t-classic table.lines{margin-top:20px;border:1px solid var(--slate-300);}
+.t-classic table.lines th,.t-classic table.lines td{border:1px solid var(--slate-300);padding:7px 10px;vertical-align:top;}
+.t-classic table.lines th{background:#F3F4F6;font-weight:600;font-size:12px;text-align:left;}
+.t-classic table.lines th.r{text-align:right;}
+.t-classic .d1{font-weight:600;} .t-classic .d2{color:#4B5563;font-size:11px;}
+.t-classic .lower{display:flex;align-items:flex-start;justify-content:space-between;gap:28px;margin-top:18px;}
+.t-classic .lower .left{flex:1;min-width:0;font-size:11.5px;color:#374151;line-height:1.55;}
+.t-classic .lower .left h4{font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:#111827;margin-bottom:4px;}
+.t-classic .lower .left p+h4{margin-top:10px;}
+.t-classic .tot{flex:none;width:290px;border:1px solid var(--slate-300);padding:6px 4px;}
+.t-classic .tot .row span:first-child{color:#374151;}
+.t-classic .tot .grand{font-weight:600;font-size:15px;color:#111827;margin-top:4px;}
+.t-classic .tot .grand span:first-child{color:#111827;}
+.t-classic .tot .grand span:last-child{border-bottom:3px double var(--primary);padding-bottom:1px;}
+.t-classic .tot .bal{border-top:1px solid var(--slate-300);margin-top:6px;padding-top:7px;font-weight:600;}
+.t-classic .sig{display:flex;gap:40px;margin-top:30px;}
+.t-classic .sig div{width:170px;border-top:1px solid #111827;padding-top:5px;font-size:11px;color:#374151;}
+.t-classic .foot{position:absolute;left:56px;right:56px;bottom:26px;}
+.t-classic .foot .cols{border-top:1px solid #111827;padding-top:12px;display:grid;grid-template-columns:1.3fr 1fr 190px;gap:24px;font-size:11px;line-height:1.5;}
+.t-classic .foot h4{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px;}
+.t-classic .bank dt{color:#4B5563;}
+.t-classic .ref{background:none;padding:0;margin-top:4px;} .t-classic .ref b{color:#111827;}
+.t-classic .qrbox .qr{width:64px;height:64px;}
+.t-classic .qrbox .t{font-family:"Source Serif 4",serif;color:#374151;}
+.t-classic .foot .pg{display:flex;justify-content:space-between;margin-top:10px;font-size:10px;color:#4B5563;}

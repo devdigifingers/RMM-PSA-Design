@@ -1,0 +1,51 @@
+---
+import Base from "../layouts/Base.astro";
+import { href } from "../site.js";
+---
+<Base
+  title="Terms of use"
+  description="Terms for using the Digital Fingers website and suite. Draft."
+  path="/terms/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Legal · Draft</p>
+      <h1>Terms of use</h1>
+      <p class="hero-lead">The rules for using this website and the Digital Fingers suite.</p>
+    </div>
+  </Fragment>
+
+  <section class="block">
+    <div class="wrap prose">
+      <p class="notice"><strong>Draft, 13 November 2026.</strong> These terms have not yet been reviewed by a lawyer and the company details are still to be confirmed. They will be replaced before launch.</p>
+
+      <h2>Who these terms are with</h2>
+      <p>These terms are between you and <span class="tbc">legal entity TBC</span>, trading as Digital Fingers (“we”).</p>
+
+      <h2>This website</h2>
+      <p>You may use this website to learn about our products, contact us and request an account. Do not misuse the forms or try to interfere with the website.</p>
+
+      <h2>Accounts</h2>
+      <p>Each account is a workspace for one business. Keep your log-on details private and tell us straight away if you think someone else has used them. You are responsible for what happens in your account.</p>
+
+      <h2>Packages and prices</h2>
+      <p>Prices are in South African rand. VAT is charged at 15%. Prices shown as “Price TBC” are not offers. Paid packages will only be billed with your agreement. <span class="tbc">Billing, renewal and cancellation terms TBC</span></p>
+
+      <h2>Your data</h2>
+      <p>Information you put into the suite stays yours. We process it only to provide the service, as described in our <a href={href("/privacy/")}>privacy notice</a>.</p>
+
+      <h2>Custom software</h2>
+      <p>Custom software projects are covered by a separate quote and agreement, not by these terms alone.</p>
+
+      <h2>Availability and liability</h2>
+      <p><span class="tbc">Service levels, limitation of liability and governing law TBC</span></p>
+
+      <h2>Changes</h2>
+      <p>We may update these terms. We will tell account holders about important changes before they take effect.</p>
+
+      <h2>Contact</h2>
+      <p>Questions about these terms: <a href={href("/contact/")}>contact us</a>.</p>
+    </div>
+  </section>
+</Base>

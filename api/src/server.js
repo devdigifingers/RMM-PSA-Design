@@ -17,7 +17,10 @@ import { loadAllLicenses, loadLicense } from "./license-store.js";
 import { hasApp, hasFeature } from "./licensing.js";
 import { dateOnly, isOverdue, listFields, resolveCustomerView, slaFor, ticketDue, viewScope } from "./customer-views.js";
 import { calendarFrom, parsePercent, percentFrom, ticketClock } from "./sla-engine.js";
+import { deleteBlockedReason } from "./file-delete.js";
+import { powershellLine as switchPowershellLine, signinScript, signoutScript, signoutTarget, switchOutcome } from "./switch-user.js";
 import { handlePlatformAdmin } from "./platform-admin.js";
+import { handlePublicEnquiry } from "./public-enquiry.js";
 import { handleInvites } from "./invites.js";
 import { handlePlatformTeam } from "./platform-team.js";
 import { mfaSetupNeeded, supportBlocked } from "./platform-team-rules.js";
@@ -901,7 +904,7 @@ function meshFiles(nodeId, action, filePath, name, localFile) {
   const args = [nodeId, action, filePath];
   if (name) args.push(name);
   if (localFile) args.push(localFile);
-  return meshScript("mesh-files.cjs", args, action === "upload" ? 120000 : 50000);
+  return meshScript("mesh-files.cjs", args, action === "upload" ? 120000 : action === "rm" ? 330000 : 50000);
 }
 
 function meshFilesUpload(nodeId, filePath, name, localFile, onProgress) {
@@ -5190,10 +5193,12 @@ const REMOTE_OPERATE_LABELS = {
   terminal: "open a terminal",
   upload: "upload files",
   folder: "create folders",
+  delete: "delete files",
   service: "change services",
   startup: "change startup items",
   process: "end processes",
 };
+const TECHNICIAN_OPERATIONS = new Set(["upload", "folder", "delete"]);
 
 async function requireRemote(actor, res, deviceId, operation) {
   const license = await licenseQuery(actor.org_id);
@@ -5202,7 +5207,7 @@ async function requireRemote(actor, res, deviceId, operation) {
     licenseDenied(res, license.rows[0], access.remoteReason, "remote_sessions", "Remote desktop");
     return false;
   }
-  if (operation && !canOperate(actor)) {
+  if (operation && !TECHNICIAN_OPERATIONS.has(operation) && !canOperate(actor)) {
     await writeAudit(actor.org_id, actor.id, `${operation}.deny`, "device", String(deviceId), { reason: "role" });
     send(res, 403, { error: `A technician cannot ${REMOTE_OPERATE_LABELS[operation]}.` });
     return false;
@@ -5356,6 +5361,8 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", "http://127.0.0.1");
   enterRequest(req, clientAddress(req));
   try {
+    if (await handlePublicEnquiry(req, res, url, { pool, redis, sendMail, clientAddress })) return;
+
     if (req.method === "GET" && url.pathname === "/health") {
       await pool.query("SELECT 1");
       await redis.ping();
@@ -7325,6 +7332,45 @@ const server = createServer(async (req, res) => {
       return send(res, 200, { name });
     }
 
+    const deviceDeleteMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/files\/delete$/);
+    if (req.method === "POST" && deviceDeleteMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      if (!(await requireRemote(actor, res, deviceDeleteMatch[1], "delete"))) return;
+      const body = await readJson(req);
+      const folder = filePathValue(body.path || "");
+      const name = fileNameValue(body.name);
+      const kind = body.kind === "folder" ? "folder" : body.kind === "file" ? "file" : "";
+      if (folder == null || !name || !kind) return send(res, 400, { error: "Choose a file or folder to delete." });
+      const blocked = deleteBlockedReason(folder, name);
+      if (blocked) return send(res, 403, { error: blocked });
+      const device = await pool.query(
+        "SELECT id, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
+        [deviceDeleteMatch[1], actor.org_id],
+      );
+      if (!device.rows[0]) return send(res, 404, { error: "Device not found." });
+      let left;
+      try {
+        const node = await resolveMeshNode(device.rows[0], actor.org_id);
+        if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+        const parsed = meshJson(await meshFiles(node.nodeId, "rm", folder, name, kind));
+        if (parsed?.error) return send(res, 502, { error: parsed.error });
+        left = (parsed?.entries || []).some((entry) => entry.name === name);
+      } catch {
+        return send(res, 502, { error: "MeshCentral did not answer." });
+      }
+      if (left && kind === "file") {
+        return send(res, 409, { error: `${name} was not deleted. It may be open in a program, read-only or protected by Windows.` });
+      }
+      await writeAudit(actor.org_id, actor.id, "file.delete", "device", String(device.rows[0].id), {
+        path: folder, name, kind, ...(left ? { partial: true } : {}),
+      });
+      if (left) {
+        return send(res, 200, { name, partial: true, note: `Part of ${name} was deleted. Some files are in use or protected and were left.` });
+      }
+      return send(res, 200, { name });
+    }
+
     const deviceTerminalMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/terminal$/);
     const deviceTerminalSessionMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/terminal\/([a-f0-9]{36})(\/input|\/size)?$/);
     if (deviceTerminalMatch || deviceTerminalSessionMatch) {
@@ -7796,9 +7842,10 @@ const server = createServer(async (req, res) => {
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       const body = await readJson(req);
       const tsid = Number.isInteger(body.tsid) && body.tsid >= 0 && body.tsid < 65536 ? body.tsid : null;
-      return send(res, 200, await pingSession(pool, {
+      const ping = await pingSession(pool, {
         deviceId: sessionPingMatch[1], orgId: actor.org_id, userId: actor.id, tsid, closed: body.closed === true,
-      }));
+      });
+      return send(res, 200, { ...ping, canSignOut: canOperate(actor) });
     }
 
     // Chat with the customer's Session Panel from the session window: GET long-polls for new messages, POST sends a
@@ -7913,24 +7960,44 @@ const server = createServer(async (req, res) => {
       if (!requireActor(actor, res)) return;
       if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
       const body = await readJson(req);
-      const action = body.action === "signin" ? "signin" : body.action === "view" ? "view" : "";
+      const action = ["signin", "signout", "view"].includes(body.action) ? body.action : "";
       if (!action) return send(res, 400, { error: "Choose a session." });
       const found = await pool.query(
-        "SELECT id, os_name, hostname FROM devices WHERE id = $1 AND org_id = $2",
+        "SELECT id, os_name, hostname, display_name, mesh_node_id FROM devices WHERE id = $1 AND org_id = $2",
         [deviceSwitchMatch[1], actor.org_id],
       );
       const device = found.rows[0];
       if (!device) return send(res, 404, { error: "Device not found." });
       if (!/windows/i.test(device.os_name || "")) return send(res, 400, { error: "Switch user works on Windows computers." });
-      if (action === "signin") {
-        if (!canOperate(actor)) {
-          await writeAudit(actor.org_id, actor.id, "power.deny", "device", String(device.id), { reason: "role", action: "signin" });
-          return send(res, 403, { error: "An admin sends a computer to the sign-in screen." });
+      if (action === "signin" || action === "signout") {
+        if (!(await requireRemote(actor, res, device.id))) return;
+        const target = action === "signout" ? signoutTarget(body) : null;
+        if (action === "signout") {
+          if (!canOperate(actor)) {
+            await writeAudit(actor.org_id, actor.id, "power.deny", "device", String(device.id), { reason: "role", action: "signout" });
+            return send(res, 403, { error: "Only an owner or admin can sign a user out. Use Go to sign-in screen instead: it keeps their programs open." });
+          }
+          if (!target) return send(res, 400, { error: "Choose a signed-in user." });
         }
         if (isServerOs(device.os_name) && body.confirmServer !== true) {
           return send(res, 409, { error: "This is a server. Confirm first.", needsConfirm: true });
         }
-        await writeAudit(actor.org_id, actor.id, "remote.signin_screen", "device", String(device.id), {});
+        let outcome;
+        try {
+          const node = await resolveMeshNode(device, actor.org_id);
+          if (!node.nodeId) return send(res, 409, { error: "MeshCentral has not reported this computer yet." });
+          if (node.online === false) return send(res, 409, { error: "The Mesh agent is offline. Try again in a moment." });
+          const script = target ? signoutScript(target.sessionId, target.user) : signinScript();
+          outcome = switchOutcome(await meshControl(["RunCommand", "--id", node.nodeId, "--powershell", "--reply", "--run", switchPowershellLine(script)]));
+        } catch {
+          return send(res, 502, { error: "The computer did not answer. Try again in a moment." });
+        }
+        if (!outcome.ok) return send(res, 409, { error: outcome.error });
+        if (target) {
+          await writeAudit(actor.org_id, actor.id, "remote.signout_user", "device", String(device.id), { user: target.user });
+        } else {
+          await writeAudit(actor.org_id, actor.id, "remote.signin_screen", "device", String(device.id), {});
+        }
         return send(res, 201, { ok: true });
       }
       const user = String(body.user || "").trim().slice(0, 120);

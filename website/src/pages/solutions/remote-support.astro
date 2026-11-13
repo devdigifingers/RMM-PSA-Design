@@ -1,0 +1,93 @@
+---
+import Base from "../../layouts/Base.astro";
+import { href, asset, CONSOLE_URL } from "../../site.js";
+---
+<Base
+  title="Remote Support"
+  description="Digital Fingers Remote Desk: remote support and monitoring for the computers a small IT team or MSP looks after, with a customer session panel and an installed agent."
+  path="/solutions/remote-support/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <img class="hero-icon" src={asset("/apps/remote-desk.svg")} alt="" width="64" height="64" />
+      <p class="eyebrow">Digital Fingers Remote Desk</p>
+      <h1>Remote support for the computers you look after.</h1>
+      <p class="hero-lead">Connect to a customer's screen when they need help, keep an eye on their machines in between, and leave a professional Digital Fingers presence on the desktop. For small IT teams and managed service providers.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/signup/?module=remote-support")}>Get started</a>
+        <a class="btn btn-ghost" href={CONSOLE_URL}>Log on</a>
+      </div>
+      <ul class="hero-meta">
+        <li>Already a customer? Log on to the console</li>
+      </ul>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="features-title">
+    <div class="wrap">
+      <p class="kicker">Remote Desk</p>
+      <h2 class="sec-title" id="features-title">Help in the moment, care in between</h2>
+      <div class="grid-3" style="margin-top:28px">
+        <article class="card soft">
+          <h3>Remote sessions</h3>
+          <p>See and control a customer's screen from your browser, with their permission, to fix the problem while they watch.</p>
+        </article>
+        <article class="card soft">
+          <h3>Customer session panel</h3>
+          <p>During a session your customer sees who is connected, can chat with the technician, and can send or receive files.</p>
+        </article>
+        <article class="card soft">
+          <h3>Installed, not improvised</h3>
+          <p>The Digital Fingers agent sits in the taskbar, so customers know it is there and how to ask for help.</p>
+        </article>
+        <article class="card soft">
+          <h3>Monitoring</h3>
+          <p>See which machines are online, how they are doing, and what needs attention, without waiting for a call.</p>
+        </article>
+        <article class="card soft">
+          <h3>Updates</h3>
+          <p>Keep the machines you manage patched from the same console.</p>
+        </article>
+        <article class="card soft">
+          <h3>Invoicing included</h3>
+          <p>Invoicing Free comes with Remote Support, so you can bill for the work in the same place.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="how-title">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">How it works</p>
+        <h2 class="sec-title" id="how-title">From sign-up to first session</h2>
+        <ol class="steps light" style="margin-top:20px">
+          <li><div><strong>Create your account</strong><span>Choose Remote Support (or the Full Suite) when you sign up.</span></div></li>
+          <li><div><strong>Install the agent</strong><span>Your console gives you an install link for each customer. <a href={href("/support/#agent")}>About the agent</a></span></div></li>
+          <li><div><strong>Connect when they need you</strong><span>Start a session from the console. The customer sees the session panel the whole time.</span></div></li>
+        </ol>
+      </div>
+      <div class="card">
+        <img class="icon" src={asset("/apps/service-desk.svg")} alt="" width="56" height="56" />
+        <h3>Want tickets and MSP billing too?</h3>
+        <p class="grow">The Full Suite adds Service Desk and MSP billing from time, sessions and devices, on the same customers.</p>
+        <div class="actions">
+          <a class="btn btn-primary" href={href("/signup/?module=suite")}>Start the suite</a>
+          <a class="btn btn-outline" href={href("/pricing/")}>Compare packages</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="start-title">
+    <div class="wrap center">
+      <h2 class="sec-title" id="start-title">Ready when your customers call</h2>
+      <p class="sec-lead">Pricing for Remote Support is still being finalised. Ask us and we will set you up.</p>
+      <div class="hero-ctas" style="justify-content:center">
+        <a class="btn btn-primary" href={href("/signup/?module=remote-support")}>Get started</a>
+        <a class="btn btn-outline" href={CONSOLE_URL}>Log on</a>
+      </div>
+    </div>
+  </section>
+</Base>

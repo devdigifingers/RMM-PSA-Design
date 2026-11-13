@@ -1,0 +1,47 @@
+---
+import Base from "../layouts/Base.astro";
+import { href } from "../site.js";
+---
+<Base
+  title="About"
+  description="Digital Fingers is a South African software company: a small-business software suite and custom software, built for local businesses."
+  path="/about/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">About</p>
+      <h1>Software for South African small business.</h1>
+      <p class="hero-lead">Digital Fingers builds software that helps small businesses work, bill and get support, and builds custom software when ready-made products do not fit.</p>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="sides-title">
+    <div class="wrap">
+      <h2 class="sec-title" id="sides-title">Two sides of one business</h2>
+      <div class="grid-2" style="margin-top:24px">
+        <article class="card soft">
+          <h3>The suite</h3>
+          <p>Invoicing, Remote Desk and Service Desk on one account, priced in rand and built around South African tax rules.</p>
+          <p><a href={href("/solutions/")}>Explore the solutions</a></p>
+        </article>
+        <article class="card soft">
+          <h3>Custom software</h3>
+          <p>Software designed and built for the way a particular business works, quoted per project.</p>
+          <p><a href={href("/custom-software/")}>How we work</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="contact-title">
+    <div class="wrap center">
+      <h2 class="sec-title" id="contact-title">Talk to us</h2>
+      <p class="sec-lead">Questions about the suite, a project in mind, or help with your account.</p>
+      <div class="hero-ctas" style="justify-content:center">
+        <a class="btn btn-primary" href={href("/contact/")}>Contact us</a>
+        <a class="btn btn-outline" href={href("/signup/")}>Start free</a>
+      </div>
+    </div>
+  </section>
+</Base>

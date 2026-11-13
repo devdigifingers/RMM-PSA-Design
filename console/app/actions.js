@@ -917,6 +917,21 @@ export async function createDeviceFolder(deviceId, path, name) {
   return { ok: true, name: body.name };
 }
 
+export async function deleteDeviceEntry(deviceId, path, name, kind) {
+  const jar = await cookies();
+  const token = jar.get("df_session")?.value;
+  if (!token) return { ok: false, error: "Sign in again." };
+  const response = await fetch(`${apiUrl}/v1/devices/${deviceId}/files/delete`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ path, name, kind }),
+    cache: "no-store",
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) return { ok: false, error: body.error || `${name} was not deleted.` };
+  return { ok: true, partial: body.partial === true, note: body.note || "" };
+}
+
 export async function uploadDeviceFile(deviceId, path, file) {
   const jar = await cookies();
   const token = jar.get("df_session")?.value;

@@ -9,6 +9,83 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-13 · Platform 1.12.0
+
+**Public website (preview)**
+- New marketing website in `website/` (Astro, static, plain JS) to replace the "Choose a service" splash on
+  `digitalfingers.co.za`. Pages: Home, Solutions (Invoicing, Remote Support, Service Desk), Custom software, Pricing,
+  About, Contact, Support, Sign up, Privacy and Terms drafts, 404, `robots.txt`, `sitemap.xml`. Paid prices show
+  **Price TBC**; legal and contact details are marked TBC.
+- Live only at `https://digitalfingers.co.za/preview/`, behind a password (user `preview`; the password is in
+  `website/.preview-credentials` on the build machine, the hash only in `/etc/caddy/preview-auth.caddy` on df-portal).
+  Not indexed. The splash and `/rmm/` are unchanged until the owner approves the switch.
+- `www.digitalfingers.co.za` now has a certificate and redirects (308) to `digitalfingers.co.za`.
+- Sign up does not create a tenant yet: it sends a sign-up request (name, email, business, package) to the sales inbox
+  and we set the account up by hand.
+
+**API: website enquiries**
+- `POST /v1/public/enquiry` takes custom software quote requests, Contact messages and sign-up requests from the
+  website, as JSON or a plain HTML form (303 back to the page). Only the website origin may call it
+  (`WEBSITE_ORIGINS`, default `https://digitalfingers.co.za`); other origins get 403.
+- Hidden trap field and a 3-second minimum fill time stop simple bots; 5 per hour per visitor address and 5 per day
+  per email address. Saved to the new `public_enquiries` table (no tenant, no login).
+- Each enquiry emails `SALES_TO` (falls back to `MAIL_TO`) with Reply-To set to the sender, and sends the sender a
+  copy.
+
+## 2026-11-13 · Platform 1.11.6
+
+**Session window: Switch User**
+- **Go to sign-in screen** now works for technicians too. It disconnects whoever is at the screen (their programs
+  stay open) and shows the Windows sign-in screen. Before, technicians were refused with a short message that was easy
+  to miss.
+- The server now sends the command through MeshCentral and waits for Windows to confirm, instead of the session
+  window running it. The technician Mesh login still has no right to run commands.
+- New **Sign out <user>** under each signed-in user, for owners and admins: closes that user's programs (unsaved work
+  is lost) and returns to the sign-in screen. The computer checks that the session still belongs to that user first.
+  Technicians don't see it; the API refuses them (`power.deny`, action `signout`).
+- Errors stay on screen for 12 seconds; a "Sending…" message shows while Windows answers (about 10 seconds).
+- Audited as `remote.signin_screen` and the new `remote.signout_user` ("signed POS\HNA out of Windows").
+- API: `POST /v1/devices/:id/switch-user` takes `action: "signout"` with `sessionId` and `user`. The session check-in
+  reply has `canSignOut`.
+
+## 2026-11-13 · Platform 1.11.5
+
+**File Manager: Delete**
+- Select a file or folder and click **Delete** (next to Download). Files ask once; folders say everything inside goes
+  too and need the folder's name typed. Deletes are permanent (MeshCentral does not use the Recycle Bin). Owners,
+  admins and technicians can delete.
+- Refused with a clear message: drive roots, `Windows`, `Program Files`, `Program Files (x86)`, `ProgramData`,
+  `Recovery`, `Boot`, `$Recycle.Bin`, `$WinREAgent`, `System Volume Information`, `Documents and Settings` (a link to
+  `Users` that a recursive delete would follow), root `pagefile.sys`/`hiberfil.sys`/`swapfile.sys`,
+  the `Users` folder, whole profiles and their `AppData` and `NTUSER.DAT`. On Linux: top-level folders, whole home
+  folders and `/bin`, `/boot`, `/dev`, `/etc`, `/lib*`, `/proc`, `/root`, `/run`, `/sbin`, `/snap`, `/srv`, `/sys`,
+  `/usr`, `/var/lib`, `/var/log`. The agents sit inside these, so they are covered.
+- After deleting, the folder is read again: a file that is still there (open, read-only or protected) is reported as
+  not deleted; a folder that is still there was partly deleted (Windows stops at the first file in use) and says so.
+- Audited as `file.delete` and shown on the device timeline ("deleted the folder Old from C:/Users/Ann/Desktop").
+- API: `POST /v1/devices/:id/files/delete` with `{ path, name, kind }`.
+
+## 2026-11-13 · Platform 1.11.4
+
+**File Manager: technicians can upload**
+- Technicians can upload files and create folders in a device's **File Manager**; before, only owners and admins
+  could ("A technician cannot upload files."). Opening a terminal, changing services and startup items and ending
+  processes still need an owner or admin.
+
+## 2026-11-13 · Platform 1.11.3
+
+**Session window: Refresh**
+- Signing out of one Windows profile and into another could leave the remote screen frozen (for example on
+  "Welcome") while the window still showed it as connected, so it never reconnected by itself and the technician had
+  to close and reopen the session. A **Refresh** button above **End** in the rail closes the remote desktop stream and
+  opens it again on whatever is on the computer's screen now, keeping the session, chat and files.
+
+## 2026-11-13 · Platform 1.11.2
+
+**Set up MFA to continue: spacing**
+- The sign-in card that asks a login to set up MFA had its heading, text and **Set up MFA** button against the card's
+  left edge. They now have the same inner spacing as the sign-in form.
+
 ## 2026-11-13 · Platform 1.11.1
 
 **Session window: End always ends the session**
@@ -400,7 +477,13 @@ earlier sections have dates only. Agent versions are separate and listed under [
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
 
-**1.9.0 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
+**1.9.1 (Windows), pilot from 13 Nov (POS-3316E-Setup and FED-WIN-001; not yet published to all)**
+- The agent talks to the API over HTTP/1.1 only. Over HTTP/2 it could keep reusing a connection the network had
+  silently dropped, so check-ins and the session panel stopped until the service restarted (seen on FED-WIN-001).
+
+**1.9.0 (Windows), published 13 Nov (pilot on POS-3316E-Setup from 12 Nov)**
+- Published to every Windows device with Support app 1.2.0, the same files that passed the pilot. Devices go from
+  1.6.1 straight to 1.9.0, so they also get everything in 1.6.2 to 1.8.0 (Session Panel, tray, chat, WebView2).
 - Includes 1.8.0. Session Panel files. The agent never opens a path the customer names: the tray reads the
   customer's file and passes it to the agent in 32 KB chunks over the pipe (`fileSend`, `fileChunk`, `fileCancel`),
   and the agent streams it to the server. Files for the customer are downloaded into

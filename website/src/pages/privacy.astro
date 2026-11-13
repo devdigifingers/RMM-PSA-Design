@@ -1,0 +1,64 @@
+---
+import Base from "../layouts/Base.astro";
+import { href } from "../site.js";
+---
+<Base
+  title="Privacy and POPIA"
+  description="How Digital Fingers collects, uses and protects personal information under the Protection of Personal Information Act (POPIA). Draft."
+  path="/privacy/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Legal · Draft</p>
+      <h1>Privacy and POPIA</h1>
+      <p class="hero-lead">How we handle personal information on this website and in the Digital Fingers suite.</p>
+    </div>
+  </Fragment>
+
+  <section class="block">
+    <div class="wrap prose">
+      <p class="notice"><strong>Draft, 13 November 2026.</strong> This notice has not yet been reviewed by a lawyer and the company details are still to be confirmed. It will be replaced before launch.</p>
+
+      <h2>Who we are</h2>
+      <p>The responsible party is <span class="tbc">legal entity TBC</span>, trading as Digital Fingers, registration number <span class="tbc">TBC</span>, at <span class="tbc">address TBC</span>.</p>
+      <p>Our Information Officer is <span class="tbc">TBC</span>, contactable at <span class="tbc">email TBC</span>.</p>
+
+      <h2>What we collect</h2>
+      <ul>
+        <li><strong>Enquiry, contact and sign-up forms:</strong> your name, email address, and optionally your phone number and business name, plus what you tell us in your message.</li>
+        <li><strong>Technical details when you send a form:</strong> your IP address and browser type, to prevent abuse.</li>
+        <li><strong>Accounts in the suite:</strong> the details needed to run your account, and the information you and your customers put into it.</li>
+      </ul>
+
+      <h2>Why we use it</h2>
+      <ul>
+        <li>To reply to your enquiry or message, and to send you a copy of it.</li>
+        <li>To set up and run your account, and to provide support.</li>
+        <li>To prepare quotes for custom software.</li>
+        <li>To protect the website and the service from abuse.</li>
+      </ul>
+      <p>We do not sell personal information. We only send marketing email if you ask for it.</p>
+
+      <h2>Responsible party and operator</h2>
+      <p>For information about you as our customer or enquirer, Digital Fingers is the responsible party. For information that our customers store about their own customers in the suite, our customer is the responsible party and Digital Fingers acts as their operator.</p>
+
+      <h2>Who processes it for us</h2>
+      <p>We use hosting and email providers to run the website and the suite. They process information only on our instructions. <span class="tbc">List of operators TBC</span></p>
+
+      <h2>How long we keep it</h2>
+      <p>Enquiries are kept for <span class="tbc">period TBC</span>. Account information is kept while your account is active and for as long afterwards as the law requires, for example for tax records.</p>
+
+      <h2>Security</h2>
+      <p>Information is sent over encrypted connections (HTTPS), stored on access-controlled servers, and only available to people who need it to do their work.</p>
+
+      <h2 id="cookies">Cookies</h2>
+      <p>This website does not currently use analytics or marketing cookies. If that changes, nothing non-essential will load until you agree, and you can change your choice at any time with “Cookie preferences” in the footer.</p>
+
+      <h2>Your rights</h2>
+      <p>You may ask what information we hold about you, and ask us to correct or delete it. You may object to us processing it, and you may complain to the Information Regulator. Contact our Information Officer to make a request.</p>
+
+      <p><a href={href("/terms/")}>Terms of use</a> · <a href={href("/contact/")}>Contact us</a></p>
+    </div>
+  </section>
+</Base>

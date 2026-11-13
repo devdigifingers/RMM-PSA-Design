@@ -1,0 +1,160 @@
+---
+import Base from "../layouts/Base.astro";
+import EnquiryForm from "../components/EnquiryForm.astro";
+import PriceCards from "../components/PriceCards.astro";
+import { href, brand, asset } from "../site.js";
+---
+<Base
+  title="Digital Fingers — Remote support, invoicing and custom software"
+  description="A South African software suite for small businesses: free invoicing that meets SARS requirements, remote support for the machines you look after, and custom software built around how you work."
+  path="/"
+  mark
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Remote support · Custom software</p>
+      <h1>Software that helps small businesses work, bill and get support.</h1>
+      <p class="hero-lead">Digital Fingers is a South African suite for growing firms: invoicing that meets SARS requirements, remote support for the machines you look after, and custom software when a ready-made product is not enough.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/signup/")}>Start free</a>
+        <a class="btn btn-ghost" href={href("/custom-software/#enquiry")}>Request a software quote</a>
+      </div>
+      <ul class="hero-meta">
+        <li>One account for the whole suite</li>
+        <li>Priced in ZAR, VAT 15%</li>
+        <li>Built for South African small business</li>
+      </ul>
+    </div>
+    <aside class="hero-panel" aria-labelledby="suite-title">
+      <h2 id="suite-title">The suite</h2>
+      <ul>
+        <li>
+          <a class="tile" href={href("/solutions/invoicing/")}>
+            <img src={asset("/apps/billing.svg")} alt="" width="48" height="48" />
+            <span><strong>Invoicing</strong><em>Quotes, tax invoices and invoice links</em></span>
+            <span class="pill">Free to start</span>
+          </a>
+        </li>
+        <li>
+          <a class="tile" href={href("/solutions/remote-support/")}>
+            <img src={asset("/apps/remote-desk.svg")} alt="" width="48" height="48" />
+            <span><strong>Remote Desk</strong><em>Remote support, monitoring and a session panel</em></span>
+            <span class="pill">Support</span>
+          </a>
+        </li>
+        <li>
+          <a class="tile" href={href("/solutions/service-desk/")}>
+            <img src={asset("/apps/service-desk.svg")} alt="" width="48" height="48" />
+            <span><strong>Service Desk</strong><em>Tickets and customers, in the Full Suite</em></span>
+            <span class="pill">Suite</span>
+          </a>
+        </li>
+        <li>
+          <a class="tile" href={href("/custom-software/")}>
+            <img src={brand("/brand/mark-gradient.svg")} alt="" width="48" height="48" />
+            <span><strong>Custom software</strong><em>Built around how your business actually works</em></span>
+            <span class="pill muted">Quote</span>
+          </a>
+        </li>
+      </ul>
+    </aside>
+  </Fragment>
+
+  <section class="block paper" aria-labelledby="solutions-title">
+    <div class="wrap">
+      <p class="kicker">Solutions</p>
+      <h2 class="sec-title" id="solutions-title">Pick the module you need. Add more later.</h2>
+      <p class="sec-lead">Every product uses the same Digital Fingers account. Start with invoicing, remote support or the full suite. Custom software is a services engagement, not a sign-up.</p>
+      <div class="grid-3">
+        <article class="card">
+          <img class="icon" src={asset("/apps/billing.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/solutions/invoicing/")}>Invoicing</a></h3>
+          <p>For freelancers, sole traders and small shops who need proper tax invoices without the fuss.</p>
+          <ul class="grow">
+            <li>Tax invoices, quotes and credit notes</li>
+            <li>15% VAT, ZAR first, EFT-friendly</li>
+            <li>A secure invoice link and your branding</li>
+            <li>Core invoicing is free in every package</li>
+          </ul>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=invoicing")}>Start invoicing</a>
+          </div>
+        </article>
+        <article class="card">
+          <img class="icon" src={asset("/apps/remote-desk.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/solutions/remote-support/")}>Remote support</a></h3>
+          <p>Help a customer in the moment, keep an eye on their machines, and leave a professional presence on the desktop.</p>
+          <ul class="grow">
+            <li>Digital Fingers Remote Desk</li>
+            <li>Session panel with chat and file transfer</li>
+            <li>Agent in the taskbar, so it feels installed</li>
+            <li>Upgrade to the Full Suite later</li>
+          </ul>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=remote-support")}>Start remote support</a>
+          </div>
+        </article>
+        <article class="card">
+          <img class="icon" src={asset("/apps/service-desk.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/pricing/#suite")}>Full Suite</a></h3>
+          <p>Remote Desk, Service Desk and Invoicing together: customers, devices, tickets and billing in one place.</p>
+          <ul class="grow">
+            <li>Tickets alongside the machines you support</li>
+            <li>Shared customer records across every app</li>
+            <li>MSP billing from time, sessions and devices</li>
+            <li>One tenant, one licence, modules on or off</li>
+          </ul>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=suite")}>Start the suite</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="account-title">
+    <div class="wrap">
+      <div class="band">
+        <div>
+          <p class="eyebrow">One account</p>
+          <h2 id="account-title">Sign up once. Choose a package. Add modules later.</h2>
+          <p>You do not need one login for invoicing and another for remote support. One Digital Fingers account becomes your own workspace with a licence. From the console you can move from Invoicing to Remote Support or the Full Suite when you need to.</p>
+          <p>Custom software stays a conversation with us: an enquiry and a quote, not a product sign-up.</p>
+        </div>
+        <ol class="steps">
+          <li><div><strong>Create your account</strong><span>Your name, work email and business name.</span></div></li>
+          <li><div><strong>Pick a package</strong><span>Invoicing, Remote Support or Full Suite, pre-selected if you came from a product page.</span></div></li>
+          <li><div><strong>Confirm your email</strong><span>We set up your workspace and licence, then you log on to the console.</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="custom-title">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">Custom software</p>
+        <h2 class="sec-title" id="custom-title">When the suite is not the whole answer, we will build it.</h2>
+        <p class="sec-lead" style="margin-bottom:20px">Digital Fingers also designs and builds software around the way a South African small business actually works: stock, job cards, customer portals, industry workflows, and the unglamorous systems that save a team hours every week.</p>
+        <div class="points">
+          <div class="point"><strong>Listen first</strong><span>We start with how you work today, not with a product catalogue.</span></div>
+          <div class="point"><strong>Built to last</strong><span>Clear scope, a fixed quote where we can, and software you can keep.</span></div>
+          <div class="point"><strong>Fits the suite</strong><span>New work can stand alone, or connect to your Digital Fingers account.</span></div>
+          <div class="point"><strong>Local and direct</strong><span>You talk to the people who will design and build it.</span></div>
+        </div>
+        <p style="margin-top:22px"><a href={href("/custom-software/")}>How custom software projects work</a></p>
+      </div>
+      <EnquiryForm kind="quote" compact title="Request a quote" intro="Tell us what you need. This is an enquiry, not a product sign-up. Pricing is quoted per project." />
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="pricing-title">
+    <div class="wrap">
+      <p class="kicker center">Pricing</p>
+      <h2 class="sec-title center" id="pricing-title">Simple packages, priced in rand.</h2>
+      <p class="sec-lead center">Invoicing is free to start. Prices for the paid packages are still being finalised, so they show as Price TBC. Those are placeholders, not offers.</p>
+      <PriceCards />
+      <p class="note">Prices in South African rand. VAT is 15%; paid prices will be shown excluding VAT. Trial length, annual billing and card requirements are still to be confirmed. <a href={href("/pricing/")}>Compare packages</a></p>
+    </div>
+  </section>
+</Base>

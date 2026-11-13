@@ -68,7 +68,8 @@
     .rail svg { display: block; width: 22px; height: 22px; margin: 0 auto 4px; }
     .rail button svg { fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
     .rail button.on svg .solid { fill: currentColor; fill-opacity: 0.22; }
-    .rail .end { margin-top: auto; color: #ff8f8f; }
+    .rail .refresh { margin-top: auto; }
+    .rail .end { color: #ff8f8f; }
     .rail .end:hover { background: rgba(217,58,58,0.9); color: #fff; box-shadow: 0 6px 16px rgba(217,58,58,0.35); }
     .stage { position: relative; min-width: 0; min-height: 0; background: #000; }
     .reconnect { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; color: #e8e6f5; background: radial-gradient(600px 300px at 50% 40%, rgba(124, 58, 237, 0.25), transparent 70%), rgba(11, 16, 32, 0.92); }
@@ -143,6 +144,8 @@
     #user-sessions .session.on::after { position: absolute; right: 12px; margin-top: 6px; }
     #user-sessions .session.on { position: relative; padding-right: 34px; }
     #user-sessions .signin { color: var(--blue); font-weight: 600; }
+    #user-sessions .signout { padding-top: 2px; padding-bottom: 6px; padding-left: 22px; color: #c62828; font-size: 12.5px; font-weight: 600; }
+    #user-sessions .signout:hover { background: #fdecec; }
     .fly.tools { width: 300px; padding: 0; max-height: calc(100vh - 16px); flex-direction: column; overflow: hidden; }
     .fly.tools.on { display: flex; }
     .tool-search {
@@ -416,6 +419,10 @@
       <button type="button" id="nav-chat">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path class="solid" d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></svg>
         Chat
+      </button>
+      <button type="button" class="refresh" id="nav-refresh" title="Reconnect to what is on the remote screen now, for example after a sign-out or user switch">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 15.7M3 12a9 9 0 0 1 15.5-6.2L21 8.3"/><path d="M21 3v5.3h-5.3M3 21v-5.3h5.3"/></svg>
+        Refresh
       </button>
       <button type="button" class="end" id="end" title="End session">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
@@ -1639,6 +1646,7 @@
           button.appendChild(small);
           button.onclick = function () { if (!on) viewSession(s); else closeFly(); };
           box.appendChild(button);
+          signoutButton(box, s);
         });
         parked.forEach(function (s) {
           var button = document.createElement("button");
@@ -1653,6 +1661,7 @@
           button.appendChild(strong);
           button.appendChild(small);
           box.appendChild(button);
+          signoutButton(box, s);
         });
         if (!viewable.length && !parked.length) sessionNote(box, "Nobody is signed in.");
         box.appendChild(document.createElement("hr"));
@@ -1685,7 +1694,7 @@
 
     // Check-ins tell the device's Session Panel that this window is open; the reply says when the customer paused or
     // ended the session from the panel.
-    var customer = { paused: false, ended: false, busy: false, next: 0, tsid: null, panel: null };
+    var customer = { paused: false, ended: false, busy: false, next: 0, tsid: null, panel: null, canSignOut: false };
     var PING_EVERY = 3000;
 
     function viewedTsid() {
@@ -1711,6 +1720,7 @@
         customer.next = Date.now() + PING_EVERY;
         if (!body) return;
         customer.panel = body.panel;
+        customer.canSignOut = body.canSignOut === true;
         if (body.panel === "ready" && !body.endedBy) panelChatStart();
         if (body.endedBy === "customer") customerEnded();
         else if (body.paused) customerPaused();
@@ -1776,13 +1786,9 @@
       }, function (error) { toast(error.message); });
     }
 
-    var SIGNIN_SCRIPT = [
-      "$ErrorActionPreference = 'Stop'",
-      "Add-Type -Namespace DF -Name Wts -MemberDefinition '[DllImport(\"wtsapi32.dll\", SetLastError=true)] public static extern bool WTSDisconnectSession(IntPtr server, int sessionId, bool wait); [DllImport(\"kernel32.dll\")] public static extern int WTSGetActiveConsoleSessionId();'",
-      "$id = [DF.Wts]::WTSGetActiveConsoleSessionId()",
-      "if ($id -lt 1) { Write-Output 'Nobody is at the screen.'; exit 1 }",
-      "if ([DF.Wts]::WTSDisconnectSession([IntPtr]::Zero, $id, $false)) { Write-Output 'OK' } else { Write-Output ('Windows refused: ' + (New-Object ComponentModel.Win32Exception).Message); exit 1 }"
-    ].join("\n");
+    function isServerNode(win) {
+      return /server/i.test(String((win && win.currentNode && win.currentNode.osdesc) || ""));
+    }
 
     function signinScreen() {
       var win = live();
@@ -1791,18 +1797,51 @@
         toast("The remote connection is not ready yet.");
         return;
       }
-      var server = /server/i.test(String((win.currentNode && win.currentNode.osdesc) || ""));
+      var server = isServerNode(win);
       var text = "Whoever is at the screen of " + title + " stays signed in with their programs open, but sees the sign-in screen until they sign back in." +
         (server ? " This is a server: anyone working at its console is interrupted." : "");
       ask("Go to sign-in screen?", text, "Go to sign-in screen", true).then(function (yes) {
         if (!yes) return;
+        toast("Sending " + title + " to the sign-in screen…", 15000);
         switchRequest({ action: "signin", confirmServer: server }).then(function () {
-          return runMesh(2, powershellLine(SIGNIN_SCRIPT), 0);
-        }).then(function (result) {
-          var out = cleanOutput(result || "");
-          if (!/\bOK\b/.test(out)) throw new Error(out || "Windows did not switch to the sign-in screen.");
+          toast("");
           reconnectTo(null, "Opening the sign-in screen…", "The signed-in user's programs stay open. Reconnecting to the sign-in screen of " + title + ".", "Showing the sign-in screen. Sign in with any account.");
-        }).catch(function (error) { toast(error.message); });
+        }, function (error) { toast(error.message, 12000); });
+      });
+    }
+
+    function signoutButton(box, s) {
+      if (!customer.canSignOut || !s.Username) return;
+      var name = sessionName(s);
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "signout";
+      button.textContent = "Sign out " + s.Username;
+      button.title = "Sign " + name + " out of Windows. Their open programs close.";
+      button.onclick = function () { signOut(s); };
+      box.appendChild(button);
+    }
+
+    function signOut(s) {
+      var win = live();
+      var name = sessionName(s);
+      closeFly();
+      var server = isServerNode(win);
+      var viewing = viewedTsid();
+      var text = "Their programs close and unsaved work is lost. The screen of " + title + " goes back to the Windows sign-in screen." +
+        (server ? " This is a server: anyone working in that session is interrupted." : "");
+      ask("Sign " + name + " out?", text, "Sign out", true).then(function (yes) {
+        if (!yes) return;
+        toast("Signing " + name + " out…", 15000);
+        switchRequest({ action: "signout", sessionId: s.SessionId, user: name, confirmServer: server }).then(function () {
+          toast("");
+          var watched = typeof viewing === "number" ? viewing === s.SessionId : /^console$/i.test(s.StationName || "");
+          if (watched) {
+            reconnectTo(null, "Signing " + name + " out…", "Windows is closing " + name + "'s programs. Reconnecting to the sign-in screen of " + title + ".", name + " was signed out. Sign in with any account.");
+          } else {
+            toast(name + " was signed out.");
+          }
+        }, function (error) { toast(error.message, 12000); });
       });
     }
 
@@ -2234,12 +2273,12 @@
       });
     }
 
-    function toast(text) {
+    function toast(text, ms) {
       var node = document.getElementById("toast");
-      node.textContent = text;
-      node.hidden = false;
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(function () { node.hidden = true; }, 6000);
+      node.textContent = text;
+      node.hidden = !text;
+      if (text) toastTimer = setTimeout(function () { node.hidden = true; }, ms || 6000);
     }
 
     function isWindows() {
@@ -3367,6 +3406,17 @@
       if (win && win.desktop && win.desktop.m && typeof win.desktop.m.sendcad === "function") win.desktop.m.sendcad();
       closeFly();
       focusDesk();
+    };
+    // A sign-out or user switch can leave the stream open on a screen that no longer exists (frozen on "Welcome"),
+    // so Mesh still says connected and the automatic reconnect never starts.
+    document.getElementById("nav-refresh").onclick = function () {
+      closeFly();
+      if (dropped || awaiting || reconnect || customer.paused || customer.ended) {
+        toast(customer.paused ? "The customer paused the session." : "The session is already reconnecting or has ended.");
+        return;
+      }
+      if (mode !== "view") show("view");
+      reconnectTo(null, "Refreshing…", "Reconnecting to what is on the screen of " + title + " now.", "Refreshed the remote screen.");
     };
     document.getElementById("end").onclick = function () {
       closeFly();

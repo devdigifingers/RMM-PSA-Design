@@ -1,0 +1,99 @@
+---
+import Base from "../layouts/Base.astro";
+import PriceCards from "../components/PriceCards.astro";
+import { href } from "../site.js";
+
+const rows = [
+  ["Tax invoices, quotes and credit notes", true, true, true],
+  ["15% VAT and rand amounts", true, true, true],
+  ["Unlimited customers", true, true, true],
+  ["Remote Desk sessions and the session panel", false, true, true],
+  ["Monitoring and updates", false, true, true],
+  ["Service Desk tickets", false, false, true],
+  ["MSP billing from time, sessions and devices", false, false, true],
+  ["Seats and devices", "TBC", "TBC", "TBC"],
+];
+const cell = (value) => (value === true ? "Included" : value === false ? "Not included" : value);
+---
+<Base
+  title="Pricing"
+  description="Digital Fingers packages in rand: Invoicing is free to start; Remote Support and the Full Suite are priced per month. Custom software is quoted per project."
+  path="/pricing/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Pricing</p>
+      <h1>Simple packages, priced in rand.</h1>
+      <p class="hero-lead">Start free with Invoicing and move up when you need to, on the same account. Paid prices are still being finalised.</p>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="packages-title">
+    <div class="wrap">
+      <h2 class="visually-hidden" id="packages-title">Packages</h2>
+      <p class="notice"><strong>Price TBC</strong> means the price has not been set yet. Those amounts are placeholders and are not offers. Only Invoicing Free is a confirmed price.</p>
+      <PriceCards />
+      <p class="note">All prices in South African rand. VAT is 15%; paid prices will be shown excluding VAT. Trial length, annual billing and whether a card is needed are still to be confirmed. We will not charge you without your agreement.</p>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="compare-title">
+    <div class="wrap">
+      <h2 class="sec-title" id="compare-title">Compare packages</h2>
+      <div class="compare-wrap" style="margin-top:24px">
+        <table class="compare">
+          <thead>
+            <tr><th scope="col">Feature</th><th scope="col">Invoicing</th><th scope="col">Remote Support</th><th scope="col">Full Suite</th></tr>
+          </thead>
+          <tbody>
+            {rows.map(([label, ...values]) => (
+              <tr>
+                <th scope="row">{label}</th>
+                {values.map((value) => (
+                  <td class={value === true ? "yes" : value === false ? "no" : ""}>{cell(value)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div class="grid-2" style="margin-top:28px">
+        <article class="card">
+          <h3>Invoicing Pro</h3>
+          <p class="grow">Online payments, reminders, recurring invoices, your own sending domain, statements and bank reconciliation. Added from the console. <span class="tbc">Price TBC</span></p>
+        </article>
+        <article class="card">
+          <h3>Custom software</h3>
+          <p class="grow">Quoted per project, separately from the packages. <a href={href("/custom-software/#enquiry")}>Request a quote</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="faq-title">
+    <div class="wrap faq" style="max-width:820px">
+      <h2 class="sec-title" id="faq-title">Questions</h2>
+      <details>
+        <summary>Do I need a separate account for each product?</summary>
+        <p>No. One Digital Fingers account covers everything. You pick a package when you sign up and can change it later.</p>
+      </details>
+      <details>
+        <summary>How do I upgrade?</summary>
+        <p>From inside the console. Your customers, invoices and settings stay where they are.</p>
+      </details>
+      <details>
+        <summary>Is invoicing really free?</summary>
+        <p>Yes. Core invoicing is free in every package, within the free plan limits: one issuing company, unlimited customers, 100 invoices and 300 invoice emails a month.</p>
+      </details>
+      <details>
+        <summary>How is custom software priced?</summary>
+        <p>Each project is scoped and quoted separately. It is not part of a package.</p>
+      </details>
+      <details>
+        <summary>Where is my data, and who can see it?</summary>
+        <p>Your data stays in your own account and is only used to provide the service. Read our <a href={href("/privacy/")}>privacy notice</a> and <a href={href("/terms/")}>terms of use</a>.</p>
+      </details>
+    </div>
+  </section>
+</Base>

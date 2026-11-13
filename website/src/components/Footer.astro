@@ -1,0 +1,50 @@
+---
+import { CONSOLE_URL, href, brand } from "../site.js";
+---
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="about">
+        <img class="foot-logo" src={brand("/brand/logo-horizontal-dark.svg")} alt="Digital Fingers" width="517" height="120" loading="lazy" />
+        <p>Remote support, a small-business software suite, and custom software, for South African businesses.</p>
+      </div>
+      <div>
+        <h2>Product</h2>
+        <ul>
+          <li><a href={href("/solutions/invoicing/")}>Invoicing</a></li>
+          <li><a href={href("/solutions/remote-support/")}>Remote support</a></li>
+          <li><a href={href("/solutions/service-desk/")}>Service Desk</a></li>
+          <li><a href={href("/pricing/")}>Pricing</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Company</h2>
+        <ul>
+          <li><a href={href("/about/")}>About</a></li>
+          <li><a href={href("/custom-software/")}>Custom software</a></li>
+          <li><a href={href("/contact/")}>Contact</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Support</h2>
+        <ul>
+          <li><a href={href("/support/")}>Get help</a></li>
+          <li><a href={href("/support/#agent")}>Install the agent</a></li>
+          <li><a href={CONSOLE_URL}>Log on</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2>Legal</h2>
+        <ul>
+          <li><a href={href("/privacy/")}>Privacy and POPIA</a></li>
+          <li><a href={href("/terms/")}>Terms of use</a></li>
+          <li><button type="button" class="linklike" data-cookie-open>Cookie preferences</button></li>
+        </ul>
+      </div>
+    </div>
+    <div class="legal-row">
+      <span>© {new Date().getFullYear()} Digital Fingers. Legal entity, address and contact details TBC.</span>
+      <span>Priced in ZAR. VAT 15%.</span>
+    </div>
+  </div>
+</footer>

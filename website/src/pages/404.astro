@@ -1,0 +1,24 @@
+---
+import Base from "../layouts/Base.astro";
+import { href, CONSOLE_URL } from "../site.js";
+---
+<Base
+  title="Page not found"
+  description="This page does not exist on the Digital Fingers website."
+  path="/404/"
+  heroClass="compact single"
+  noindex
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">404</p>
+      <h1>We could not find that page.</h1>
+      <p class="hero-lead">It may have moved. Try one of these instead.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/")}>Home</a>
+        <a class="btn btn-ghost" href={href("/solutions/")}>Solutions</a>
+        <a class="btn btn-ghost" href={CONSOLE_URL}>Log on</a>
+      </div>
+    </div>
+  </Fragment>
+</Base>

@@ -1,11 +1,41 @@
 # Thin portal for digitalfingers.co.za only.
 # This host does not run MeshCentral, Redis, or Postgres.
+#
+# /preview/ is the new marketing website (website/, built with DF_BASE=/preview) behind a password until the owner
+# approves it. The basicauth block lives only on the server in /etc/caddy/preview-auth.caddy, so no hash is in git.
 digitalfingers.co.za {
-	root * /var/www/df-portal
 	encode gzip
-	file_server
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
 	}
+
+	redir /preview /preview/ 308
+	handle /preview/* {
+		import /etc/caddy/preview-auth.caddy
+		header X-Robots-Tag "noindex, nofollow"
+		header /preview/_astro/* Cache-Control "public, max-age=31536000, immutable"
+		redir /preview/rmm* /preview/solutions/remote-support/ 308
+		redir /preview/login* https://rmm.digitalfingers.co.za/ 308
+		root * /var/www/df-site-preview
+		file_server
+	}
+
+	handle {
+		root * /var/www/df-portal
+		file_server
+	}
+
+	handle_errors {
+		@preview404 expression `{err.status_code} == 404 && {path}.startsWith("/preview/")`
+		handle @preview404 {
+			root * /var/www/df-site-preview
+			rewrite * /preview/404.html
+			file_server
+		}
+	}
+}
+
+www.digitalfingers.co.za {
+	redir https://digitalfingers.co.za{uri} 308
 }

@@ -1,0 +1,90 @@
+---
+import Base from "../layouts/Base.astro";
+import { ENQUIRY_URL, PACKAGES, CONSOLE_URL, href, asset } from "../site.js";
+---
+<Base
+  title="Sign up"
+  description="Create one Digital Fingers account for Invoicing, Remote Support or the Full Suite."
+  path="/signup/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Sign up</p>
+      <h1>One account for the whole suite.</h1>
+      <p class="hero-lead">Pick a package now and add more later. Already have an account? <a href={CONSOLE_URL} style="color:#A5F3FC">Log on</a>.</p>
+    </div>
+  </Fragment>
+
+  <section class="block">
+    <div class="wrap" style="max-width:760px">
+      <p class="notice"><strong>Self-serve sign-up opens soon.</strong> For now, send us your details and package and we will set up your account and email you when it is ready. Nothing is charged.</p>
+      <div class="form-card" id="enquiry">
+        <ol class="progress" aria-label="Sign-up steps">
+          <li class="on"><b>1</b> Account</li>
+          <li class="on"><b>2</b> Package</li>
+          <li><b>3</b> Confirm</li>
+        </ol>
+        <form class="form" action={ENQUIRY_URL} method="post" data-enquiry novalidate>
+          <input type="hidden" name="kind" value="contact" />
+          <input type="hidden" name="return" value={href("/signup/")} />
+          <input type="hidden" name="started" value="" />
+          <div class="trap" aria-hidden="true">
+            <label for="s-website">Leave this empty</label>
+            <input id="s-website" name="website" type="text" tabindex="-1" autocomplete="off" />
+          </div>
+
+          <h2 style="font-size:19px;margin:0">Your account</h2>
+          <div class="row">
+            <div class="field">
+              <label for="s-name">Your name</label>
+              <input id="s-name" name="name" type="text" autocomplete="name" required maxlength="120" aria-describedby="s-name-err" />
+              <span class="error" id="s-name-err"></span>
+            </div>
+            <div class="field">
+              <label for="s-email">Work email</label>
+              <input id="s-email" name="email" type="email" autocomplete="email" required maxlength="254" aria-describedby="s-email-err" />
+              <span class="error" id="s-email-err"></span>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label for="s-business">Business name</label>
+              <input id="s-business" name="business" type="text" autocomplete="organization" maxlength="160" />
+            </div>
+            <div class="field">
+              <label for="s-phone">Phone <span class="hint">(optional)</span></label>
+              <input id="s-phone" name="phone" type="tel" autocomplete="tel" maxlength="40" aria-describedby="s-phone-err" />
+              <span class="error" id="s-phone-err"></span>
+            </div>
+          </div>
+
+          <fieldset class="choices">
+            <legend style="font-family:Sora,Inter,sans-serif;font-size:19px;font-weight:600;margin-bottom:10px;letter-spacing:-0.03em">Your package</legend>
+            {PACKAGES.map((pack, index) => (
+              <label class="choice">
+                <input type="radio" name="package" value={pack.key} checked={index === 0} />
+                <span class="box">
+                  <img src={asset(pack.icon)} alt="" width="40" height="40" />
+                  <span><strong>{pack.name}</strong><span>{pack.who}</span></span>
+                  <em>{pack.free ? "Free" : "Price TBC"}</em>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+
+          <div class="field">
+            <label for="s-message">Anything we should know? <span class="hint">(optional)</span></label>
+            <textarea id="s-message" name="message" maxlength="4000" style="min-height:90px"></textarea>
+          </div>
+
+          <div class="form-status" role="status" aria-live="polite"></div>
+          <div class="submit-row">
+            <button class="btn btn-primary" type="submit">Request my account</button>
+          </div>
+          <p class="small">By sending this you agree that we may contact you about your account, as described in our <a href={href("/privacy/")}>privacy notice</a>. You will accept the <a href={href("/terms/")}>terms of use</a> when your account is created. Custom software is not a sign-up: <a href={href("/custom-software/#enquiry")}>request a quote</a> instead.</p>
+        </form>
+      </div>
+    </div>
+  </section>
+</Base>

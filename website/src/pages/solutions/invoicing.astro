@@ -1,0 +1,98 @@
+---
+import Base from "../../layouts/Base.astro";
+import { href, asset } from "../../site.js";
+---
+<Base
+  title="Invoicing"
+  description="Digital Fingers Invoicing: free, SARS-minded tax invoices, quotes and credit notes in rand with 15% VAT, for freelancers, sole traders and small shops."
+  path="/solutions/invoicing/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <img class="hero-icon" src={asset("/apps/billing.svg")} alt="" width="64" height="64" />
+      <p class="eyebrow">Digital Fingers Invoicing</p>
+      <h1>Proper tax invoices, without the paperwork headache.</h1>
+      <p class="hero-lead">Send quotes, tax invoices and credit notes that meet SARS requirements, in rand, with 15% VAT worked out for you. Built for freelancers, sole traders, consultants and small shops. Free to start.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/signup/?module=invoicing")}>Start free</a>
+        <a class="btn btn-ghost" href={href("/pricing/")}>See pricing</a>
+      </div>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="what-title">
+    <div class="wrap">
+      <p class="kicker">What you get</p>
+      <h2 class="sec-title" id="what-title">Everything you need to bill properly</h2>
+      <div class="grid-3" style="margin-top:28px">
+        <article class="card soft">
+          <h3>SARS-minded documents</h3>
+          <p>Tax invoices and credit notes with the details SARS expects, numbered in order. 15% VAT, worked out per line.</p>
+        </article>
+        <article class="card soft">
+          <h3>Quotes to invoices</h3>
+          <p>Send a quote, then turn it into an invoice when the customer agrees. Credit notes when something needs fixing.</p>
+        </article>
+        <article class="card soft">
+          <h3>A link your customer can open</h3>
+          <p>Every invoice gets a secure online link you can email, so your customer can view and download it.</p>
+        </article>
+        <article class="card soft">
+          <h3>Rand first, EFT-friendly</h3>
+          <p>Amounts in ZAR, with your banking details on the invoice so customers can pay by EFT.</p>
+        </article>
+        <article class="card soft">
+          <h3>Your branding</h3>
+          <p>Your logo, business details and VAT number on every document.</p>
+        </article>
+        <article class="card soft">
+          <h3>Grow without moving</h3>
+          <p>Add Remote Support or the Full Suite later from the same account. Your customers come with you.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="free-title">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">Free plan</p>
+        <h2 class="sec-title" id="free-title">Core invoicing is free</h2>
+        <p class="sec-lead" style="margin-bottom:20px">Core invoicing is free in every Digital Fingers package, including Invoicing on its own. The free plan includes:</p>
+        <ul class="checks">
+          <li>One issuing company</li>
+          <li>Unlimited customers</li>
+          <li>100 invoices a month (quotes and credit notes do not count)</li>
+          <li>300 invoice emails a month</li>
+          <li>A small “Sent with Digital Fingers” footer on emails</li>
+        </ul>
+        <p class="small" style="margin-top:16px">We warn you at 80% of a monthly limit. At 100% new sends pause until the next month; you can still prepare drafts.</p>
+      </div>
+      <div class="card">
+        <h3>Invoicing Pro</h3>
+        <p>For when you want invoicing to chase itself. Pro adds:</p>
+        <ul class="checks" style="margin-bottom:20px">
+          <li>Online payments</li>
+          <li>Payment reminders</li>
+          <li>Recurring invoices</li>
+          <li>Sending from your own email domain</li>
+          <li>Customer statements</li>
+          <li>Bank reconciliation</li>
+        </ul>
+        <p class="amount" style="font-size:26px">Price TBC<small>Placeholder, not an offer</small></p>
+      </div>
+    </div>
+  </section>
+
+  <section class="block" aria-labelledby="start-title">
+    <div class="wrap center">
+      <h2 class="sec-title" id="start-title">Send your first invoice today</h2>
+      <p class="sec-lead">Create your account, add your business details and logo, and you are ready to bill.</p>
+      <div class="hero-ctas" style="justify-content:center">
+        <a class="btn btn-primary" href={href("/signup/?module=invoicing")}>Start free</a>
+        <a class="btn btn-outline" href={href("/contact/")}>Ask a question</a>
+      </div>
+    </div>
+  </section>
+</Base>

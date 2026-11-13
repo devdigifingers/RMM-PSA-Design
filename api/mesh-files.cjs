@@ -41,17 +41,17 @@ process.on("uncaughtException", () => finish({ error: "MeshCentral did not answe
 if (!nodeId || nodeId.length > 300 || !user || !pass || !process.env.MESH_URL) {
   finish({ error: "Remote service is not configured." });
 }
-if (!["ls", "mkdir", "upload", "download"].includes(action)) finish({ error: "Unknown file action." });
+if (!["ls", "mkdir", "upload", "download", "rm"].includes(action)) finish({ error: "Unknown file action." });
 if (targetPath.length > 400 || targetPath.includes("\0") || targetPath.split(/[/\\]/).includes("..")) {
   finish({ error: "That folder is not available." });
 }
-if ((action === "mkdir" || action === "upload" || action === "download") && (!entryName || entryName.length > 120 || /[\\/\0:*?"<>|]/.test(entryName) || entryName === "." || entryName === "..")) {
+if ((action === "mkdir" || action === "upload" || action === "download" || action === "rm") && (!entryName || entryName.length > 120 || /[\\/\0:*?"<>|]/.test(entryName) || entryName === "." || entryName === "..")) {
   finish({ error: "Enter a file name." });
 }
 const entryKind = String(process.argv[6] || "");
 const savedFile = action === "download" ? String(process.argv[7] || "") : localFile;
 let expectedSize = Number(process.argv[8] || 0);
-if (action === "download" && !["file", "folder"].includes(entryKind)) finish({ error: "Choose a file." });
+if ((action === "download" || action === "rm") && !["file", "folder"].includes(entryKind)) finish({ error: "Choose a file." });
 if (action === "download" && !savedFile) finish({ error: "The file was not downloaded." });
 let downloadBytes = 0;
 let packing = false;
@@ -65,7 +65,7 @@ const source = new URL(String(process.env.MESH_URL).replace(/^wss:/, "https:").r
 const socketBase = `${source.protocol === "https:" ? "wss:" : "ws:"}//${source.host}${source.pathname.replace(/\/control\.ashx$/, "/")}`;
 const authHeader = `${Buffer.from(user).toString("base64")},${Buffer.from(pass).toString("base64")}`;
 const startedAt = Date.now();
-const idleLimit = action === "download" ? 45000 : action === "upload" ? 180000 : 40000;
+const idleLimit = action === "download" ? 45000 : action === "upload" ? 180000 : action === "rm" ? 300000 : 40000;
 const maxLimit = action === "download" ? 20 * 60 * 1000 : action === "upload" ? 6 * 60 * 60 * 1000 : idleLimit;
 function stall() {
   if (action !== "download") {
@@ -194,6 +194,14 @@ function beginFileCommand() {
     setTimeout(() => {
       if (!settled) sendJson(relay, { action: "ls", reqid: 2, path: folder });
     }, 600);
+  }
+  if (action === "rm") {
+    // The agent deletes synchronously and sends nothing back (it stops at the first locked file), so the listing that
+    // follows on the same channel shows what is left.
+    // A bare drive ("C:") or "" would make the agent's path.join relative to its working folder.
+    const parent = /^[A-Za-z]:$/.test(folder) ? `${folder}/` : folder || "/";
+    sendJson(relay, { action: "rm", reqid: 1, path: parent, delfiles: [entryName], rec: entryKind === "folder" });
+    sendJson(relay, { action: "ls", reqid: 2, path: folder });
   }
   if (action === "upload") {
     try {

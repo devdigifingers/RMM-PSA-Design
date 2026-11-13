@@ -52,5 +52,6 @@ export async function POST(request, { params }) {
     paused: result.paused === true,
     endedBy: result.endedBy === "customer" ? "customer" : null,
     panel: typeof result.panel === "string" ? result.panel : null,
+    canSignOut: result.canSignOut === true,
   });
 }

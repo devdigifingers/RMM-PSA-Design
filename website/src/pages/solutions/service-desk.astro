@@ -1,0 +1,54 @@
+---
+import Base from "../../layouts/Base.astro";
+import { href, asset } from "../../site.js";
+---
+<Base
+  title="Service Desk"
+  description="Digital Fingers Service Desk: tickets and shared customer records next to Remote Desk, as part of the Full Suite."
+  path="/solutions/service-desk/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <img class="hero-icon" src={asset("/apps/service-desk.svg")} alt="" width="64" height="64" />
+      <p class="eyebrow">Service Desk · in the Full Suite</p>
+      <h1>Every request, in one place.</h1>
+      <p class="hero-lead">Service Desk keeps your support work organised: tickets for each request, linked to the customer and the machines you look after in Remote Desk. It comes with the Full Suite.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/signup/?module=suite")}>See the Full Suite</a>
+        <a class="btn btn-ghost" href={href("/pricing/#suite")}>Pricing</a>
+      </div>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="features-title">
+    <div class="wrap">
+      <h2 class="sec-title" id="features-title">Work that sits next to Remote Desk</h2>
+      <div class="grid-3" style="margin-top:28px">
+        <article class="card soft">
+          <h3>Tickets</h3>
+          <p>Log each request, keep notes and replies with it, and see what is still open.</p>
+        </article>
+        <article class="card soft">
+          <h3>Shared customers</h3>
+          <p>The same customer record across Remote Desk, Service Desk and invoicing. No copying details between apps.</p>
+        </article>
+        <article class="card soft">
+          <h3>Bill the work</h3>
+          <p>In the Full Suite, MSP billing turns time, sessions and devices into invoices.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="start-title">
+    <div class="wrap center">
+      <h2 class="sec-title" id="start-title">Service Desk comes with the Full Suite</h2>
+      <p class="sec-lead">Remote Desk, Service Desk and invoicing with MSP billing, on one account.</p>
+      <div class="hero-ctas" style="justify-content:center">
+        <a class="btn btn-primary" href={href("/signup/?module=suite")}>Start the suite</a>
+        <a class="btn btn-outline" href={href("/contact/")}>Talk to us</a>
+      </div>
+    </div>
+  </section>
+</Base>

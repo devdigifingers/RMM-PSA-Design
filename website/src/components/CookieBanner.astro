@@ -1,0 +1,21 @@
+---
+import { ANALYTICS_SRC, href } from "../site.js";
+---
+<div class="cookie" id="cookie" role="dialog" aria-labelledby="cookie-title" data-analytics={ANALYTICS_SRC} hidden>
+  <h2 id="cookie-title">Cookies</h2>
+  {ANALYTICS_SRC ? (
+    <p>We would like to use privacy-friendly analytics to see which pages help people. Nothing loads until you agree. <a href={href("/privacy/#cookies")}>Privacy notice</a></p>
+  ) : (
+    <p>This site only uses what it needs to work. There are no analytics or marketing cookies at the moment. <a href={href("/privacy/#cookies")}>Privacy notice</a></p>
+  )}
+  <div class="actions">
+    {ANALYTICS_SRC ? (
+      <>
+        <button type="button" class="btn btn-primary" data-cookie="accept">Allow analytics</button>
+        <button type="button" class="btn btn-outline" data-cookie="reject">Necessary only</button>
+      </>
+    ) : (
+      <button type="button" class="btn btn-outline" data-cookie="reject">Close</button>
+    )}
+  </div>
+</div>

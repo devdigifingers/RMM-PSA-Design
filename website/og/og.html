@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Source for public/og.png. Render with: npm run og -->
+<html lang="en-ZA">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Inter"; src: url("../src/assets/fonts/Inter-Variable.woff2") format("woff2"); font-weight: 100 900; }
+  @font-face { font-family: "Sora"; src: url("../src/assets/fonts/Sora-Variable.woff2") format("woff2"); font-weight: 100 800; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background:
+      radial-gradient(900px 480px at 92% 0%, rgba(124, 58, 237, 0.55), transparent 62%),
+      radial-gradient(720px 400px at 0% 100%, rgba(34, 211, 238, 0.28), transparent 62%),
+      linear-gradient(160deg, #141B3A, #1F1D52 55%, #2E1F6E);
+    color: #F8FAFC; font-family: Inter, sans-serif; position: relative;
+  }
+  .mark { position: absolute; right: -60px; bottom: -80px; width: 520px; opacity: 0.16; }
+  .inner { padding: 72px 80px; }
+  .logo { width: 380px; display: block; margin-bottom: 72px; }
+  .eyebrow { font-size: 20px; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: #C7CBE6; margin: 0 0 22px; }
+  h1 { font-family: Sora, Inter, sans-serif; font-size: 62px; line-height: 1.08; font-weight: 600; letter-spacing: -0.03em; margin: 0; max-width: 900px; }
+  .apps { position: absolute; left: 80px; bottom: 56px; display: flex; gap: 14px; }
+  .apps img { width: 56px; height: 56px; }
+</style>
+</head>
+<body>
+  <img class="mark" src="../public/brand/mark-gradient.svg" alt="">
+  <div class="inner">
+    <img class="logo" src="../public/brand/logo-horizontal-dark.svg" alt="Digital Fingers">
+    <h1>Software that helps small businesses work, bill and get support.</h1>
+  </div>
+  <div class="apps">
+    <img src="../public/apps/billing.svg" alt="">
+    <img src="../public/apps/remote-desk.svg" alt="">
+    <img src="../public/apps/service-desk.svg" alt="">
+  </div>
+</body>
+</html>

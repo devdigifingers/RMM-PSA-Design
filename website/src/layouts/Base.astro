@@ -1,0 +1,58 @@
+---
+import "../styles/site.css";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+import CookieBanner from "../components/CookieBanner.astro";
+import { SITE_URL, PREVIEW, brand, asset } from "../site.js";
+
+const { title, description, path, heroClass = "", mark = false, noindex = false } = Astro.props;
+const fullTitle = path === "/" ? title : `${title} — Digital Fingers`;
+const canonical = `${SITE_URL}${path}`;
+const ogImage = `${SITE_URL}/og.png`;
+---
+<!doctype html>
+<html lang="en-ZA">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    {(PREVIEW || noindex) && <meta name="robots" content="noindex, nofollow" />}
+    {!noindex && <link rel="canonical" href={canonical} />}
+    <meta name="theme-color" content="#0B0B2E" />
+    <link rel="icon" href={asset("/favicon.ico")} sizes="48x48" />
+    <link rel="icon" href={brand("/icon.svg")} type="image/svg+xml" />
+    <link rel="apple-touch-icon" href={brand("/apple-icon.png")} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Digital Fingers" />
+    <meta property="og:locale" content="en_ZA" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="hero-shell">
+      {mark && <div class="hero-art" aria-hidden="true"></div>}
+      <div class="wrap">
+        <Header />
+        <div class={`hero ${heroClass}`}>
+          <slot name="hero" />
+        </div>
+      </div>
+    </div>
+    <main id="main" tabindex="-1">
+      <slot />
+    </main>
+    <Footer />
+    <CookieBanner />
+    {PREVIEW && <div class="preview-flag" aria-hidden="true">PREVIEW</div>}
+    <script>
+      import "../scripts/site.js";
+    </script>
+  </body>
+</html>

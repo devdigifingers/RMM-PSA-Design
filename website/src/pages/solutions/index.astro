@@ -1,0 +1,80 @@
+---
+import Base from "../../layouts/Base.astro";
+import { href, asset, brand } from "../../site.js";
+---
+<Base
+  title="Solutions"
+  description="Digital Fingers Invoicing, Remote Support and the Full Suite on one account, plus custom software built for your business."
+  path="/solutions/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Solutions</p>
+      <h1>One account. The modules you need.</h1>
+      <p class="hero-lead">Start with free invoicing, add remote support for the computers you look after, or run everything together in the Full Suite. If your business needs something ready-made software cannot do, we build it.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={href("/signup/")}>Start free</a>
+        <a class="btn btn-ghost" href={href("/pricing/")}>See pricing</a>
+      </div>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="packages-title">
+    <div class="wrap">
+      <p class="kicker">Packages</p>
+      <h2 class="sec-title" id="packages-title">Three ways to start</h2>
+      <p class="sec-lead">Each package is a licence on the same account, so moving up later does not mean a new login or moving your customers.</p>
+      <div class="grid-3">
+        <article class="card">
+          <img class="icon" src={asset("/apps/billing.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/solutions/invoicing/")}>Invoicing</a></h3>
+          <p class="grow">Quotes, tax invoices and credit notes for freelancers, sole traders and small shops. Free to start.</p>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=invoicing")}>Start free</a>
+            <a class="btn btn-outline" href={href("/solutions/invoicing/")}>Learn more</a>
+          </div>
+        </article>
+        <article class="card">
+          <img class="icon" src={asset("/apps/remote-desk.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/solutions/remote-support/")}>Remote Support</a></h3>
+          <p class="grow">Digital Fingers Remote Desk: help customers on their own screens and keep an eye on the machines you look after. Invoicing included.</p>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=remote-support")}>Get started</a>
+            <a class="btn btn-outline" href={href("/solutions/remote-support/")}>Learn more</a>
+          </div>
+        </article>
+        <article class="card">
+          <img class="icon" src={asset("/apps/service-desk.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/pricing/#suite")}>Full Suite</a></h3>
+          <p class="grow">Remote Desk, Service Desk and invoicing with MSP billing, sharing one set of customers.</p>
+          <div class="actions">
+            <a class="btn btn-primary" href={href("/signup/?module=suite")}>Get started</a>
+            <a class="btn btn-outline" href={href("/solutions/service-desk/")}>About Service Desk</a>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="more-title">
+    <div class="wrap">
+      <h2 class="sec-title" id="more-title">Also from Digital Fingers</h2>
+      <div class="grid-2" style="margin-top:24px">
+        <article class="card">
+          <img class="icon" src={asset("/apps/service-desk.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/solutions/service-desk/")}>Service Desk</a></h3>
+          <p class="grow">Tickets and customer records that sit next to Remote Desk. Part of the Full Suite.</p>
+          <div class="actions"><a class="btn btn-outline" href={href("/solutions/service-desk/")}>Learn more</a></div>
+        </article>
+        <article class="card">
+          <img class="icon" src={brand("/brand/mark-gradient.svg")} alt="" width="56" height="56" />
+          <h3><a href={href("/custom-software/")}>Custom software</a></h3>
+          <p class="grow">Software designed and built around how your business works. Quoted per project; no sign-up needed.</p>
+          <div class="actions"><a class="btn btn-outline" href={href("/custom-software/#enquiry")}>Request a quote</a></div>
+        </article>
+      </div>
+      <p class="small" style="margin-top:24px">Coming later: monitoring reports and dashboards. They are not part of any package yet.</p>
+    </div>
+  </section>
+</Base>

@@ -1,0 +1,66 @@
+---
+import { ENQUIRY_URL, href } from "../site.js";
+
+// kind "quote" is the custom software form; "contact" is the Contact page form.
+const { kind = "contact", title, intro, topic = "", compact = false } = Astro.props;
+const back = href(Astro.url.pathname.slice(import.meta.env.BASE_URL.replace(/\/+$/, "").length) || "/");
+const id = `f-${kind}`;
+const HeadingTag = compact ? "h3" : "h2";
+---
+<div class="form-card" id="enquiry">
+  <HeadingTag>{title}</HeadingTag>
+  <p>{intro}</p>
+  <form class="form" action={ENQUIRY_URL} method="post" data-enquiry novalidate>
+    <input type="hidden" name="kind" value={kind} />
+    <input type="hidden" name="return" value={back} />
+    <input type="hidden" name="started" value="" />
+    <div class="trap" aria-hidden="true">
+      <label for={`${id}-website`}>Leave this empty</label>
+      <input id={`${id}-website`} name="website" type="text" tabindex="-1" autocomplete="off" />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for={`${id}-name`}>Your name</label>
+        <input id={`${id}-name`} name="name" type="text" autocomplete="name" required maxlength="120" aria-describedby={`${id}-name-err`} />
+        <span class="error" id={`${id}-name-err`}></span>
+      </div>
+      <div class="field">
+        <label for={`${id}-email`}>Work email</label>
+        <input id={`${id}-email`} name="email" type="email" autocomplete="email" required maxlength="254" aria-describedby={`${id}-email-err`} />
+        <span class="error" id={`${id}-email-err`}></span>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for={`${id}-business`}>Business name <span class="hint">(optional)</span></label>
+        <input id={`${id}-business`} name="business" type="text" autocomplete="organization" maxlength="160" />
+      </div>
+      <div class="field">
+        <label for={`${id}-phone`}>Phone <span class="hint">(optional)</span></label>
+        <input id={`${id}-phone`} name="phone" type="tel" autocomplete="tel" maxlength="40" aria-describedby={`${id}-phone-err`} />
+        <span class="error" id={`${id}-phone-err`}></span>
+      </div>
+    </div>
+    {kind === "contact" && (
+      <div class="field">
+        <label for={`${id}-topic`}>What is it about?</label>
+        <select id={`${id}-topic`} name="topic">
+          <option value="sales" selected={topic === "sales"}>Sales and packages</option>
+          <option value="support" selected={topic === "support"}>Support for an existing account</option>
+          <option value="custom" selected={topic === "custom"}>Custom software</option>
+          <option value="other" selected={topic === "other" || !topic}>Something else</option>
+        </select>
+      </div>
+    )}
+    <div class="field">
+      <label for={`${id}-message`}>{kind === "quote" ? "What do you need built?" : "Your message"}</label>
+      <textarea id={`${id}-message`} name="message" required minlength="10" maxlength="4000" aria-describedby={`${id}-message-err`}></textarea>
+      <span class="error" id={`${id}-message-err`}></span>
+    </div>
+    <div class="form-status" role="status" aria-live="polite"></div>
+    <div class="submit-row">
+      <button class="btn btn-primary" type="submit">{kind === "quote" ? "Send enquiry" : "Send message"}</button>
+      <p class="small">{kind === "quote" ? "This is an enquiry, not a sign-up." : "We reply by email."} See our <a href={href("/privacy/")}>privacy notice</a>.</p>
+    </div>
+  </form>
+</div>

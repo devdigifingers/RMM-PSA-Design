@@ -124,6 +124,7 @@ const AUDIT_EVENTS = {
   "remote.end": { group: "remote", type: "remote.ended", line: () => "ended the remote session" },
   "remote.switch_user": { group: "remote", line: (d) => `switched the remote view to ${d.user ? `${d.user}'s session` : "another session"}${d.station ? ` (${d.station})` : ""}` },
   "remote.signin_screen": { group: "remote", line: () => "sent the computer to the Windows sign-in screen (Switch user)" },
+  "remote.signout_user": { group: "remote", line: (d) => `signed ${d.user || "a user"} out of Windows (Switch user)` },
   "remote.customer_pause": { group: "remote", line: (d) => `${d.user || "The customer"} paused screen sharing from the Session Panel` },
   "remote.customer_resume": { group: "remote", line: (d) => `${d.user || "The customer"} resumed screen sharing from the Session Panel` },
   "remote.customer_end": { group: "remote", type: "remote.ended", line: (d) => `${d.user || "The customer"} ended the remote session from the Session Panel` },
@@ -154,6 +155,10 @@ const AUDIT_EVENTS = {
   "startup.set": { group: "devices", line: (d) => `changed the startup item ${d.name || ""}`.trim() },
   "file.upload": { group: "devices", line: (d) => `uploaded ${d.name || "a file"}` },
   "file.download": { group: "devices", line: (d) => `downloaded ${d.name || "a file"}` },
+  "file.delete": {
+    group: "devices",
+    line: (d) => `deleted the ${d.kind === "folder" ? "folder" : "file"} ${d.name || ""}${d.path ? ` from ${d.path}` : ""}${d.partial ? " (some files were in use and stayed)" : ""}`,
+  },
   "alert.fire": { group: "alerts", type: "alert.raised", line: (d) => `raised a ${METRIC_WORDS[d.metric] || "usage"} alert at ${d.value}% (limit ${d.threshold}%)` },
   "patch.push": { group: "patches", line: (d) => `queued ${d.count ? `${d.count} update${d.count === 1 ? "" : "s"}` : "updates"} to install` },
   "patch.deploy": {

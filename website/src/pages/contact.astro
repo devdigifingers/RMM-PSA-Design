@@ -1,0 +1,38 @@
+---
+import Base from "../layouts/Base.astro";
+import EnquiryForm from "../components/EnquiryForm.astro";
+import { href } from "../site.js";
+---
+<Base
+  title="Contact"
+  description="Contact Digital Fingers about sales, support, custom software or anything else."
+  path="/contact/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Contact</p>
+      <h1>Get in touch.</h1>
+      <p class="hero-lead">Send us a message and we will reply by email. For help with an existing account, the <a href={href("/support/")} style="color:#A5F3FC">Support page</a> may be quicker.</p>
+    </div>
+  </Fragment>
+
+  <section class="block">
+    <div class="wrap split">
+      <EnquiryForm kind="contact" title="Send a message" intro="Tell us what it is about. This form does not create an account." />
+      <div>
+        <h2 class="sec-title" style="font-size:24px">Other ways to reach us</h2>
+        <ul class="checks" style="margin:16px 0 28px">
+          <li>Email: <span class="tbc">TBC</span></li>
+          <li>Phone: <span class="tbc">TBC</span></li>
+          <li>WhatsApp: <span class="tbc">TBC</span></li>
+          <li>Hours: <span class="tbc">TBC</span></li>
+        </ul>
+        <div class="card soft">
+          <h3>Looking for something else?</h3>
+          <p>Want an account? <a href={href("/signup/")}>Start free</a>. Need technical help? <a href={href("/support/")}>Visit Support</a>. Have a project in mind? <a href={href("/custom-software/#enquiry")}>Request a quote</a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</Base>

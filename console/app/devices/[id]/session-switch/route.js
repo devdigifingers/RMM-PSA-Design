@@ -33,7 +33,7 @@ export async function POST(request, { params }) {
   } catch {
     body = {};
   }
-  const action = body.action === "signin" ? "signin" : body.action === "view" ? "view" : "";
+  const action = ["signin", "signout", "view"].includes(body.action) ? body.action : "";
   if (!action) return reply(400, { error: "Choose a session." });
   const response = await fetch(`${apiUrl}/v1/devices/${encodeURIComponent(id)}/switch-user`, {
     method: "POST",
@@ -42,6 +42,7 @@ export async function POST(request, { params }) {
       action,
       user: typeof body.user === "string" ? body.user : "",
       station: typeof body.station === "string" ? body.station : "",
+      sessionId: Number.isInteger(body.sessionId) ? body.sessionId : null,
       confirmServer: body.confirmServer === true,
     }),
     cache: "no-store",

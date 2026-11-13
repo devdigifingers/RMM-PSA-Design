@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createDeviceFolder, deviceFiles } from "../actions";
+import { createDeviceFolder, deleteDeviceEntry, deviceFiles } from "../actions";
 import { fetchFile, sendFile, sizeLabel, UPLOAD_LIMIT } from "./transfer";
 
 export function FileManager({ deviceId, startPath = "" }) {
@@ -23,6 +23,8 @@ export function FileManager({ deviceId, startPath = "" }) {
   const [dock, setDock] = useState("jobs");
   const [dockOpen, setDockOpen] = useState(true);
   const [picked, setPicked] = useState(null);
+  const [removing, setRemoving] = useState(null);
+  const [typed, setTyped] = useState("");
   const picker = useRef(null);
   const ids = useRef(0);
 
@@ -70,6 +72,7 @@ export function FileManager({ deviceId, startPath = "" }) {
     setQuery("");
     setMaking(false);
     setPicked(null);
+    setRemoving(null);
   }
 
   function jump(index) {
@@ -78,6 +81,7 @@ export function FileManager({ deviceId, startPath = "" }) {
     setQuery("");
     setMaking(false);
     setPicked(null);
+    setRemoving(null);
   }
 
   const needle = query.trim().toLowerCase();
@@ -104,6 +108,33 @@ export function FileManager({ deviceId, startPath = "" }) {
     setDraft("");
     setMaking(false);
     setTick((value) => value + 1);
+  }
+
+  async function deletePicked() {
+    const entry = removing;
+    if (!entry) return;
+    if (entry.kind === "folder" && typed.trim() !== entry.name) {
+      setError(`Type ${entry.name} to delete the folder.`);
+      return;
+    }
+    setBusy("Deleting…");
+    setError("");
+    const result = await deleteDeviceEntry(String(deviceId), path, entry.name, entry.kind);
+    setBusy("");
+    setRemoving(null);
+    setPicked(null);
+    setTick((value) => value + 1);
+    if (!result.ok) {
+      setError(result.error);
+      record(`Not deleted: ${entry.name}. ${result.error}`);
+      return;
+    }
+    if (result.partial) {
+      setError(result.note);
+      record(result.note);
+      return;
+    }
+    record(`Deleted ${entry.kind === "folder" ? "folder" : "file"} ${entry.name}`);
   }
 
   function setJob(id, patch) {
@@ -188,6 +219,9 @@ export function FileManager({ deviceId, startPath = "" }) {
             <NewFolderGlyph /> New Folder
           </button>
           <button type="button" className="files-text" aria-label="Download" disabled={!picked || Boolean(busy)} onClick={downloadPicked}>{busy === "Downloading…" ? "Downloading…" : "Download"}</button>
+          <button type="button" className="files-text files-delete" aria-label="Delete" disabled={!picked || !inside || Boolean(busy)} onClick={() => { setRemoving(picked); setTyped(""); setMaking(false); setError(""); }}>
+            <DeleteGlyph /> {busy === "Deleting…" ? "Deleting…" : "Delete"}
+          </button>
           <button type="button" className="files-upload" disabled={!inside || Boolean(busy)} onClick={() => picker.current?.click()}>{busy === "Uploading…" ? "Uploading…" : "Upload"}</button>
           <input ref={picker} type="file" hidden onChange={(event) => upload(event.target.files?.[0])} />
         </div>
@@ -197,6 +231,23 @@ export function FileManager({ deviceId, startPath = "" }) {
           <input value={draft} aria-label="Folder name" placeholder="Folder name" onChange={(event) => setDraft(event.target.value)} />
           <button type="button" onClick={() => setMaking(false)}>Cancel</button>
           <button type="submit" disabled={busy === "Creating…"}>{busy === "Creating…" ? "Creating…" : "Create"}</button>
+        </form>
+      ) : null}
+      {removing ? (
+        <form className="files-create files-confirm" role="alertdialog" aria-label="Delete" onSubmit={(event) => { event.preventDefault(); deletePicked(); }}>
+          <p>
+            {removing.kind === "folder"
+              ? <>Delete the folder <strong>{removing.name}</strong> and everything in it? </>
+              : <>Delete <strong>{removing.name}</strong>? </>}
+            It is deleted from the computer straight away, not moved to the Recycle Bin.
+          </p>
+          {removing.kind === "folder" ? (
+            <input value={typed} aria-label="Type the folder name to confirm" placeholder={`Type ${removing.name} to confirm`} autoFocus onChange={(event) => setTyped(event.target.value)} />
+          ) : null}
+          <button type="button" autoFocus={removing.kind !== "folder"} onClick={() => setRemoving(null)}>Cancel</button>
+          <button type="submit" className="danger" disabled={busy === "Deleting…" || (removing.kind === "folder" && typed.trim() !== removing.name)}>
+            {busy === "Deleting…" ? "Deleting…" : "Delete"}
+          </button>
         </form>
       ) : null}
       <p className="files-total">Total: {rows.length} {rows.length === 1 ? "item" : "items"}</p>
@@ -355,6 +406,14 @@ function NewFolderGlyph() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 7.2A1.5 1.5 0 0 1 4.5 5.7h4.1l1.5 1.7H19.5A1.5 1.5 0 0 1 21 8.9v8.6a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="none" stroke="currentColor" strokeWidth="1.6" />
       <path d="M12 11v5M9.5 13.5h5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DeleteGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1.5 1.5 0 0 0 1.5 1.4h7a1.5 1.5 0 0 0 1.5-1.4L18 7M9 7V4.5h6V7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

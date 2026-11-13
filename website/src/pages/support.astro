@@ -1,0 +1,70 @@
+---
+import Base from "../layouts/Base.astro";
+import { href, CONSOLE_URL } from "../site.js";
+---
+<Base
+  title="Support"
+  description="Get help with Digital Fingers: log on to the console, install the Digital Fingers agent, and what to expect during a remote support session."
+  path="/support/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <p class="eyebrow">Support</p>
+      <h1>How can we help?</h1>
+      <p class="hero-lead">Log on to your console, get the agent onto a computer, or reach our team.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href={CONSOLE_URL}>Log on</a>
+        <a class="btn btn-ghost" href={href("/contact/?topic=support")}>Contact support</a>
+      </div>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="help-title">
+    <div class="wrap grid-3">
+      <article class="card soft">
+        <h2 class="sec-title" id="help-title" style="font-size:21px">Contact our team</h2>
+        <ul class="checks" style="margin:8px 0 18px">
+          <li>Email: <span class="tbc">TBC</span></li>
+          <li>Phone: <span class="tbc">TBC</span></li>
+          <li>Hours: <span class="tbc">TBC</span></li>
+        </ul>
+        <p style="margin-top:auto"><a href={href("/contact/")}>Send us a message</a></p>
+      </article>
+      <article class="card soft">
+        <h2 style="font-size:21px;margin:0 0 8px">Log on</h2>
+        <p class="grow">Existing customers log on to the Digital Fingers console to manage invoices, devices and tickets.</p>
+        <div class="actions"><a class="btn btn-primary" href={CONSOLE_URL}>Log on to the console</a></div>
+      </article>
+      <article class="card soft">
+        <h2 style="font-size:21px;margin:0 0 8px">New here?</h2>
+        <p class="grow">Create an account and pick a package. You can add more later.</p>
+        <div class="actions"><a class="btn btn-outline" href={href("/signup/")}>Start free</a></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="block paper" id="agent" aria-labelledby="agent-title">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">Remote Desk</p>
+        <h2 class="sec-title" id="agent-title">Install the Digital Fingers agent</h2>
+        <p class="sec-lead" style="margin-bottom:18px">The agent is the small program that lets your technician help you remotely. It runs on Windows and shows in the taskbar, so you always know it is there.</p>
+        <ol class="steps light">
+          <li><div><strong>Log on to the console</strong><span>Each installer is linked to your own account, so it is not offered as a public download.</span></div></li>
+          <li><div><strong>Copy the install link</strong><span>Find it under your customer's devices, then open it on the computer you want to support.</span></div></li>
+          <li><div><strong>Run the installer</strong><span>The computer appears in your console within a minute or two.</span></div></li>
+        </ol>
+        <div class="hero-ctas" style="margin-top:24px">
+          <a class="btn btn-primary" href={CONSOLE_URL}>Log on to get your installer</a>
+        </div>
+        <p class="small">Were you sent an install link by your IT provider? Open that link on your computer. If it has expired, ask them for a new one.</p>
+      </div>
+      <div class="card">
+        <h3>During a support session</h3>
+        <p>When a technician connects, the Digital Fingers session panel opens on your screen. It shows who is connected, lets you chat with them, and lets you send or receive files. You can see when the session ends.</p>
+        <p><a href={href("/solutions/remote-support/")}>More about Remote Support</a></p>
+      </div>
+    </div>
+  </section>
+</Base>

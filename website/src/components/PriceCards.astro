@@ -1,0 +1,19 @@
+---
+import { PACKAGES, href, asset } from "../site.js";
+---
+<div class="price-grid">
+  {PACKAGES.map((pack) => (
+    <article class="price-card" id={pack.key}>
+      <div class="head">
+        <img src={asset(pack.icon)} alt="" width="40" height="40" />
+        <h3>{pack.name}</h3>
+      </div>
+      <p class="who">{pack.who}</p>
+      <p class="amount">{pack.amount}<small>{pack.small}</small></p>
+      <ul>
+        {pack.items.map((item) => <li>{item}</li>)}
+      </ul>
+      <a class="btn btn-primary" href={href(`/signup/?module=${pack.key}`)}>{pack.cta}<span class="visually-hidden"> with {pack.name}</span></a>
+    </article>
+  ))}
+</div>

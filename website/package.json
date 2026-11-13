@@ -1,0 +1,14 @@
+{
+  "name": "df-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "build:preview": "DF_BASE=/preview astro build --outDir dist-preview",
+    "og": "mkdir -p .astro/chrome && chromium-browser --headless=new --disable-gpu --hide-scrollbars --allow-file-access-from-files --user-data-dir=\"$PWD/.astro/chrome\" --window-size=1200,630 --screenshot=\"$PWD/public/og.png\" \"file://$PWD/og/og.html\""
+  },
+  "dependencies": {
+    "astro": "^5.18.2"
+  }
+}

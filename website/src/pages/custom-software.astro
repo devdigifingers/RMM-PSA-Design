@@ -1,0 +1,66 @@
+---
+import Base from "../layouts/Base.astro";
+import EnquiryForm from "../components/EnquiryForm.astro";
+import { brand } from "../site.js";
+---
+<Base
+  title="Custom software"
+  description="Digital Fingers designs and builds custom software around how a South African small business works: stock, job cards, customer portals and industry workflows. Quoted per project."
+  path="/custom-software/"
+  heroClass="compact single"
+>
+  <Fragment slot="hero">
+    <div>
+      <img class="hero-icon" src={brand("/brand/mark-gradient.svg")} alt="" width="64" height="64" />
+      <p class="eyebrow">Custom software</p>
+      <h1>Software built around how your business actually works.</h1>
+      <p class="hero-lead">When a ready-made product does not fit, we design and build one that does: stock, job cards, customer portals, industry workflows, and the unglamorous systems that save your team hours every week.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#enquiry">Request a quote</a>
+      </div>
+    </div>
+  </Fragment>
+
+  <section class="block" aria-labelledby="types-title">
+    <div class="wrap split">
+      <div>
+        <p class="kicker">What we build</p>
+        <h2 class="sec-title" id="types-title">Project types we often take on</h2>
+        <ul class="checks" style="margin-top:20px">
+          <li>Stock and inventory tracking</li>
+          <li>Job cards and field work</li>
+          <li>Customer and supplier portals</li>
+          <li>Booking and scheduling</li>
+          <li>Replacing spreadsheets that have grown too big</li>
+          <li>Connecting the systems you already use</li>
+        </ul>
+      </div>
+      <div class="points">
+        <div class="point"><strong>Listen first</strong><span>We start with how you work today, not with a product catalogue.</span></div>
+        <div class="point"><strong>Built to last</strong><span>Clear scope, a fixed quote where we can, and software you can keep.</span></div>
+        <div class="point"><strong>Fits the suite</strong><span>New work can stand alone, or connect to your Digital Fingers account.</span></div>
+        <div class="point"><strong>Local and direct</strong><span>You talk to the people who will design and build it.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block paper" aria-labelledby="process-title">
+    <div class="wrap">
+      <p class="kicker">How it works</p>
+      <h2 class="sec-title" id="process-title">From first conversation to handover</h2>
+      <ol class="steps light grid-4" style="margin-top:28px">
+        <li><div><strong>Listen</strong><span>Tell us how things work now and what gets in the way.</span></div></li>
+        <li><div><strong>Scope and quote</strong><span>We agree what will be built and send a quote for the project.</span></div></li>
+        <li><div><strong>Build</strong><span>We build in stages and show you working software along the way.</span></div></li>
+        <li><div><strong>Hand over</strong><span>Training, documentation, and support once it is live.</span></div></li>
+      </ol>
+      <p class="small" style="margin-top:24px">Custom software is quoted per project. There is no sign-up and no monthly package for this work.</p>
+    </div>
+  </section>
+
+  <section class="block">
+    <div class="wrap" style="max-width:760px">
+      <EnquiryForm kind="quote" title="Request a quote" intro="Tell us what you need. This is an enquiry, not a product sign-up. We reply by email, usually with a few questions first." />
+    </div>
+  </section>
+</Base>

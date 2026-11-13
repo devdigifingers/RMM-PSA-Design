@@ -1718,3 +1718,22 @@ CREATE TABLE IF NOT EXISTS remote_session_files (
 );
 CREATE INDEX IF NOT EXISTS remote_session_files_session ON remote_session_files (session_id, id);
 CREATE INDEX IF NOT EXISTS remote_session_files_kept ON remote_session_files (created_at) WHERE deleted_at IS NULL;
+
+-- Custom software quote requests and Contact messages from the public website. Not tied to a tenant.
+CREATE TABLE IF NOT EXISTS public_enquiries (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  kind text NOT NULL CHECK (kind IN ('quote', 'contact')),
+  topic text NOT NULL CHECK (topic IN ('sales', 'support', 'custom', 'other')),
+  name text NOT NULL,
+  email text NOT NULL,
+  phone text NOT NULL DEFAULT '',
+  business text NOT NULL DEFAULT '',
+  message text NOT NULL,
+  source text NOT NULL DEFAULT '',
+  ip text NOT NULL DEFAULT '',
+  user_agent text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  notified_at timestamptz,
+  confirmed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS public_enquiries_created ON public_enquiries (created_at DESC);

@@ -430,6 +430,10 @@
         <div class="bar-run" aria-hidden="true"></div>
         <button type="button" class="btn ghost" id="reconnect-stop">Close session</button>
       </div>
+      <div class="reconnect" id="closed" role="status" hidden>
+        <strong>Session ended</strong>
+        <p id="closed-text"></p>
+      </div>
       <div class="fly dark" id="fly-view">
         <button type="button" id="view-actual"><svg viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>Actual Size<span class="tick">✓</span></button>
         <button type="button" id="view-full"><svg viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>Full Screen<span class="tick">✓</span></button>
@@ -991,7 +995,7 @@
         stopReconnect();
         dropped = true;
         ask("Session ended", title + " did not come back online within 20 minutes. Click Connect in the console when it is back.", "Close window").then(function (yes) {
-          if (yes) window.close();
+          if (yes) closeWindow();
         });
         return;
       }
@@ -1011,7 +1015,7 @@
           stopReconnect();
           dropped = true;
           ask("Session ended", (result.body.error || "The console sign-in has ended.") + " Then click Connect again.", "Close window").then(function (yes) {
-            if (yes) window.close();
+            if (yes) closeWindow();
           });
           return;
         }
@@ -1101,6 +1105,35 @@
       frame.src = "about:blank";
     }
 
+    var closedSent = false;
+    function sessionClosed() {
+      if (closedSent || !deviceId || !consoleOrigin || customer.ended) return;
+      closedSent = true;
+      fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-ping", {
+        method: "POST",
+        credentials: "include",
+        keepalive: true,
+        headers: { "content-type": "text/plain" },
+        body: JSON.stringify({ closed: true })
+      }).then(null, function () {});
+    }
+
+    // Browsers can ignore window.close(), so the session is disconnected first and the window then says it can be closed.
+    function closeWindow() {
+      dropped = true;
+      stopReconnect();
+      closeFly();
+      hideDesk();
+      sessionClosed();
+      panelChatStop("The session has ended");
+      window.close();
+      setTimeout(function () {
+        if (window.closed) return;
+        document.getElementById("closed-text").textContent = "You are disconnected from " + title + ". You can close this window.";
+        document.getElementById("closed").hidden = false;
+      }, 400);
+    }
+
     function sessionDropped() {
       dropped = true;
       closeFly();
@@ -1119,7 +1152,7 @@
         }, function () {});
       }
       ask("Session ended", "The connection to " + title + " was closed. It may have been ended from the console.", "Close window").then(function (yes) {
-        if (yes) window.close();
+        if (yes) closeWindow();
       });
     }
 
@@ -1663,7 +1696,7 @@
     }
 
     function pingSession() {
-      if (!deviceId || !consoleOrigin || customer.ended || customer.busy || Date.now() < customer.next) return;
+      if (!deviceId || !consoleOrigin || closedSent || customer.ended || customer.busy || Date.now() < customer.next) return;
       customer.busy = true;
       var tsid = viewedTsid();
       fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-ping", {
@@ -1723,7 +1756,7 @@
       closeFly();
       hideDesk();
       ask("Session ended", "The person at " + title + " ended the session from their Session Panel.", "Close window").then(function (yes) {
-        if (yes) window.close();
+        if (yes) closeWindow();
       });
     }
 
@@ -3323,8 +3356,7 @@
       var offline = Boolean(awaiting) || customer.paused;
       stopReconnect();
       if (offline) {
-        dropped = true;
-        window.close();
+        closeWindow();
         return;
       }
       sessionDropped();
@@ -3362,28 +3394,20 @@
           return;
         }
         if (!display.original || sameSize(display.original, display.current)) {
-          window.close();
+          closeWindow();
           return;
         }
         toast("Restoring the remote screen to " + sizeLabel(display.original) + "…");
-        var closing = setTimeout(function () { window.close(); }, 8000);
+        var closing = setTimeout(closeWindow, 8000);
         displayRestore().then(null, function () {}).then(function () {
           clearTimeout(closing);
-          window.close();
+          closeWindow();
         });
       });
     };
     window.addEventListener("pagehide", function () {
       if (display.original && !sameSize(display.original, display.current)) displayRestore().then(null, function () {});
-      if (deviceId && consoleOrigin && !customer.ended) {
-        fetch(consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-ping", {
-          method: "POST",
-          credentials: "include",
-          keepalive: true,
-          headers: { "content-type": "text/plain" },
-          body: JSON.stringify({ closed: true })
-        }).then(null, function () {});
-      }
+      sessionClosed();
     });
 
     function parseData(text) {

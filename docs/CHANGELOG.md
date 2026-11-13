@@ -9,6 +9,15 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-13 · Platform 1.11.1
+
+**Session window: End always ends the session**
+- **End → End session** (and **Close window** / **Close session** in the "Session ended" and reconnect messages)
+  sometimes did nothing, because the browser refused to close the window, so the remote desktop stayed connected.
+  The session window now disconnects the remote desktop, tells the console the session is closed and stops checking
+  in before it closes. If the browser keeps the window open, it shows **Session ended** and says the window can be
+  closed.
+
 ## 2026-11-12 · Platform 1.11.0
 
 **Session Panel, Phase C: files (pilot: POS-3316E-Setup only)**

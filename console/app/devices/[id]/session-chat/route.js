@@ -58,6 +58,8 @@ export async function GET(request, { params }) {
     const value = incoming.get(key);
     if (value && /^\d+$/.test(value)) query.set(key, value);
   }
+  const files = incoming.get("files");
+  if (files && /^[0-9a-z.-]{1,60}$/.test(files)) query.set("files", files);
   return forward(request, id, { method: "GET", query: `?${query}` });
 }
 

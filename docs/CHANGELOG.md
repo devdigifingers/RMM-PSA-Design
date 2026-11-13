@@ -9,6 +9,34 @@ that need customers to act. Each deploy raises it in `console/app/version.js` an
 `## <date> · Platform <version>`; a console test fails if the two differ. Versioning started at 1.0.0 on 30 Oct 2026;
 earlier sections have dates only. Agent versions are separate and listed under [Agent releases](#agent-releases).
 
+## 2026-11-12 · Platform 1.11.0
+
+**Session Panel, Phase C: files (pilot: POS-3316E-Setup only)**
+- The person at the computer can send files to the technician from the Session Panel (**Send a file…** or drag and
+  drop), and the technician can send files to them from the session window (**Files → Send a file to the customer**,
+  or drop a file on **Session files**). Only on a device whose Session Panel is ready; others keep Web File Transfer.
+- Files go through Digital Fingers (`/var/lib/df-api/session-files`, owner-only), must arrive at exactly the size
+  offered, and are stored with their SHA-256. Up to 100 MB each (a tenant can set less); larger files are refused
+  before anything is sent.
+- Files for the customer: the agent downloads the file, checks it against the SHA-256 and has Windows Defender scan
+  it (a threat fails the transfer). The customer then clicks **Save** or **Decline**; programs and scripts show a
+  warning and need **Save anyway** (or the tenant can block or allow them). Saved files go to
+  `Downloads\Digital Fingers\<date>`, are checked against the hash again and are marked as downloaded from the
+  internet, so SmartScreen still checks programs. **Open folder** shows the file.
+- Session window: **Session files** lists both directions with progress, Cancel, Defender and Accept status, and
+  Download for files from the customer. It opens with a notice when a file arrives.
+- Timelines: one entry per file on the device timeline (and on the ticket when the session was opened from one):
+  received "name" (size) from the customer / sent "name" (size) to the customer, who saved it / declined / could not
+  send, with the SHA-256 and a **Download** link while the file is kept. Audited as `remote.file`.
+- Retention: stored files are deleted after 30 days (the timeline entry, name, size and hash stay). Unfinished,
+  declined, cancelled and failed transfers are removed after two hours.
+- Remote Desk → Settings → Session Panel → Files: allow each direction, largest file (1–100 MB), and programs and
+  scripts sent to the customer (warn, don't allow, allow).
+- API: `POST /v1/devices/:id/session-files`, `PUT …/:fileId/content`, `POST …/:fileId` (cancel),
+  `GET /v1/remote-session-files/:id/content`; agent `POST /v1/agent/support/files`, `PUT|GET …/:id/content`,
+  `POST …/:id` (scan, accept, decline, cancel, fail). The chat long-poll carries the file list (`files` cursor).
+  The API now allows 30 minutes to receive a request, for slow uploads.
+
 ## 2026-11-12 · Platform 1.10.0
 
 **Session Panel, Phase B: chat (pilot: POS-3316E-Setup only)**
@@ -362,6 +390,18 @@ earlier sections have dates only. Agent versions are separate and listed under [
 
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
+
+**1.9.0 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
+- Includes 1.8.0. Session Panel files. The agent never opens a path the customer names: the tray reads the
+  customer's file and passes it to the agent in 32 KB chunks over the pipe (`fileSend`, `fileChunk`, `fileCancel`),
+  and the agent streams it to the server. Files for the customer are downloaded into
+  `C:\ProgramData\DigitalFingers\session-files` (SYSTEM and Administrators only), checked against their SHA-256,
+  scanned with `MpCmdRun -Scan -ScanType 3 -File` and handed to the tray in chunks when the customer saves them
+  (`fileRead`, `fileAccept`, `fileDecline`, `fileError`). Copies are deleted when the customer answers or the session
+  ends; an upload stops if the tray closes or stalls for 90 seconds.
+- Support app 1.2.0: a **Files** section in the panel with Send a file…, drag and drop, progress and Cancel, Save and
+  Decline (programs and scripts ask again), Open folder, and a red number for files waiting to be saved (also on the
+  collapsed tab and the tray icon, tooltip "N files to accept").
 
 **1.8.0 (Windows), 12 Nov, pilot only (POS-3316E-Setup), not published**
 - Includes 1.7.2. While a session is live on a tenant that shows the panel, keeps one long-poll open to

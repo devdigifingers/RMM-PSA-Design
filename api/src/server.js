@@ -52,6 +52,21 @@ import {
   technicianChatSession,
   waitChatState,
 } from "./session-chat.js";
+import {
+  claimFileLog,
+  createFile,
+  expireFiles,
+  FILE_KEEP_DAYS,
+  fileLogDetail,
+  fileOffer,
+  filePath,
+  fileRow,
+  fileView,
+  receiveUpload,
+  setFileScan,
+  setFileStatus,
+  unloggedFiles,
+} from "./session-files.js";
 import { handleApiTokens, handleTokenApi } from "./api-tokens.js";
 import { handleScripts } from "./scripts.js";
 import { handlePublicBilling } from "./billing/documents.js";
@@ -2218,6 +2233,54 @@ function laterDropMeshSession(deviceId, orgId) {
   setTimeout(() => {
     dropMeshSession(deviceId, orgId).catch((error) => console.error(`panel drop: ${error.message}`));
   }, 4000);
+}
+
+async function sendSessionFile(res, file) {
+  let path;
+  try {
+    path = filePath(file);
+    await stat(path);
+  } catch {
+    return send(res, 410, { error: "That file is no longer stored." });
+  }
+  res.writeHead(200, {
+    "content-type": "application/octet-stream",
+    "content-length": String(file.size_bytes),
+    "content-disposition": contentDisposition(file.file_name, false),
+    "cache-control": "private, no-store",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+  });
+  createReadStream(path).pipe(res);
+}
+
+let fileLogRunning = false;
+
+// Puts each finished Session Panel file transfer on the device and ticket timelines: name, size, direction, hash.
+async function logFinishedFiles() {
+  if (fileLogRunning) return;
+  fileLogRunning = true;
+  try {
+    for (const id of await unloggedFiles(pool)) {
+      const row = await claimFileLog(pool, id);
+      if (!row || (row.status === "cancelled" && !row.sha256)) continue;
+      const orgId = Number(row.org_id);
+      const actorId = row.session_user_id == null ? null : Number(row.session_user_id);
+      const detail = fileLogDetail(row);
+      await writeAudit(orgId, actorId, "remote.file", "device", row.device_id == null ? null : String(row.device_id), {
+        ...detail,
+        ...(row.ticket_id == null ? {} : { ticketId: Number(row.ticket_id) }),
+      });
+      if (row.ticket_id != null) {
+        await ticketEvent(orgId, row.ticket_id, "remote_file", {
+          actorId,
+          detail: { ...detail, ...(row.device_id == null ? {} : { deviceId: Number(row.device_id) }) },
+        });
+      }
+    }
+  } finally {
+    fileLogRunning = false;
+  }
 }
 
 // Puts each finished Session Panel chat on the device and ticket timelines as one entry with the message count.
@@ -6286,6 +6349,79 @@ const server = createServer(async (req, res) => {
       return send(res, 201, { message });
     }
 
+    // Session Panel files, relayed by the device agent: the customer's files to the technician (POST offers, PUT
+    // .../content uploads) and the technician's files to the customer (GET .../content downloads, POST .../:id
+    // reports the scan, accept, decline or failure). Only a live session on this device in its own tenant.
+    const agentFilesMatch = url.pathname.match(/^\/v1\/agent\/support\/files(?:\/(\d+)(\/content)?)?$/);
+    if (agentFilesMatch) {
+      const device = await deviceFrom(req);
+      if (!device) return send(res, 401, { error: "Device login required." });
+      const [, fileId, content] = agentFilesMatch;
+      const body = req.method === "POST" ? await readJson(req) : {};
+      const sessionId = Number(req.method === "POST" ? body.sessionId : url.searchParams.get("session"));
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) return send(res, 400, { error: "Which session?" });
+      const session = await deviceSession(pool, sessionId, device.id, device.org_id);
+      if (!session) return send(res, 404, { error: "That session has ended." });
+      if (!fileId && req.method === "POST") {
+        const org = await pool.query("SELECT panel_options FROM orgs WHERE id = $1", [device.org_id]);
+        const offer = fileOffer(body, "to_technician", org.rows[0]?.panel_options);
+        if (offer.error) return send(res, offer.tooLarge ? 413 : 400, { error: offer.error });
+        const user = typeof body.user === "string" ? body.user.replace(/[\r\n\t]+/g, " ").trim().slice(0, 80) : "";
+        const file = await createFile(pool, {
+          orgId: device.org_id, sessionId: session.id, direction: "to_technician", senderName: user || "Customer", offer: offer.value,
+        });
+        if (!file) return send(res, 409, { error: "That session has ended." });
+        return send(res, 201, { file: fileView(file) });
+      }
+      if (!fileId) return send(res, 405, { error: "Method not allowed." });
+      const file = await fileRow(pool, { orgId: device.org_id, sessionId: session.id, fileId });
+      if (!file) return send(res, 404, { error: "That file was not found." });
+      if (content && req.method === "PUT") {
+        if (file.direction !== "to_technician") return send(res, 404, { error: "That file was not found." });
+        try {
+          const saved = await receiveUpload(pool, req, file);
+          logFinishedFiles().catch(() => {});
+          return send(res, 200, { file: saved ? fileView(saved) : null });
+        } catch (error) {
+          logFinishedFiles().catch(() => {});
+          return send(res, error.status || 500, { error: error.status ? error.message : "The file could not be saved." });
+        }
+      }
+      if (content && req.method === "GET") {
+        if (file.direction !== "to_customer" || file.status !== "offered" || file.deleted_at) {
+          return send(res, 404, { error: "That file is no longer offered." });
+        }
+        return sendSessionFile(res, file);
+      }
+      if (!content && req.method === "POST") {
+        const action = String(body.action || "");
+        const detail = typeof body.detail === "string" ? body.detail.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200) : null;
+        let saved = null;
+        if (action === "scan" && ["clean", "threat", "unavailable"].includes(body.scan)) {
+          saved = await setFileScan(pool, { orgId: device.org_id, fileId: file.id, scan: body.scan });
+          if (saved && body.scan === "threat") {
+            saved = await setFileStatus(pool, {
+              orgId: device.org_id, fileId: file.id, from: ["offered"], to: "failed", detail: "Windows Defender found a threat in this file.",
+            });
+          }
+        } else if (action === "accept" && file.direction === "to_customer" && file.scan !== "threat") {
+          saved = await setFileStatus(pool, { orgId: device.org_id, fileId: file.id, from: ["offered"], to: "accepted", detail: detail || "" });
+        } else if (action === "decline" && file.direction === "to_customer") {
+          saved = await setFileStatus(pool, { orgId: device.org_id, fileId: file.id, from: ["offered"], to: "declined", detail: "Declined by the customer." });
+        } else if (action === "cancel" && file.direction === "to_technician") {
+          saved = await setFileStatus(pool, { orgId: device.org_id, fileId: file.id, from: ["uploading"], to: "cancelled", detail: "Cancelled by the customer." });
+        } else if (action === "fail") {
+          saved = await setFileStatus(pool, { orgId: device.org_id, fileId: file.id, from: ["uploading", "offered"], to: "failed", detail: detail || "The transfer failed." });
+        } else {
+          return send(res, 400, { error: "Unknown action." });
+        }
+        if (!saved) return send(res, 409, { error: "That file has already finished." });
+        logFinishedFiles().catch(() => {});
+        return send(res, 200, { file: fileView(saved) });
+      }
+      return send(res, 405, { error: "Method not allowed." });
+    }
+
     if (req.method === "POST" && url.pathname === "/v1/agent/support/event") {
       const device = await deviceFrom(req);
       if (!device) return send(res, 401, { error: "Device login required." });
@@ -7678,7 +7814,13 @@ const server = createServer(async (req, res) => {
         const state = await waitChatState(pool, {
           orgId: actor.org_id, sessionId: row.id, side: "technician", cursor: chatCursor(url.searchParams), req,
         });
-        return send(res, 200, { ...state, panel, ended: row.ended_by != null });
+        const options = panelOptions(row.panel_options);
+        return send(res, 200, {
+          ...state,
+          panel,
+          ended: row.ended_by != null,
+          fileRules: { toCustomer: options.filesToCustomer, maxMb: options.fileMaxMb, executables: options.executables },
+        });
       }
       const input = chatInput(await readJson(req));
       if (input.error) return send(res, 400, { error: input.error });
@@ -7696,6 +7838,64 @@ const server = createServer(async (req, res) => {
       });
       if (!message) return send(res, 409, { error: "The session has ended." });
       return send(res, 201, { message });
+    }
+
+    // Sending a file to the customer's Session Panel: POST offers it (name, size, type), PUT .../content uploads the
+    // bytes, POST .../:fileId cancels it. Only the technician's own session, and only while the panel is ready.
+    const sessionFilesMatch = url.pathname.match(/^\/v1\/devices\/(\d+)\/session-files(?:\/(\d+)(\/content)?)?$/);
+    if (sessionFilesMatch && (req.method === "POST" || req.method === "PUT")) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const row = await technicianChatSession(pool, { deviceId: sessionFilesMatch[1], orgId: actor.org_id, userId: actor.id });
+      if (!row) return send(res, 404, { error: "There is no remote session on this device." });
+      if (row.ended_by != null) return send(res, 409, { error: "The customer ended the session." });
+      const [, , fileId, content] = sessionFilesMatch;
+      if (!fileId && req.method === "POST") {
+        if (!(panelOptions(row.panel_options).enabled && row.support_panel?.state === "ready")) {
+          return send(res, 409, { error: "The Session Panel isn't running on this computer. Use Files instead." });
+        }
+        const offer = fileOffer(await readJson(req), "to_customer", row.panel_options);
+        if (offer.error) return send(res, offer.tooLarge ? 413 : 400, { error: offer.error });
+        const file = await createFile(pool, {
+          orgId: actor.org_id, sessionId: row.id, direction: "to_customer", userId: actor.id, senderName: actor.name || actor.email, offer: offer.value,
+        });
+        if (!file) return send(res, 409, { error: "The session has ended." });
+        return send(res, 201, { file: fileView(file), warn: offer.value.warn });
+      }
+      if (!fileId) return send(res, 405, { error: "Method not allowed." });
+      const file = await fileRow(pool, { orgId: actor.org_id, sessionId: row.id, fileId });
+      if (!file || file.direction !== "to_customer" || String(file.user_id) !== String(actor.id)) {
+        return send(res, 404, { error: "That file was not found." });
+      }
+      if (content && req.method === "PUT") {
+        try {
+          const saved = await receiveUpload(pool, req, file);
+          return send(res, 200, { file: saved ? fileView(saved) : null });
+        } catch (error) {
+          logFinishedFiles().catch(() => {});
+          return send(res, error.status || 500, { error: error.status ? error.message : "The file could not be saved." });
+        }
+      }
+      if (!content && req.method === "POST") {
+        const body = await readJson(req);
+        if (body.action !== "cancel") return send(res, 400, { error: "Unknown action." });
+        const saved = await setFileStatus(pool, { orgId: actor.org_id, fileId: file.id, from: ["uploading", "offered"], to: "cancelled", detail: "Cancelled by the technician." });
+        if (!saved) return send(res, 409, { error: "That file can no longer be cancelled." });
+        logFinishedFiles().catch(() => {});
+        return send(res, 200, { file: fileView(saved) });
+      }
+      return send(res, 405, { error: "Method not allowed." });
+    }
+
+    // Downloading a file sent during a session, from the session window or a timeline, within the tenant.
+    const sessionFileContentMatch = url.pathname.match(/^\/v1\/remote-session-files\/(\d+)\/content$/);
+    if (req.method === "GET" && sessionFileContentMatch) {
+      if (!requireActor(actor, res)) return;
+      if (!actor.org_id) return send(res, 403, { error: "This account is not in an org." });
+      const file = await fileRow(pool, { orgId: actor.org_id, fileId: sessionFileContentMatch[1] });
+      if (!file || !["delivered", "offered", "accepted"].includes(file.status)) return send(res, 404, { error: "That file was not found." });
+      if (file.deleted_at) return send(res, 410, { error: `Files from remote sessions are kept for ${FILE_KEEP_DAYS} days. This one has been deleted.` });
+      return sendSessionFile(res, file);
     }
 
     // The saved conversation of one remote session, for the timeline.
@@ -10662,6 +10862,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
+// Session Panel files (up to 100 MB) can take longer than Node's default 5 minutes on a slow line.
+server.requestTimeout = 30 * 60000;
+
 server.listen(port, "127.0.0.1", () => {
   console.log(`df-api listening on 127.0.0.1:${port}`);
   setInterval(() => {
@@ -10672,6 +10875,11 @@ server.listen(port, "127.0.0.1", () => {
     enforcePauses();
   }, 15000);
   setInterval(() => logFinishedChats().catch((error) => console.error(`chat timeline: ${error.message}`)), 60000);
+  setInterval(() => {
+    expireFiles(pool)
+      .then(() => logFinishedFiles())
+      .catch((error) => console.error(`session files: ${error.message}`));
+  }, 5 * 60000);
   setTimeout(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 60000);
   setInterval(() => syncAllPanelConsent().catch((error) => console.error(`panel consent: ${error.message}`)), 600000);
   runDueExports();

@@ -5,6 +5,7 @@ import { ConsoleBar } from "../../bar";
 import { RemoteActions } from "../../devices/remote-actions";
 import { AppTitle } from "../../mark";
 import { ChatTranscript } from "../../timeline/chat-transcript";
+import { SessionFileLinks } from "../../timeline/session-file-links";
 import { DeviceOptions, deviceGroups } from "../device-options";
 import { fileExtension, fileSize, formatWhen, workTime } from "../format";
 import { CHANNEL_CHOICES, dueInputValue, dueLabel, PRIORITY_KEYS, StatusOptions, statusValue } from "../ticket-fields";
@@ -424,6 +425,7 @@ function TimelineEntry({ item }) {
       ) : null}
       {item.kind === "time" && item.note ? <p className="timeline-body">{item.note}</p> : null}
       {item.kind === "remote_chat" && item.chatSessionId ? <p className="timeline-body"><ChatTranscript sessionId={item.chatSessionId} /></p> : null}
+      {item.kind === "remote_file" ? <SessionFileLinks fileId={item.fileId} download={item.download} sha256={item.sha256} /> : null}
     </li>
   );
 }
@@ -514,6 +516,8 @@ function eventLine(item) {
       return `remote session ended after about ${workTime(item.minutes)}`;
     case "remote_chat":
       return `chatted with the customer during the remote session (${item.messages} message${item.messages === 1 ? "" : "s"})`;
+    case "remote_file":
+      return item.summary || "sent a file during the remote session";
     case "command":
       return "ran a command";
     case "command_result":

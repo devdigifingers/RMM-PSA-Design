@@ -13,7 +13,13 @@ const OPTION_DEFAULTS = Object.freeze({
   silentServers: true,
   phone: "",
   email: "",
+  filesToTechnician: true,
+  filesToCustomer: true,
+  fileMaxMb: 100,
+  executables: "warn",
 });
+export const FILE_MAX_MB_LIMIT = 100;
+export const EXECUTABLE_RULES = ["warn", "block", "allow"];
 
 function oneLine(value, max) {
   return typeof value === "string" ? value.replace(/[\r\n\t]+/g, " ").trim().slice(0, max) : "";
@@ -36,13 +42,28 @@ export function panelOptions(raw) {
     silentServers: flag("silentServers"),
     phone: oneLine(value.phone, 40),
     email: oneLine(value.email, 120),
+    filesToTechnician: flag("filesToTechnician"),
+    filesToCustomer: flag("filesToCustomer"),
+    fileMaxMb: Number.isInteger(value.fileMaxMb) && value.fileMaxMb >= 1 && value.fileMaxMb <= FILE_MAX_MB_LIMIT
+      ? value.fileMaxMb
+      : OPTION_DEFAULTS.fileMaxMb,
+    executables: EXECUTABLE_RULES.includes(value.executables) ? value.executables : OPTION_DEFAULTS.executables,
   };
 }
 
 export function panelOptionsInput(body, current) {
   const next = { ...panelOptions(current) };
-  for (const key of ["enabled", "showToTechnician", "silentWorkstations", "silentServers"]) {
+  for (const key of ["enabled", "showToTechnician", "silentWorkstations", "silentServers", "filesToTechnician", "filesToCustomer"]) {
     if (body?.[key] !== undefined) next[key] = body[key] === true;
+  }
+  if (body?.fileMaxMb !== undefined) {
+    const size = Number(body.fileMaxMb);
+    if (!Number.isInteger(size) || size < 1 || size > FILE_MAX_MB_LIMIT) return { error: `The largest file can be 1 to ${FILE_MAX_MB_LIMIT} MB.` };
+    next.fileMaxMb = size;
+  }
+  if (body?.executables !== undefined) {
+    if (!EXECUTABLE_RULES.includes(body.executables)) return { error: "Choose how to handle programs and scripts." };
+    next.executables = body.executables;
   }
   if (body?.phone !== undefined) {
     const phone = oneLine(body.phone, 60);
@@ -110,6 +131,12 @@ export function panelSessionView(row, options) {
     company: oneLine(row.org_name, 120),
     ticket: row.ticket_id == null ? null : { id: Number(row.ticket_id), subject: oneLine(row.ticket_subject, 160) },
     showToTechnician: panelOptions(options).showToTechnician,
+    files: {
+      toTechnician: panelOptions(options).filesToTechnician,
+      toCustomer: panelOptions(options).filesToCustomer,
+      maxMb: panelOptions(options).fileMaxMb,
+      executables: panelOptions(options).executables,
+    },
   };
 }
 

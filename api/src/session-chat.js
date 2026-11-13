@@ -2,7 +2,8 @@
 // Messages are stored with the session; every query is scoped by the tenant, and the technician's side also by the
 // technician, so nobody outside the session can read or write it. Long-polls wait on in-process wake-ups; the
 // database stays the source of truth, so a missed wake-up only delays a message until the next poll.
-import { EventEmitter } from "node:events";
+import { waitForSession, wakeSession } from "./session-bus.js";
+import { filesRevision, sessionFiles } from "./session-files.js";
 
 export const CHAT_MAX = 2000;
 export const CHAT_WAIT_MS = 25000;
@@ -32,10 +33,12 @@ export function chatCursor(query) {
     const parsed = Number(value);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
   };
+  const files = query.get("files") || "";
   return {
     after: number(query.get("after")),
     typing: query.get("typing") === "1",
     read: number(query.get("read")),
+    files: /^[0-9a-z.-]{1,60}$/.test(files) ? files : "",
     wait: query.get("wait") === "1",
   };
 }
@@ -50,13 +53,8 @@ export function messageView(row) {
   };
 }
 
-const bus = new EventEmitter();
-bus.setMaxListeners(0);
 const typingUntil = new Map();
-
-function wake(sessionId) {
-  bus.emit(String(sessionId));
-}
+const wake = wakeSession;
 
 export function setTyping(sessionId, side, on, now = Date.now()) {
   const key = `${sessionId}:${side}`;
@@ -73,21 +71,7 @@ export function isTyping(sessionId, side, now = Date.now()) {
   return until > now;
 }
 
-// Resolves when the session's chat changes, after ms, or when the request closes, whichever is first.
-export function waitForChat(sessionId, ms, req = null) {
-  return new Promise((resolve) => {
-    const key = String(sessionId);
-    const done = () => {
-      clearTimeout(timer);
-      bus.off(key, done);
-      req?.off?.("close", done);
-      resolve();
-    };
-    const timer = setTimeout(done, ms);
-    bus.on(key, done);
-    req?.on?.("close", done);
-  });
-}
+export const waitForChat = waitForSession;
 
 // The technician's current session on a device: their own, in their own tenant, from the last 12 hours.
 export async function technicianChatSession(db, { deviceId, orgId, userId }) {
@@ -134,7 +118,7 @@ export async function markRead(db, { orgId, sessionId, side, id }) {
 
 // What one side sees: messages after its cursor, whether the other side is typing, and how far the other side read.
 export async function chatState(db, { orgId, sessionId, side, after = 0 }) {
-  const [messages, marks] = await Promise.all([
+  const [messages, marks, files] = await Promise.all([
     db.query(
       `SELECT id, sender, sender_name, body, created_at FROM remote_session_messages
        WHERE session_id = $1 AND org_id = $2 AND id > $3
@@ -143,6 +127,7 @@ export async function chatState(db, { orgId, sessionId, side, after = 0 }) {
       [sessionId, orgId, after],
     ),
     db.query("SELECT chat_read_technician, chat_read_customer FROM remote_sessions WHERE id = $1 AND org_id = $2", [sessionId, orgId]),
+    sessionFiles(db, { orgId, sessionId }),
   ]);
   const row = marks.rows[0] || {};
   const read = side === "technician" ? row.chat_read_customer : row.chat_read_technician;
@@ -151,13 +136,16 @@ export async function chatState(db, { orgId, sessionId, side, after = 0 }) {
     messages: messages.rows.map(messageView),
     typing: isTyping(sessionId, other(side)),
     read: read == null ? 0 : Number(read),
+    files,
+    filesRev: filesRevision(files),
   };
 }
 
 // chatState, held open up to CHAT_WAIT_MS while nothing the caller doesn't already know has changed.
 export async function waitChatState(db, { orgId, sessionId, side, cursor, req = null, waitMs = CHAT_WAIT_MS }) {
   const state = await chatState(db, { orgId, sessionId, side, after: cursor.after });
-  const unchanged = !state.messages.length && state.typing === cursor.typing && state.read === cursor.read;
+  const unchanged = !state.messages.length && state.typing === cursor.typing && state.read === cursor.read
+    && state.filesRev === (cursor.files || "0");
   if (!cursor.wait || !unchanged) return state;
   await waitForChat(sessionId, waitMs, req);
   return chatState(db, { orgId, sessionId, side, after: cursor.after });

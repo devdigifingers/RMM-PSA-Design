@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -569,7 +570,16 @@ type pipeRequest struct {
 	Text      string `json:"text"`
 	Typing    *bool  `json:"typing"`
 	Read      int64  `json:"read"`
+	// Session Panel files: an offer (name, size, type), a chunk at an offset, or an answer about one file.
+	FileID      int64  `json:"fileId"`
+	Offset      int64  `json:"offset"`
+	Data        []byte `json:"data"`
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"contentType"`
 }
+
+var trayConns atomic.Uint64
 
 // serveTray answers one tray app. The client must be our DFSupport.exe, in the session it was started in, holding
 // the key it was started with. Each request gets one JSON line back.
@@ -587,6 +597,8 @@ func serveTray(handle windows.Handle) {
 	reader := bufio.NewReaderSize(file, 64<<10)
 	writer := json.NewEncoder(file)
 	greeted := false
+	conn := trayConns.Add(1)
+	defer fileTrayGone(conn)
 	for {
 		line, err := reader.ReadSlice('\n')
 		if err != nil {
@@ -627,6 +639,8 @@ func serveTray(handle windows.Handle) {
 			reply = trayEvent(session, req)
 		case "chat":
 			reply = trayChat(session, req)
+		case "fileSend", "fileChunk", "fileCancel", "fileRead", "fileAccept", "fileDecline", "fileError":
+			reply = trayFile(conn, session, req)
 		default:
 			reply = map[string]any{"ok": false, "error": "unknown request"}
 		}
@@ -654,6 +668,7 @@ func trayState(session uint32, chatAfter int64) map[string]any {
 		out["session"] = info.Session
 		if info.Panel {
 			out["chat"] = chatView(keys.ID, chatAfter)
+			out["files"] = filesView(keys.ID)
 		}
 	}
 	return out

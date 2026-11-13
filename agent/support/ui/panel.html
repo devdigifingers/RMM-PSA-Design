@@ -84,6 +84,27 @@ body.collapsed #panel{display:none}
 .chat-err:empty{display:none}
 .count{text-align:right;margin-top:2px}
 .count:empty{display:none}
+.files[hidden]{display:none}
+.files.shut .chat-body{display:none}
+.files.shut .chat-head .chev{transform:rotate(-90deg)}
+.flist{max-height:190px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;scrollbar-width:thin}
+.file{border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:var(--soft)}
+.file.offer{border-color:#7C3AED;box-shadow:0 0 0 1px rgba(124,58,237,.25)}
+.file b{display:block;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file .small{display:block}
+.file .warn{color:#b45309}
+.file .bad{color:#dc2626}
+.file .bar{height:4px;border-radius:2px;background:var(--line);margin-top:5px;overflow:hidden}
+.file .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#22D3EE,#7C3AED)}
+.file .acts{display:flex;gap:6px;margin-top:6px}
+.file .acts button{border:1px solid var(--chip);background:var(--bg);color:var(--ink);border-radius:6px;padding:3px 9px;font-size:12px}
+.file .acts button.go{background:#5B21B6;border-color:#5B21B6;color:#fff}
+.fsend{display:flex;align-items:center;gap:8px;margin-top:8px}
+.fsend button{border:1px solid var(--chip);background:none;color:var(--ink);border-radius:6px;padding:4px 10px;font-size:12px}
+.fsend .small{flex:1}
+.fsend[hidden]{display:none}
+.drop{position:fixed;inset:0;z-index:8;display:none;align-items:center;justify-content:center;padding:16px;background:rgba(91,33,182,.9);color:#fff;font-size:14px;font-weight:600;text-align:center;pointer-events:none}
+body.dropping .drop{display:flex}
 </style>
 </head>
 <body>
@@ -136,6 +157,18 @@ body.collapsed #panel{display:none}
       <div class="small count" id="chatCount"></div>
     </div>
   </div>
+  <div class="sec chat files" id="files" hidden>
+    <h4><button class="chat-head" id="filesHead" aria-expanded="true" aria-controls="filesBody">Files <span class="badge" id="filesBadge" hidden></span><span class="chev">▾</span></button></h4>
+    <div class="chat-body" id="filesBody">
+      <div class="flist" id="fileList"></div>
+      <div class="fsend" id="fileSendRow">
+        <button id="fileSend" title="Send a file to your technician">Send a file…</button>
+        <span class="small" id="fileHint">or drag one here</span>
+      </div>
+      <div class="chat-err" id="fileErr" role="alert"></div>
+      <input type="file" id="fileInput" multiple hidden>
+    </div>
+  </div>
   <div class="ftr">
     <span class="dot" id="ftrDot"></span>
     <span class="who" id="ftrWho">Connected</span>
@@ -144,6 +177,7 @@ body.collapsed #panel{display:none}
     <button class="end" id="end">End</button>
   </div>
 </div>
+<div class="drop" id="drop">Drop to send to your technician</div>
 <div class="shade" id="shade" role="dialog" aria-modal="true" aria-labelledby="boxTitle">
   <div class="box">
     <h3 id="boxTitle"></h3>
@@ -342,13 +376,293 @@ body.collapsed #panel{display:none}
     $("chatText").disabled = !ready;
     $("chatSend").disabled = !ready || chat.sending || !$("chatText").value.trim();
     markRead();
-    const count = unread();
-    for (const id of ["chatBadge", "tabBadge"]) {
-      $(id).hidden = count === 0;
-      $(id).textContent = count > 9 ? "9+" : String(count);
-    }
-    $("tab").title = count ? `${count} new message${count === 1 ? "" : "s"} from your technician` : "Show the Digital Fingers Remote Support panel";
+    badges();
   }
+
+  function setBadge(id, count) {
+    $(id).hidden = count === 0;
+    $(id).textContent = count > 9 ? "9+" : String(count);
+  }
+
+  function badges() {
+    const messages = chat.on ? unread() : 0;
+    const offers = waitingFiles().length;
+    setBadge("chatBadge", messages);
+    setBadge("filesBadge", offers);
+    setBadge("tabBadge", messages + offers);
+    const parts = [];
+    if (messages) parts.push(`${messages} new message${messages === 1 ? "" : "s"}`);
+    if (offers) parts.push(`${offers} file${offers === 1 ? "" : "s"} to accept`);
+    $("tab").title = parts.length ? `${parts.join(" and ")} from your technician` : "Show the Digital Fingers Remote Support panel";
+  }
+
+  // Files. The tray sends the session's list (both ways); files from the technician are saved only after the
+  // customer clicks Save, and programs or scripts need a second click. Files to the technician are read here and
+  // sent to the tray in chunks, one at a time.
+  const CHUNK = 32768;
+  const files = { list: [], refs: new Map(), ref: 0, uploads: new Map(), saving: new Map(), offered: new Set() };
+
+  function techFirst() { return firstName(state?.session?.technician?.name); }
+  function fileRules() { return state?.session?.files || {}; }
+  function fileSize(bytes) {
+    if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(bytes >= 10485760 ? 0 : 1)} MB`;
+    if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} bytes`;
+  }
+  function waitingFiles() {
+    return files.list.filter((f) => f.direction === "to_customer" && f.status === "offered" && f.ready && !f.saved && !f.saving && !files.saving.has(f.id));
+  }
+
+  function ask(message) {
+    return new Promise((resolve) => {
+      const ref = ++files.ref;
+      files.refs.set(ref, resolve);
+      send({ ...message, ref });
+      setTimeout(() => {
+        if (!files.refs.has(ref)) return;
+        files.refs.delete(ref);
+        resolve({ ok: false, error: "The Support app didn't answer. Please try again." });
+      }, 180000);
+    });
+  }
+
+  function fileErr(text) {
+    $("fileErr").textContent = text || "";
+    fit();
+  }
+
+  function base64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let text = "";
+    for (let i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    return btoa(text);
+  }
+
+  async function sendFile(file) {
+    const rules = fileRules();
+    if (rules.toTechnician === false || !state?.session || lost) return;
+    const max = (rules.maxMb || 100) * 1048576;
+    if (!file.size) return fileErr(`"${file.name}" is empty.`);
+    if (file.size > max) return fileErr(`"${file.name}" is ${fileSize(file.size)}. Files can be up to ${rules.maxMb || 100} MB.`);
+    fileErr("");
+    const offer = await ask({ t: "fileSend", name: file.name, size: file.size, type: file.type || "" });
+    if (!offer.ok || !offer.file) return fileErr(offer.error || "The file wasn't sent. Please try again.");
+    const id = offer.file.id;
+    const up = { sent: 0, size: file.size, stop: false };
+    files.uploads.set(id, up);
+    if (!files.list.some((f) => f.id === id)) files.list.push(offer.file);
+    renderFiles();
+    let offset = 0;
+    while (offset < file.size && !up.stop) {
+      let data;
+      try {
+        data = base64(await file.slice(offset, offset + CHUNK).arrayBuffer());
+      } catch {
+        fileErr(`"${file.name}" couldn't be read. Is it still there?`);
+        await ask({ t: "fileCancel", fileId: id });
+        break;
+      }
+      const reply = await ask({ t: "fileChunk", fileId: id, offset, data });
+      if (!reply.ok) {
+        if (!up.stop) fileErr(reply.error || "The file wasn't sent. Please try again.");
+        break;
+      }
+      offset = Number(reply.sent) || offset + CHUNK;
+      up.sent = offset;
+      renderFiles();
+    }
+    files.uploads.delete(id);
+    renderFiles();
+  }
+
+  async function sendFiles(list) {
+    for (const file of list) await sendFile(file);
+  }
+
+  function cancelUpload(id) {
+    const up = files.uploads.get(id);
+    if (!up) return;
+    up.stop = true;
+    ask({ t: "fileCancel", fileId: id });
+  }
+
+  async function saveFile(f) {
+    if (files.saving.has(f.id)) return;
+    closeBox();
+    fileErr("");
+    files.saving.set(f.id, 0);
+    renderFiles();
+    const reply = await ask({ t: "fileAccept", fileId: f.id });
+    files.saving.delete(f.id);
+    if (!reply.ok) fileErr(reply.error || "The file wasn't saved. Please try again.");
+    else for (const item of files.list) if (item.id === f.id) item.saved = reply.name || f.name;
+    renderFiles();
+  }
+
+  function askSave(f) {
+    if (!(f.executable && fileRules().executables !== "allow")) return saveFile(f);
+    box(`Save a program from ${techFirst()}?`, [
+      `"${f.name}" is a program or script. Opening it can change your computer.`,
+      `Only save it if you were expecting it from ${techFirst()}. Windows still checks it before it runs.`,
+    ], [["Cancel", "chip", closeBox], ["Save anyway", "end", () => saveFile(f)]]);
+    $("boxActs").firstChild?.focus();
+  }
+
+  function declineFile(f) {
+    fileErr("");
+    ask({ t: "fileDecline", fileId: f.id }).then((reply) => { if (!reply.ok) fileErr(reply.error || "That didn't work."); });
+  }
+
+  function fileLine(f) {
+    const size = fileSize(f.size);
+    const up = files.uploads.get(f.id);
+    if (f.direction === "to_technician") {
+      if (up) return { text: `Sending · ${Math.floor((up.sent / up.size) * 100)}% of ${size}`, bar: up.sent / up.size };
+      if (f.status === "uploading") return { text: "Sending…" };
+      if (f.status === "delivered") return { text: `${size} · Sent to ${techFirst()}` };
+      if (f.status === "cancelled") return { text: "Cancelled" };
+      return { text: `Not sent${f.detail ? `: ${f.detail}` : ""}`, cls: "bad" };
+    }
+    if (f.saved) return { text: `Saved in Downloads › Digital Fingers` };
+    if (files.saving.has(f.id) || f.saving) {
+      const done = files.saving.get(f.id) || 0;
+      return { text: `Saving · ${Math.floor((done / Math.max(1, f.size)) * 100)}%`, bar: done / Math.max(1, f.size) };
+    }
+    if (f.status === "offered") {
+      if (!f.ready) return { text: `${size} from ${techFirst()} · ${f.scan ? "Getting it ready…" : "Checking it for viruses…"}` };
+      let text = `${size} from ${techFirst()}`;
+      if (f.scan === "unavailable") text += " · Not scanned: Windows Defender isn't checking this computer";
+      return { text, cls: f.executable && fileRules().executables !== "allow" ? "warn" : "", warn: f.executable && fileRules().executables !== "allow" };
+    }
+    if (f.status === "accepted") return { text: `${size} · Saved` };
+    if (f.status === "declined") return { text: "Declined" };
+    if (f.status === "cancelled") return { text: `Cancelled by ${techFirst()}` };
+    return { text: `Not received${f.detail ? `: ${f.detail}` : ""}`, cls: "bad" };
+  }
+
+  function renderFiles() {
+    const rules = fileRules();
+    const show = !!state?.session && (rules.toTechnician !== false || files.list.length > 0);
+    $("files").hidden = !show;
+    badges();
+    if (!show) return;
+    const list = $("fileList");
+    list.replaceChildren(...files.list.slice().reverse().map((f) => {
+      const item = document.createElement("div");
+      const line = fileLine(f);
+      const waiting = f.direction === "to_customer" && f.status === "offered" && !f.saved && !f.saving && !files.saving.has(f.id);
+      item.className = "file" + (waiting && f.ready ? " offer" : "");
+      const name = document.createElement("b");
+      name.textContent = `${f.direction === "to_technician" ? "↑" : "↓"} ${f.name}`;
+      name.title = f.name;
+      const meta = document.createElement("span");
+      meta.className = "small" + (line.cls ? ` ${line.cls}` : "");
+      meta.textContent = line.warn ? `${line.text} · Program or script` : line.text;
+      item.append(name, meta);
+      if (line.bar != null) {
+        const bar = document.createElement("div");
+        bar.className = "bar";
+        const fill = document.createElement("i");
+        fill.style.width = `${Math.min(100, Math.max(0, line.bar * 100))}%`;
+        bar.append(fill);
+        item.append(bar);
+      }
+      const acts = document.createElement("div");
+      acts.className = "acts";
+      const button = (label, run, cls) => {
+        const b = document.createElement("button");
+        b.textContent = label;
+        if (cls) b.className = cls;
+        b.onclick = run;
+        acts.append(b);
+      };
+      if (files.uploads.has(f.id)) button("Cancel", () => cancelUpload(f.id));
+      if (waiting) {
+        if (f.ready) button("Save", () => askSave(f), "go");
+        button("Decline", () => declineFile(f));
+      }
+      if (f.saved) button("Open folder", () => send({ t: "fileOpen", fileId: f.id }));
+      if (acts.childElementCount) item.append(acts);
+      return item;
+    }));
+    if (!files.list.length) {
+      const p = document.createElement("p");
+      p.className = "small empty";
+      p.textContent = `Need to show ${techFirst()} a file? Send it here.`;
+      list.replaceChildren(p);
+    }
+    const canSend = rules.toTechnician !== false && !lost;
+    $("fileSendRow").hidden = !canSend;
+    $("fileSend").disabled = !canSend;
+    $("fileHint").textContent = `or drag one here · up to ${rules.maxMb || 100} MB`;
+    fit();
+  }
+
+  window.dfFiles = (message) => {
+    const saved = new Map(files.list.filter((f) => f.saved).map((f) => [f.id, f.saved]));
+    files.list = Array.isArray(message?.files) ? message.files : [];
+    let fresh = false;
+    for (const f of files.list) {
+      if (!f.saved && saved.has(f.id)) f.saved = saved.get(f.id);
+      if (f.direction === "to_customer" && f.status === "offered" && !files.offered.has(f.id)) {
+        files.offered.add(f.id);
+        fresh = true;
+      }
+    }
+    if (fresh) {
+      $("files").classList.remove("shut");
+      if (!document.body.classList.contains("collapsed")) setTimeout(fit, 0);
+    }
+    renderFiles();
+  };
+  window.dfFileEvent = (message) => {
+    if (message?.t === "fileProgress") {
+      files.saving.set(message.fileId, Number(message.done) || 0);
+      renderFiles();
+      return;
+    }
+    const resolve = files.refs.get(message?.ref);
+    if (resolve) {
+      files.refs.delete(message.ref);
+      resolve(message);
+    }
+  };
+
+  $("filesHead").onclick = () => {
+    const shut = $("files").classList.toggle("shut");
+    $("filesHead").setAttribute("aria-expanded", String(!shut));
+    fit();
+  };
+  $("fileSend").onclick = () => $("fileInput").click();
+  $("fileInput").onchange = (e) => {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";
+    sendFiles(picked);
+  };
+  // A file dropped anywhere on the panel is sent; the page itself never opens a dropped file.
+  let dragDepth = 0;
+  const canDrop = () => fileRules().toTechnician !== false && !!state?.session && !lost && !document.body.classList.contains("collapsed");
+  document.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    if (canDrop() && e.dataTransfer?.types?.includes("Files")) {
+      dragDepth++;
+      document.body.classList.add("dropping");
+    }
+  });
+  document.addEventListener("dragleave", () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) document.body.classList.remove("dropping");
+  });
+  document.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = canDrop() ? "copy" : "none";
+  });
+  document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove("dropping");
+    if (canDrop() && e.dataTransfer?.files?.length) sendFiles(Array.from(e.dataTransfer.files));
+  });
 
   function sendTyping(on) {
     if (on && chat.typingSent && Date.now() - chat.typedAt < 4000) return;
@@ -430,8 +744,9 @@ body.collapsed #panel{display:none}
     if (!message?.session) closeBox();
     render();
     renderChat();
+    renderFiles();
   };
-  window.dfLink = (up) => { lost = !up; render(); renderChat(); };
+  window.dfLink = (up) => { lost = !up; render(); renderChat(); renderFiles(); };
   window.dfResult = (message) => {
     busy = false;
     if (message?.ok) {

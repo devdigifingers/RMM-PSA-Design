@@ -114,7 +114,7 @@ func runPanel() error {
 
 	// Only touched on the window's thread: Bind callbacks, Dispatch and the window procedure.
 	height, collapsed, at := 360, false, loadPlace()
-	loaded, lastState := false, ""
+	loaded, lastState, lastFiles := false, "", ""
 	var pendingChat []string
 	chromium := chromiumOf(view)
 	if chromium == nil {
@@ -179,12 +179,15 @@ func runPanel() error {
 				view.Eval("window.dfChat(" + chat + ")")
 			}
 			pendingChat = nil
+			if lastFiles != "" {
+				view.Eval("window.dfFiles(" + lastFiles + ")")
+			}
 			link.send(map[string]any{"t": "opened", "hiddenFromCapture": hidden})
 		case "link":
 			if target, ok := message["href"].(string); ok && safeLink(target) {
 				openLink(target)
 			}
-		case "event", "chat", "chatTyping", "chatRead":
+		case "event", "chat", "chatTyping", "chatRead", "fileSend", "fileChunk", "fileCancel", "fileAccept", "fileDecline", "fileOpen":
 			link.send(message)
 		}
 	})
@@ -245,6 +248,15 @@ func runPanel() error {
 				})
 			case "chatResult":
 				view.Dispatch(func() { view.Eval("window.dfChatResult && window.dfChatResult(" + payload + ")") })
+			case "files":
+				view.Dispatch(func() {
+					lastFiles = payload
+					if loaded {
+						view.Eval("window.dfFiles(" + payload + ")")
+					}
+				})
+			case "fileResult", "fileProgress":
+				view.Dispatch(func() { view.Eval("window.dfFileEvent && window.dfFileEvent(" + payload + ")") })
 			}
 		}
 	}()

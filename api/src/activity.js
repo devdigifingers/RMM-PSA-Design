@@ -1,4 +1,5 @@
 // The customer and device timeline: one append-only store that every feature writes to.
+import { formatSize } from "./session-files.js";
 
 // Which app a group belongs to decides who sees it: core is always shown, the others need the app in the package.
 export const ACTIVITY_GROUPS = {
@@ -27,7 +28,7 @@ const clip = (value, max = 160) => {
 
 // Ticket kinds that other events already record on the customer and device timeline (with the ticket linked).
 // They are stored for the ticket's own timeline and left out of the wider feeds.
-export const TICKET_ONLY_TYPES = ["ticket.command", "ticket.command_result", "ticket.remote_start", "ticket.remote_end", "ticket.remote_chat"];
+export const TICKET_ONLY_TYPES = ["ticket.command", "ticket.command_result", "ticket.remote_start", "ticket.remote_end", "ticket.remote_chat", "ticket.remote_file"];
 
 const TICKET_LINES = {
   created: () => "created the ticket",
@@ -56,12 +57,29 @@ const TICKET_LINES = {
   time_removed: (d) => `removed ${minutes(d.minutes)} of logged time`,
   remote_start: (d) => `started a remote session${d.user ? ` as ${d.user}` : ""}`,
   remote_end: (d) => (d.minutes ? `remote session ended after ${minutes(d.minutes)}` : "remote session ended"),
+  remote_file: (d) => fileLine(d),
   remote_chat: (d) => `chatted with the customer during the remote session (${d.messages || 0} message${d.messages === 1 ? "" : "s"})`,
   command: (d) => `ran a command${d.command ? `: ${clip(d.command, 120)}` : ""}`,
   command_result: (d) => `command finished with exit code ${d.exitCode ?? "?"}`,
 };
 
 // The ticket timeline lives in the same store: the event keeps the ticket's own detail as its payload.
+// One Session Panel file transfer, by direction and outcome.
+export function fileLine(d) {
+  const name = `"${clip(String(d.name || "a file"), 120)}"`;
+  const size = formatSize(d.size);
+  const why = d.detail ? ` (${clip(String(d.detail), 100)})` : "";
+  if (d.direction === "to_technician") {
+    if (d.outcome === "delivered") return `received ${name} (${size}) from the customer`;
+    if (d.outcome === "cancelled") return `${name} from the customer was cancelled`;
+    return `could not receive ${name} from the customer${why}`;
+  }
+  if (d.outcome === "accepted") return `sent ${name} (${size}) to the customer, who saved it`;
+  if (d.outcome === "declined") return `offered ${name} (${size}) to the customer, who declined it`;
+  if (d.outcome === "cancelled") return `cancelled sending ${name} to the customer`;
+  return `could not send ${name} to the customer${why}`;
+}
+
 export function activityFromTicketEvent(kind, detail = {}) {
   const line = TICKET_LINES[kind];
   const group = kind === "time" || kind === "time_removed" ? "time" : "tickets";
@@ -113,6 +131,7 @@ const AUDIT_EVENTS = {
     group: "remote",
     line: (d) => `chatted with the customer during a remote session (${d.messages || 0} message${d.messages === 1 ? "" : "s"})`,
   },
+  "remote.file": { group: "remote", line: (d) => fileLine(d) },
   "remote.panel_failed": {
     group: "remote",
     line: (d) => `could not show the Session Panel, so the connection strip is shown instead${d.detail ? ` (${d.detail})` : ""}`,
@@ -183,6 +202,11 @@ export function activityFromAudit({ action, targetType, targetId, detail = {}, a
   if (targetType === "alert") event.payload.alertId = id;
   if (action === "job.create" && d.kind) event.payload.kind = d.kind;
   if (action === "remote.chat" && Number.isSafeInteger(Number(d.sessionId))) event.payload.chatSessionId = Number(d.sessionId);
+  if (action === "remote.file" && Number.isSafeInteger(Number(d.fileId))) {
+    event.payload.sessionFileId = Number(d.fileId);
+    if (typeof d.sha256 === "string") event.payload.sha256 = d.sha256;
+    if (["delivered", "accepted"].includes(d.outcome)) event.payload.fileDownload = true;
+  }
   if (!Number.isInteger(id) && event.lookup) return null;
   return event;
 }

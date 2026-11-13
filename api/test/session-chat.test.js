@@ -23,8 +23,8 @@ describe("session chat input", () => {
   });
 
   it("reads the long-poll cursor, ignoring junk", () => {
-    assert.deepEqual(chatCursor(new URLSearchParams("after=7&typing=1&read=5&wait=1")), { after: 7, typing: true, read: 5, wait: true });
-    assert.deepEqual(chatCursor(new URLSearchParams("after=abc&read=-3")), { after: 0, typing: false, read: 0, wait: false });
+    assert.deepEqual(chatCursor(new URLSearchParams("after=7&typing=1&read=5&files=2-lq3k9&wait=1")), { after: 7, typing: true, read: 5, files: "2-lq3k9", wait: true });
+    assert.deepEqual(chatCursor(new URLSearchParams("after=abc&read=-3&files=<x>")), { after: 0, typing: false, read: 0, files: "", wait: false });
   });
 
   it("shows a message without database ids beyond its own", () => {
@@ -55,10 +55,13 @@ describe("session chat typing and wake-ups", () => {
 
   it("answers at once when the caller is behind, and waits only when nothing changed", async () => {
     const rows = [{ id: 5, sender: "technician", sender_name: "Thandi", body: "Hello", created_at: new Date() }];
+    const files = [];
     const db = {
-      query: async (sql, params) => (sql.includes("remote_session_messages")
-        ? { rows: rows.filter((row) => row.id > params[2]) }
-        : { rows: [{ chat_read_technician: null, chat_read_customer: null }] }),
+      query: async (sql, params) => {
+        if (sql.includes("remote_session_messages")) return { rows: rows.filter((row) => row.id > params[2]) };
+        if (sql.includes("remote_session_files")) return { rows: files };
+        return { rows: [{ chat_read_technician: null, chat_read_customer: null }] };
+      },
     };
     const behind = await waitChatState(db, { orgId: 1, sessionId: 900003, side: "customer", cursor: { after: 0, typing: false, read: 0, wait: true } });
     assert.equal(behind.messages.length, 1);
@@ -66,6 +69,14 @@ describe("session chat typing and wake-ups", () => {
     const current = await waitChatState(db, { orgId: 1, sessionId: 900003, side: "customer", cursor: { after: 5, typing: false, read: 0, wait: true }, waitMs: 50 });
     assert.equal(current.messages.length, 0);
     assert.ok(Date.now() - started >= 40);
+
+    const at = new Date("2026-11-12T10:00:00Z");
+    files.push({ id: 3, direction: "to_customer", sender_name: "Thandi", file_name: "setup.pdf", content_type: "application/pdf", size_bytes: "2048", status: "offered", created_at: at, updated_at: at });
+    const fileStarted = Date.now();
+    const offered = await waitChatState(db, { orgId: 1, sessionId: 900003, side: "customer", cursor: { after: 5, typing: false, read: 0, files: "0", wait: true }, waitMs: 2000 });
+    assert.ok(Date.now() - fileStarted < 1000);
+    assert.equal(offered.files[0].name, "setup.pdf");
+    assert.notEqual(offered.filesRev, "0");
   });
 });
 

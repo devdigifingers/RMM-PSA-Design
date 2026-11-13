@@ -24,7 +24,10 @@ test("panel reports from the agent are cleaned", () => {
 test("panel options fall back to the defaults", () => {
   assert.deepEqual(panelOptions(null), {
     enabled: false, showToTechnician: false, silentWorkstations: false, silentServers: true, phone: "", email: "",
+    filesToTechnician: true, filesToCustomer: true, fileMaxMb: 100, executables: "warn",
   });
+  assert.equal(panelOptions({ fileMaxMb: 500 }).fileMaxMb, 100);
+  assert.equal(panelOptions({ executables: "run" }).executables, "warn");
   assert.equal(panelOptions({ silentServers: false }).silentServers, false);
   assert.equal(panelOptions({ enabled: "yes" }).enabled, false);
 });
@@ -37,6 +40,12 @@ test("panel option input is validated", () => {
   assert.equal(panelOptionsInput({ email: "Help@Example.co.za" }, {}).value.email, "help@example.co.za");
   assert.ok(panelOptionsInput({ email: "nope" }, {}).error);
   assert.equal(panelOptionsInput({ phone: "" }, { phone: "+27 21 555 0100" }).value.phone, "");
+  assert.equal(panelOptionsInput({ fileMaxMb: 25 }, {}).value.fileMaxMb, 25);
+  assert.ok(panelOptionsInput({ fileMaxMb: 150 }, {}).error);
+  assert.ok(panelOptionsInput({ fileMaxMb: 0 }, {}).error);
+  assert.equal(panelOptionsInput({ executables: "block" }, {}).value.executables, "block");
+  assert.ok(panelOptionsInput({ executables: "run" }, {}).error);
+  assert.equal(panelOptionsInput({ filesToCustomer: false }, {}).value.filesToCustomer, false);
 });
 
 test("servers are silent by default, workstations are not", () => {
@@ -82,6 +91,7 @@ test("technician details for the panel", () => {
     company: "Digital Fingers",
     ticket: { id: 1042, subject: "Printer offline" },
     showToTechnician: true,
+    files: { toTechnician: true, toCustomer: true, maxMb: 100, executables: "warn" },
   });
   assert.equal(panelSessionView(null, {}), null);
 });

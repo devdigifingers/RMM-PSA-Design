@@ -5979,6 +5979,8 @@ html[data-theme="dark"] .tech-seats span, html[data-theme="dark"] .tech-state.on
 .panel-contact { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .panel-contact label { display: grid; gap: 6px; font-size: 13.5px; color: var(--muted); }
 .panel-options > button[type="submit"] { width: auto; justify-self: start; }
+.panel-options .panel-section { margin: 10px 0 -6px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 15px; font-weight: 600; }
+.panel-options .panel-help { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.45; }
 .tech-table form > button.link-button.is-danger { color: var(--red); }
 
 /* Service desk */
@@ -7129,6 +7131,9 @@ html[data-theme="dark"] .token-copy code { background: rgba(124, 58, 237, 0.18);
 .tl-system { color: var(--muted); }
 .tl-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px !important; font-size: 12.5px !important; }
 .tl-links a { color: var(--blue); }
+.session-file-hash { color: var(--muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.session-file-links { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; font-size: 13px; }
+.session-file-links a { color: var(--blue); }
 .tl-chat-open { font-size: inherit; }
 .chat-transcript-list { display: grid; gap: 10px; max-height: min(60vh, 520px); margin: 12px 0 0; padding: 4px 2px; overflow-y: auto; list-style: none; }
 .chat-transcript-list li { max-width: 82%; padding: 8px 12px; border-radius: 12px; background: var(--panel-2, rgba(127, 127, 127, 0.1)); }

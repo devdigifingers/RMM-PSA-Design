@@ -1,3 +1,5 @@
+import { fileLine } from "./activity.js";
+
 export const EVENT_GROUPS = {
   created: "changes",
   status: "changes",
@@ -23,6 +25,7 @@ export const EVENT_GROUPS = {
   remote_start: "remote",
   remote_end: "remote",
   remote_chat: "remote",
+  remote_file: "remote",
   command: "remote",
   command_result: "remote",
   time: "time",
@@ -127,6 +130,13 @@ export function timelineItem(row, lookups = {}) {
   if (row.kind === "remote_start") {
     item.device = lookups.devices?.get(idOrNull(detail.deviceId)) || null;
     item.user = detail.user || null;
+    return item;
+  }
+  if (row.kind === "remote_file") {
+    item.summary = fileLine(detail);
+    item.fileId = idOrNull(detail.fileId);
+    item.sha256 = typeof detail.sha256 === "string" ? detail.sha256 : null;
+    item.download = ["delivered", "accepted"].includes(detail.outcome);
     return item;
   }
   if (row.kind === "remote_chat") {

@@ -120,7 +120,9 @@ type tray struct {
 	email      string
 	technician string
 	unread     int
+	offers     int
 	chat       trayChat
+	files      trayFiles
 }
 
 // trayChat is the session's conversation as this tray has it from the agent. read is how far the customer has
@@ -347,6 +349,7 @@ func (app *tray) apply(reply map[string]any) {
 	app.setContact(app.emailItem, app.email, "Email ")
 
 	fresh, chatChanged := app.takeChat(keys.ID, reply["chat"])
+	filesMessage := app.takeFiles(keys.ID, reply["files"])
 	if keys.ID == 0 {
 		if app.status != "idle" && app.status != "" {
 			trayLog("no live session")
@@ -393,6 +396,11 @@ func (app *tray) apply(reply map[string]any) {
 		}
 		app.panel.send(map[string]any{"t": "chat", "messages": messages, "typing": app.chat.typing, "read": app.chat.theirRead})
 	}
+	if started && app.files.last != nil {
+		app.panel.write(app.files.last)
+	} else if filesMessage != nil {
+		app.panel.write(filesMessage)
+	}
 	state, _ := json.Marshal(map[string]any{"t": "state", "session": json.RawMessage(raw), "company": app.company, "phone": app.phone, "email": app.email})
 	if !bytes.Equal(state, app.panel.last) {
 		app.panel.last = state
@@ -426,11 +434,11 @@ func (app *tray) setContact(item *systray.MenuItem, value, label string) {
 // setStatus updates the tray icon and tooltip, with the number of technician messages the customer hasn't read;
 // the caller holds app.mu.
 func (app *tray) setStatus(status, technician string) {
-	unread := app.unreadCount()
-	if status == app.status && technician == app.technician && unread == app.unread {
+	unread, offers := app.unreadCount(), app.files.offers
+	if status == app.status && technician == app.technician && unread == app.unread && offers == app.offers {
 		return
 	}
-	app.status, app.technician, app.unread = status, technician, unread
+	app.status, app.technician, app.unread, app.offers = status, technician, unread, offers
 	if !app.iconReady {
 		return
 	}
@@ -446,7 +454,12 @@ func (app *tray) setStatus(status, technician string) {
 	} else if unread > 1 {
 		tip = fmt.Sprintf("%d new messages · %s", unread, tip)
 	}
-	systray.SetIcon(badgeIcon(name, icon, unread))
+	if offers == 1 {
+		tip = "1 file to accept · " + tip
+	} else if offers > 1 {
+		tip = fmt.Sprintf("%d files to accept · %s", offers, tip)
+	}
+	systray.SetIcon(badgeIcon(name, icon, unread+offers))
 	systray.SetTooltip(clipTip(tip))
 }
 
@@ -637,6 +650,12 @@ func (app *tray) watchPanel(child *panelChild, out io.Reader) {
 			failure, _ = message["detail"].(string)
 		case "chat", "chatTyping", "chatRead":
 			go app.chatFromPanel(child, message)
+		case "fileSend", "fileChunk", "fileCancel", "fileDecline":
+			go app.fileFromPanel(child, message)
+		case "fileAccept":
+			go app.saveFile(child, message)
+		case "fileOpen":
+			go app.openSaved(message)
 		case "event":
 			kind, _ := message["type"].(string)
 			if kind != "session.pause" && kind != "session.resume" && kind != "session.end" {

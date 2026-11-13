@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,8 @@ type chatPoll struct {
 	Messages  []chatMessage `json:"messages"`
 	Typing    bool          `json:"typing"`
 	Read      int64         `json:"read"`
+	Files     []sessionFile `json:"files"`
+	FilesRev  string        `json:"filesRev"`
 }
 
 var chatRelay = struct {
@@ -43,6 +46,8 @@ var chatRelay = struct {
 	messages []chatMessage
 	typing   bool
 	read     int64
+	files    []sessionFile
+	filesRev string
 }{}
 
 func chatReset(session int64) {
@@ -55,6 +60,8 @@ func chatReset(session int64) {
 	chatRelay.messages = nil
 	chatRelay.typing = false
 	chatRelay.read = 0
+	chatRelay.files = nil
+	chatRelay.filesRev = ""
 }
 
 func chatAdd(session int64, messages []chatMessage) {
@@ -94,22 +101,25 @@ func chatView(session, after int64) map[string]any {
 func chatLoop(ctx context.Context) {
 	client := &http.Client{Timeout: 45 * time.Second}
 	fails := 0
+	_ = os.RemoveAll(fileDir)
 	for ctx.Err() == nil {
 		info := supportLatest.Load()
 		keys, live := info.liveSession()
 		if !live || !info.Panel || info.Silent {
 			chatReset(0)
+			filesReset(0)
 			sleepCtx(ctx, 2*time.Second)
 			continue
 		}
 		chatReset(keys.ID)
+		filesReset(keys.ID)
 		chatRelay.Lock()
-		after, typing, read := int64(0), chatRelay.typing, chatRelay.read
+		after, typing, read, filesRev := int64(0), chatRelay.typing, chatRelay.read, chatRelay.filesRev
 		if n := len(chatRelay.messages); n > 0 {
 			after = chatRelay.messages[n-1].ID
 		}
 		chatRelay.Unlock()
-		poll, err := chatFetch(ctx, client, keys.ID, after, typing, read)
+		poll, err := chatFetch(ctx, client, keys.ID, after, typing, read, filesRev)
 		if err != nil {
 			fails++
 			sleepCtx(ctx, time.Duration(min(fails, 10))*3*time.Second)
@@ -118,11 +128,20 @@ func chatLoop(ctx context.Context) {
 		fails = 0
 		chatAdd(keys.ID, poll.Messages)
 		chatRelay.Lock()
-		if chatRelay.session == keys.ID {
+		current := chatRelay.session == keys.ID
+		if current {
 			chatRelay.typing = poll.Typing
 			chatRelay.read = poll.Read
+			if poll.Files != nil {
+				chatRelay.files = poll.Files
+				chatRelay.filesRev = poll.FilesRev
+			}
 		}
+		files := chatRelay.files
 		chatRelay.Unlock()
+		if current {
+			filesPrepare(ctx, keys.ID, files)
+		}
 	}
 }
 
@@ -133,7 +152,7 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	}
 }
 
-func chatFetch(ctx context.Context, client *http.Client, session, after int64, typing bool, read int64) (*chatPoll, error) {
+func chatFetch(ctx context.Context, client *http.Client, session, after int64, typing bool, read int64, filesRev string) (*chatPoll, error) {
 	support.Lock()
 	api, state := support.api, support.state
 	support.Unlock()
@@ -141,6 +160,9 @@ func chatFetch(ctx context.Context, client *http.Client, session, after int64, t
 	query.Set("session", strconv.FormatInt(session, 10))
 	query.Set("after", strconv.FormatInt(after, 10))
 	query.Set("read", strconv.FormatInt(read, 10))
+	if filesRev != "" {
+		query.Set("files", filesRev)
+	}
 	query.Set("wait", "1")
 	if typing {
 		query.Set("typing", "1")

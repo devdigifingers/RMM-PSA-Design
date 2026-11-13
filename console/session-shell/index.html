@@ -329,6 +329,22 @@
     }
     .panel pre:empty::before { content: "Output appears here"; color: #6f8399; }
     .panel .status { flex: 1; margin: 0; min-height: 18px; font-size: 13px; color: var(--muted); }
+    .sf-list { display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow: auto; margin: 0; padding: 0; list-style: none; scrollbar-width: thin; }
+    .sf-empty { margin: 0; padding: 18px 8px; text-align: center; color: var(--muted); font-size: 13px; }
+    .sf-item { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--soft); }
+    .sf-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: #ede9fe; color: var(--blue); }
+    .sf-item.in .sf-icon { background: #dcfce7; color: #15803d; }
+    .sf-item.bad .sf-icon { background: #fee2e2; color: var(--red); }
+    .sf-icon svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .sf-main { min-width: 0; display: grid; gap: 2px; }
+    .sf-main strong { overflow: hidden; font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .sf-main span { font-size: 12px; color: var(--muted); }
+    .sf-bar { height: 4px; margin-top: 4px; border-radius: 2px; background: #e2e8f0; overflow: hidden; }
+    .sf-bar i { display: block; height: 100%; width: 0; background: var(--blue); transition: width 0.2s; }
+    .sf-item a, .sf-item button { padding: 6px 12px; border: 0; border-radius: 999px; background: #fff; color: var(--blue); font: inherit; font-size: 12.5px; font-weight: 600; text-decoration: none; cursor: pointer; box-shadow: 0 1px 2px rgba(15,23,42,0.08); }
+    .sf-item a:hover, .sf-item button:hover { background: #ede9fe; }
+    .sf-drop { padding: 14px; border: 1.5px dashed var(--field); border-radius: 12px; text-align: center; font-size: 13px; color: var(--muted); }
+    .sf-drop.over { border-color: var(--blue); background: #f5f3ff; color: var(--blue); }
     .toast {
       position: absolute; left: 50%; bottom: 24px; z-index: 10; transform: translateX(-50%);
       display: flex; align-items: center; gap: 10px; max-width: min(560px, 80%); padding: 12px 18px;
@@ -552,6 +568,14 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21 16-4 4-4-4M17 20V4M3 8l4-4 4 4M7 4v16"/></svg>
           Web File Transfer
         </button>
+        <button type="button" id="f-send" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>
+          Send a file to the customer
+        </button>
+        <button type="button" id="f-session" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15h6M9 11h2"/></svg>
+          Session files
+        </button>
       </div>
       <div class="fly dark" id="fly-chat">
         <button type="button" id="c-chat">
@@ -614,6 +638,21 @@
           <p class="status" id="msg-status"></p>
           <button type="button" class="run" id="msg-send">Send</button>
         </div>
+        </div>
+      </section>
+      <section class="panel drag" id="sf-panel" hidden>
+        <header class="bar">
+          <strong>Session files</strong>
+          <button type="button" id="sf-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+        </header>
+        <div class="panel-body">
+          <ul class="sf-list" id="sf-list"></ul>
+          <div class="sf-drop" id="sf-drop">Drop a file here to send it to the customer</div>
+          <div class="panel-row">
+            <p class="status" id="sf-status"></p>
+            <button type="button" class="run" id="sf-pick">Send a file…</button>
+          </div>
+          <input type="file" id="sf-input" hidden>
         </div>
       </section>
       <section class="files-win" id="files-win" hidden>
@@ -2414,6 +2453,8 @@
     };
     document.getElementById("nav-files").onclick = function (event) {
       mark("files");
+      document.getElementById("f-send").hidden = !sfCanSend();
+      document.getElementById("f-session").hidden = !sessionFiles.list.length && !sfCanSend();
       toggleFly("fly-files", event.currentTarget.offsetTop);
     };
     function filePage(name) {
@@ -2520,6 +2561,7 @@
     draggable(document.getElementById("chat-win"));
     draggable(document.getElementById("msg-panel"));
     draggable(document.getElementById("script-panel"));
+    draggable(document.getElementById("sf-panel"));
     document.getElementById("nav-chat").onclick = function (event) {
       mark("chat");
       toggleFly("fly-chat", event.currentTarget.offsetTop);
@@ -2818,6 +2860,7 @@
     }
 
     function panelChatApply(body) {
+      sfApply(body);
       var messages = body.messages || [];
       var fromCustomer = false;
       messages.forEach(function (message) {
@@ -2842,7 +2885,8 @@
       var gen = panelChat.gen;
       var controller = typeof AbortController === "function" ? new AbortController() : null;
       panelChat.abort = controller;
-      var query = "?after=" + panelChat.after + "&read=" + panelChat.theirRead + "&wait=1" + (panelChat.theirTyping ? "&typing=1" : "");
+      var query = "?after=" + panelChat.after + "&read=" + panelChat.theirRead + "&files=" + encodeURIComponent(sessionFiles.rev) +
+        "&wait=1" + (panelChat.theirTyping ? "&typing=1" : "");
       fetch(panelChatUrl(query), { credentials: "include", signal: controller ? controller.signal : undefined }).then(function (response) {
         if (response.status === 401 || response.status === 403) return { signedOut: true };
         if (!response.ok) throw new Error("chat " + response.status);
@@ -2882,6 +2926,220 @@
       chatTyping(false);
       chatState(reason, false);
     }
+
+    // Session Panel files: the list rides on the chat long-poll ("files" is the revision this window shows). Files
+    // the customer sends can be downloaded here; files sent to the customer go up with progress and wait for Accept.
+    var sessionFiles = { list: [], rev: "0", rules: null, loaded: false, progress: {}, xhr: {} };
+
+    function sfUrl(path) {
+      return consoleOrigin + "/devices/" + encodeURIComponent(deviceId) + "/session-files" + (path || "");
+    }
+
+    function sfCanSend() {
+      return !!(deviceId && consoleOrigin && customer.panel === "ready" && !customer.ended && (!sessionFiles.rules || sessionFiles.rules.toCustomer));
+    }
+
+    function sfSize(bytes) {
+      if (bytes >= 1048576) return (bytes / 1048576).toFixed(bytes >= 10485760 ? 0 : 1) + " MB";
+      if (bytes >= 1024) return Math.round(bytes / 1024) + " KB";
+      return bytes + " bytes";
+    }
+
+    function sfLine(file) {
+      var size = sfSize(file.size);
+      if (file.direction === "to_technician") {
+        if (file.status === "uploading") return "Arriving from " + file.from + "…";
+        if (file.status === "delivered") return size + " from " + file.from + (file.kept ? "" : " · no longer stored");
+        if (file.status === "cancelled") return "Cancelled by " + file.from;
+        return "Didn't arrive" + (file.detail ? ": " + file.detail : "");
+      }
+      if (file.status === "uploading") {
+        var done = sessionFiles.progress[file.id];
+        return done == null ? "Uploading…" : "Uploading " + done + "%";
+      }
+      if (file.status === "offered") {
+        if (!file.scan) return size + " · Checking with Windows Defender…";
+        return size + " · Waiting for " + chatWho() + " to accept" + (file.scan === "unavailable" ? " (not scanned)" : "");
+      }
+      if (file.status === "accepted") return size + " · Saved by " + chatWho();
+      if (file.status === "declined") return "Declined by " + chatWho();
+      if (file.status === "cancelled") return "Cancelled";
+      return "Not sent" + (file.detail ? ": " + file.detail : "");
+    }
+
+    function sfRender() {
+      var list = document.getElementById("sf-list");
+      list.textContent = "";
+      if (!sessionFiles.list.length) {
+        var empty = document.createElement("li");
+        empty.className = "sf-empty";
+        empty.textContent = "Files sent in this session appear here.";
+        list.appendChild(empty);
+      }
+      sessionFiles.list.forEach(function (file) {
+        var item = document.createElement("li");
+        var incoming = file.direction === "to_technician";
+        var bad = file.status === "failed" || file.status === "declined" || file.status === "cancelled";
+        item.className = "sf-item" + (incoming ? " in" : "") + (bad ? " bad" : "");
+        item.innerHTML = "<span class=\"sf-icon\"><svg viewBox=\"0 0 24 24\"><path d=\"" +
+          (incoming ? "M12 4v12m-5-5 5 5 5-5M5 20h14" : "M12 20V8m-5 5 5-5 5 5M5 4h14") + "\"/></svg></span><div class=\"sf-main\"><strong></strong><span></span></div>";
+        item.querySelector("strong").textContent = file.name;
+        item.querySelector("strong").title = file.sha256 ? file.name + "\nSHA-256 " + file.sha256 : file.name;
+        item.querySelector(".sf-main span").textContent = sfLine(file);
+        if (file.status === "uploading" && sessionFiles.progress[file.id] != null) {
+          var bar = document.createElement("div");
+          bar.className = "sf-bar";
+          bar.innerHTML = "<i></i>";
+          bar.firstChild.style.width = sessionFiles.progress[file.id] + "%";
+          item.querySelector(".sf-main").appendChild(bar);
+        }
+        if (incoming && file.status === "delivered" && file.kept) {
+          var link = document.createElement("a");
+          link.href = consoleOrigin + "/session-files/" + file.id;
+          link.target = "_blank";
+          link.rel = "noopener";
+          link.textContent = "Download";
+          item.appendChild(link);
+        } else if (!incoming && (file.status === "uploading" || file.status === "offered")) {
+          var cancel = document.createElement("button");
+          cancel.type = "button";
+          cancel.textContent = "Cancel";
+          cancel.onclick = function () { sfCancel(file); };
+          item.appendChild(cancel);
+        }
+        list.appendChild(item);
+      });
+      var can = sfCanSend();
+      document.getElementById("sf-pick").disabled = !can;
+      document.getElementById("sf-drop").hidden = !can;
+    }
+
+    function sfOpen() {
+      closeFly();
+      var panel = document.getElementById("sf-panel");
+      sfRender();
+      panel.hidden = false;
+    }
+
+    function sfApply(body) {
+      if (body.fileRules) sessionFiles.rules = body.fileRules;
+      if (!Array.isArray(body.files)) return;
+      var before = {};
+      sessionFiles.list.forEach(function (file) { before[file.id] = file.status; });
+      var arrived = body.files.filter(function (file) {
+        return file.direction === "to_technician" && file.status === "delivered" && before[file.id] !== "delivered";
+      });
+      sessionFiles.list = body.files;
+      sessionFiles.rev = typeof body.filesRev === "string" ? body.filesRev : "0";
+      if (sessionFiles.loaded && arrived.length) {
+        toast(arrived.length === 1 ? arrived[0].from + " sent " + arrived[0].name : arrived.length + " files arrived from " + arrived[0].from);
+        sfOpen();
+      }
+      sessionFiles.loaded = true;
+      if (!document.getElementById("sf-panel").hidden) sfRender();
+    }
+
+    function sfStatus(text) {
+      document.getElementById("sf-status").textContent = text || "";
+    }
+
+    function sfSend(file) {
+      if (!file) return;
+      if (!sfCanSend()) {
+        sfStatus("The Session Panel isn't running on this computer. Use Web File Transfer instead.");
+        return;
+      }
+      var maxMb = sessionFiles.rules ? sessionFiles.rules.maxMb : 100;
+      if (file.size > maxMb * 1048576) {
+        sfStatus(file.name + " is " + sfSize(file.size) + ". Files can be up to " + maxMb + " MB.");
+        return;
+      }
+      if (!file.size) {
+        sfStatus(file.name + " is empty.");
+        return;
+      }
+      sfStatus("Sending " + file.name + "…");
+      fetch(sfUrl(), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: file.name, size: file.size, type: file.type || "" })
+      }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          if (!response.ok) throw new Error(body.error || "The file could not be sent.");
+          return body;
+        });
+      }).then(function (body) {
+        var id = body.file.id;
+        sessionFiles.progress[id] = 0;
+        if (!sessionFiles.list.some(function (item) { return item.id === id; })) sessionFiles.list.push(body.file);
+        sfStatus(body.warn ? "This is a program or script. " + chatWho() + " is warned and asked twice before it is saved." : "");
+        sfRender();
+        var xhr = new XMLHttpRequest();
+        sessionFiles.xhr[id] = xhr;
+        xhr.open("PUT", sfUrl("/" + id + "/content"));
+        xhr.withCredentials = true;
+        xhr.setRequestHeader("content-type", "application/octet-stream");
+        xhr.upload.onprogress = function (event) {
+          if (!event.lengthComputable) return;
+          sessionFiles.progress[id] = Math.min(99, Math.floor((event.loaded / event.total) * 100));
+          sfRender();
+        };
+        xhr.onloadend = function () {
+          delete sessionFiles.xhr[id];
+          delete sessionFiles.progress[id];
+          if (xhr.status < 200 || xhr.status >= 300) {
+            var reply = {};
+            try { reply = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status) sfStatus(reply.error || "The file could not be sent.");
+          }
+          sfRender();
+        };
+        xhr.send(file);
+      }).catch(function (error) {
+        sfStatus(error.message);
+      });
+    }
+
+    function sfCancel(file) {
+      var xhr = sessionFiles.xhr[file.id];
+      if (xhr) xhr.abort();
+      fetch(sfUrl("/" + file.id), { method: "POST", credentials: "include" }).then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          if (!response.ok && response.status !== 409) sfStatus(body.error || "That file could not be cancelled.");
+        });
+      }, function () {});
+    }
+
+    document.getElementById("f-send").onclick = function () {
+      sfOpen();
+      document.getElementById("sf-input").click();
+    };
+    document.getElementById("f-session").onclick = sfOpen;
+    document.getElementById("sf-pick").onclick = function () { document.getElementById("sf-input").click(); };
+    document.getElementById("sf-input").onchange = function (event) {
+      var picked = event.target.files && event.target.files[0];
+      event.target.value = "";
+      sfSend(picked);
+    };
+    document.getElementById("sf-close").onclick = function () {
+      document.getElementById("sf-panel").hidden = true;
+      focusDesk();
+    };
+    (function () {
+      var drop = document.getElementById("sf-drop");
+      drop.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        drop.classList.add("over");
+      });
+      drop.addEventListener("dragleave", function () { drop.classList.remove("over"); });
+      drop.addEventListener("drop", function (event) {
+        event.preventDefault();
+        drop.classList.remove("over");
+        var dropped = event.dataTransfer && event.dataTransfer.files;
+        if (dropped && dropped.length) sfSend(dropped[0]);
+      });
+    })();
 
     document.addEventListener("visibilitychange", panelChatMarkRead);
 

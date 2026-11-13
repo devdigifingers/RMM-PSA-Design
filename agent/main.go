@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const agentVersion = "1.8.0"
+const agentVersion = "1.9.0"
 
 type savedState struct {
 	DeviceID    int64  `json:"deviceId"`

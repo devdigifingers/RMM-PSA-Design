@@ -19,15 +19,20 @@ import (
 	"time"
 )
 
-const agentVersion = "1.9.1"
+const agentVersion = "1.9.2"
 
 // HTTP/1.1 only. Go's HTTP/2 client keeps sending on a connection that died after a network change (no pings), so
 // every call timed out "awaiting headers" until the service restarted. An HTTP/1.1 request that times out closes its
-// connection and the next call dials a new one.
+// connection and the next call dials a new one. Clone() copies NextProtos ["h2", "http/1.1"], so ALPN must be reset
+// too, or the server picks h2 and answers HTTP/1.1 requests with HTTP/2 frames.
 func init() {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	transport.MaxIdleConnsPerHost = 8
 	http.DefaultTransport = transport
 }

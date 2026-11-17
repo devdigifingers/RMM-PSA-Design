@@ -477,9 +477,16 @@ earlier sections have dates only. Agent versions are separate and listed under [
 Every Digital Fingers Agent version, newest first. Versions before 1.4.0 report no version and show as
 "Unknown (1.4 or older)". How to build and publish: [OPERATIONS.md](./OPERATIONS.md).
 
-**1.9.1 (Windows), pilot from 13 Nov (POS-3316E-Setup and FED-WIN-001; not yet published to all)**
-- The agent talks to the API over HTTP/1.1 only. Over HTTP/2 it could keep reusing a connection the network had
+**1.9.2 (Windows), published 17 Nov (pilot on POS-3316E-Setup from 13 Nov)**
+- Fixes 1.9.1, which could not check in at all: it still offered HTTP/2 when connecting, the API accepted it, and the
+  agent then spoke HTTP/1.1 ("malformed HTTP response"). The agent now offers HTTP/1.1 only.
+- A 1.9.1 agent cannot fetch this update itself, so the pilot install used MeshCentral (upload, then
+  `df-agent-update.exe update`). Devices on 1.9.0 and older pick 1.9.2 up on their next check-in.
+
+**1.9.1 (Windows), pilot 13 Nov only, withdrawn**
+- Meant to make the agent use HTTP/1.1 only, because over HTTP/2 it could keep reusing a connection the network had
   silently dropped, so check-ins and the session panel stopped until the service restarted (seen on FED-WIN-001).
+  The change was incomplete (see 1.9.2) and stopped both pilot devices checking in.
 
 **1.9.0 (Windows), published 13 Nov (pilot on POS-3316E-Setup from 12 Nov)**
 - Published to every Windows device with Support app 1.2.0, the same files that passed the pilot. Devices go from
